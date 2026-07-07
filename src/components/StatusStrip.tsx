@@ -20,6 +20,25 @@ export function StatusStrip({ pr, pulsing }: { pr: TrackedPr; pulsing?: boolean 
   );
 }
 
+/** Left-edge marker: ◆ for never-opened PRs, update count otherwise. */
+export function UnreadMarker({ pr }: { pr: TrackedPr }) {
+  if (pr.unread.includes("new")) {
+    return (
+      <span className="marker new" title="You haven't opened this PR yet">
+        ◆
+      </span>
+    );
+  }
+  if (pr.unread.length > 0) {
+    return (
+      <span className="marker count" title={unreadTitle(pr)}>
+        {pr.unread.length}
+      </span>
+    );
+  }
+  return <span className="marker" aria-hidden="true" />;
+}
+
 /** Human description of a PR's unacknowledged changes, for badge tooltips. */
 export function unreadTitle(pr: TrackedPr): string {
   if (pr.unread.length === 0) return "";
