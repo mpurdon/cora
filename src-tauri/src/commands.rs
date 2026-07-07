@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
+use crate::analysis::types::{events as analysis_events, AnalysisLevel, AnalysisResult};
 use crate::error::{AppError, AppResult};
 use crate::github::poller::PollTrigger;
 use crate::github::query::{GraphQlClient, PR_FRAGMENT};
@@ -143,6 +144,119 @@ pub async fn track_pr_url(
     let stored = store.upsert_pr(&info, &[PrSource::Manual], &[ChangeKind::New], &now)?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
     Ok(stored)
+}
+
+// -- analysis -------------------------------------------------------------------
+
+/// Keys of currently-running analyses, to prevent duplicate runs.
+pub struct AnalysisRuns(pub std::sync::Mutex<std::collections::HashSet<String>>);
+
+fn analysis_key(pr_id: &str, level: AnalysisLevel, focus: &Option<String>) -> String {
+    format!("{pr_id}:{}:{}", level.as_str(), focus.as_deref().unwrap_or(""))
+}
+
+#[tauri::command]
+pub fn get_analysis(
+    store: State<'_, Arc<Store>>,
+    pr_id: String,
+    level: AnalysisLevel,
+    focus: Option<String>,
+) -> AppResult<Option<AnalysisResult>> {
+    let Some(pr) = store.get_pr(&pr_id)? else {
+        return Ok(None);
+    };
+    let cached = store.get_analysis(
+        &pr_id,
+        level.as_str(),
+        focus.as_deref().unwrap_or(""),
+        &pr.info.head_sha,
+    )?;
+    Ok(cached.and_then(|json| serde_json::from_str(&json).ok()))
+}
+
+/// Kick off an analysis in the background. Results arrive as events:
+/// analysis:complete / analysis:error, with analysis:progress along the way.
+#[tauri::command]
+pub fn run_analysis(
+    app: AppHandle,
+    window: WebviewWindow,
+    runs: State<'_, AnalysisRuns>,
+    pr_id: String,
+    level: AnalysisLevel,
+    focus: Option<String>,
+) -> AppResult<()> {
+    require_main(&window)?;
+    let key = analysis_key(&pr_id, level, &focus);
+    {
+        let mut running = runs.0.lock().unwrap();
+        if !running.insert(key.clone()) {
+            return Ok(()); // already running
+        }
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let outcome = execute_analysis(&app, &pr_id, level, focus.clone()).await;
+        {
+            let runs = app.state::<AnalysisRuns>();
+            runs.0.lock().unwrap().remove(&key);
+        }
+        match outcome {
+            Ok(result) => {
+                let _ = app.emit(analysis_events::ANALYSIS_COMPLETE, result);
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    analysis_events::ANALYSIS_ERROR,
+                    crate::analysis::types::AnalysisError {
+                        pr_id,
+                        level,
+                        error: e.to_string(),
+                    },
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+async fn execute_analysis(
+    app: &AppHandle,
+    pr_id: &str,
+    level: AnalysisLevel,
+    focus: Option<String>,
+) -> AppResult<AnalysisResult> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+
+    // Serve from cache when the head hasn't moved.
+    if let Some(json) = store.get_analysis(
+        pr_id,
+        level.as_str(),
+        focus.as_deref().unwrap_or(""),
+        &pr.info.head_sha,
+    )? {
+        if let Ok(cached) = serde_json::from_str::<AnalysisResult>(&json) {
+            return Ok(cached);
+        }
+    }
+
+    let settings = store.settings()?;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+
+    let result = crate::analysis::engine::run(app, &settings, &token, &pr, level, focus).await?;
+
+    store.put_analysis(
+        &result.pr_id,
+        result.level.as_str(),
+        result.focus_node_id.as_deref().unwrap_or(""),
+        &result.head_sha,
+        &serde_json::to_string(&result).map_err(|e| AppError::Other(e.to_string()))?,
+        &result.created_at,
+    )?;
+    Ok(result)
 }
 
 // -- windows / poll control ----------------------------------------------------

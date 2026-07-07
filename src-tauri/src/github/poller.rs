@@ -125,6 +125,10 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
             Some(prev) => compute_changes(&prev.info, info),
             None => vec![ChangeKind::New],
         };
+        if changes.contains(&ChangeKind::NewCommits) {
+            // New commits invalidate every cached analysis for this PR.
+            store.invalidate_analyses(id)?;
+        }
         let stored = store.upsert_pr(info, sources, &changes, &now)?;
         // Merged/closed PRs whose changes were already acknowledged drop off.
         if stored.info.state != "OPEN" && stored.unread.is_empty() {

@@ -30,4 +30,7 @@ chrono = "0.4.45"
 tauri-plugin-window-state = "2.4.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "gzip", "http2"] }
 keyring = "4.1.4"
+aws-config = "1.8.18"
+aws-sdk-bedrockruntime = "1.135.0"
+aws-smithy-types = "1.6.1"
 
