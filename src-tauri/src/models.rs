@@ -122,7 +122,7 @@ impl Default for Settings {
             github_graphql_url: "https://api.github.com/graphql".into(),
             aws_profile: "default".into(),
             aws_endpoint_url: String::new(),
-            bedrock_model_id: "anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
+            bedrock_model_id: "anthropic.claude-opus-4-8".into(),
         }
     }
 }

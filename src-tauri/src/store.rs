@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS prs (
   first_seen     TEXT NOT NULL,
   last_change_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS analyses (
+  pr_id      TEXT NOT NULL,
+  level      TEXT NOT NULL,
+  focus      TEXT NOT NULL DEFAULT '',
+  head_sha   TEXT NOT NULL,
+  data       TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (pr_id, level, focus)
+);
 ";
 
 impl Store {
@@ -174,6 +183,59 @@ impl Store {
     pub fn untrack(&self, id: &str) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("UPDATE prs SET tracked = 0 WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // -- analysis cache ------------------------------------------------------
+
+    /// Cached analysis for (pr, level, focus) — only valid for `head_sha`.
+    pub fn get_analysis(
+        &self,
+        pr_id: &str,
+        level: &str,
+        focus: &str,
+        head_sha: &str,
+    ) -> AppResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let row: Option<String> = conn
+            .query_row(
+                "SELECT data FROM analyses
+                 WHERE pr_id = ?1 AND level = ?2 AND focus = ?3 AND head_sha = ?4",
+                params![pr_id, level, focus, head_sha],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(row)
+    }
+
+    pub fn put_analysis(
+        &self,
+        pr_id: &str,
+        level: &str,
+        focus: &str,
+        head_sha: &str,
+        data: &str,
+        created_at: &str,
+    ) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO analyses (pr_id, level, focus, head_sha, data, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(pr_id, level, focus) DO UPDATE SET
+               head_sha = ?4, data = ?5, created_at = ?6",
+            params![pr_id, level, focus, head_sha, data, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Drop all cached analyses for a PR (new commits invalidate everything).
+    pub fn invalidate_analyses(&self, pr_id: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM analyses WHERE pr_id = ?1", params![pr_id])?;
         Ok(())
     }
 

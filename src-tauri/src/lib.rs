@@ -1,3 +1,4 @@
+mod analysis;
 mod commands;
 mod error;
 mod github;
@@ -26,6 +27,9 @@ pub fn run() {
             let store = Arc::new(Store::open(&data_dir.join("cora.sqlite"))?);
             app.manage(store);
             app.manage(PollTrigger(Arc::new(Notify::new())));
+            app.manage(commands::AnalysisRuns(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )));
 
             setup_tray(app.handle())?;
             github::poller::spawn(app.handle().clone());
@@ -53,6 +57,8 @@ pub fn run() {
             commands::set_pr_muted,
             commands::untrack_pr,
             commands::track_pr_url,
+            commands::get_analysis,
+            commands::run_analysis,
             commands::poll_now,
             commands::show_main_window,
             commands::toggle_callout,
