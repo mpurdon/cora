@@ -106,10 +106,42 @@ function Detail({ pr }: { pr: TrackedPr }) {
   );
 }
 
+function TrackPrInput({ onDone }: { onDone: () => void }) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const track = async () => {
+    try {
+      await ipc.trackPrUrl(url);
+      onDone();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+  return (
+    <div className="track-inline">
+      <input
+        autoFocus
+        placeholder="Paste a PR URL, press Enter"
+        value={url}
+        onChange={(e) => {
+          setUrl(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && url) void track();
+          if (e.key === "Escape") onDone();
+        }}
+      />
+      {error && <span className="track-error">{error}</span>}
+    </div>
+  );
+}
+
 export function MainApp() {
   const { prs, pollStatus, init } = usePrStore();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTrackInput, setShowTrackInput] = useState(false);
 
   useEffect(() => {
     void init();
@@ -149,7 +181,16 @@ export function MainApp() {
         <div className="rail-header">
           <span className="name">CORA</span>
           <span className="eyebrow">{prs.length} tracked</span>
+          <span className="spacer" />
+          <button
+            className="icon-btn"
+            title="Track a PR by URL"
+            onClick={() => setShowTrackInput((s) => !s)}
+          >
+            +
+          </button>
         </div>
+        {showTrackInput && <TrackPrInput onDone={() => setShowTrackInput(false)} />}
         <div className="rail-list">
           {grouped.length === 0 && (
             <div className="rail-group">

@@ -162,14 +162,14 @@ input:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--line);
   flex: none;
 }
 
 .callout-header .title {
   font-weight: 600;
-  font-size: 12px;
+  font-size: 13px;
   letter-spacing: 0.02em;
 }
 
@@ -206,15 +206,15 @@ input:focus-visible {
 
 .icon-btn {
   color: var(--muted);
-  font-size: 16px;
+  font-size: 20px;
   line-height: 1;
-  min-width: 28px;
-  min-height: 26px;
+  min-width: 36px;
+  min-height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px 6px;
-  border-radius: 6px;
+  padding: 5px 7px;
+  border-radius: 7px;
 }
 
 .icon-btn:hover {
@@ -333,7 +333,34 @@ input:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 14px 10px;
+  padding: 10px 10px 8px 14px;
+}
+
+.rail-header .spacer {
+  flex: 1;
+}
+
+.track-inline {
+  padding: 0 10px 8px;
+}
+
+.track-inline input {
+  width: 100%;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 9px;
+  font-size: 11px;
+  font-family: var(--mono);
+  user-select: text;
+}
+
+.track-error {
+  display: block;
+  color: var(--bad);
+  font-size: 10px;
+  margin-top: 4px;
 }
 
 .rail-header .name {

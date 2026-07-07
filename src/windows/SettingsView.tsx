@@ -106,23 +106,10 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             onBlur={() => void saveRepos()}
           />
         </div>
-        <div className="field">
-          <label htmlFor="interval">Poll interval (seconds)</label>
-          <input
-            id="interval"
-            type="number"
-            min={15}
-            value={settings.pollIntervalSecs}
-            onChange={(e) =>
-              setSettings({ ...settings, pollIntervalSecs: Number(e.target.value) || 45 })
-            }
-            onBlur={() => void saveSettings({ pollIntervalSecs: settings.pollIntervalSecs })}
-          />
-        </div>
       </section>
 
       <section>
-        <span className="eyebrow">AWS Bedrock (analysis)</span>
+        <span className="eyebrow">AWS</span>
         <div className="field">
           <label htmlFor="profile">AWS profile</label>
           <input
@@ -155,8 +142,21 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
       </section>
 
       <section>
-        <span className="eyebrow">Track a PR manually</span>
-        <TrackByUrl onTracked={() => flash("PR tracked")} onError={setError} />
+        <span className="eyebrow">CORA</span>
+        <div className="field">
+          <label htmlFor="interval">Poll interval (seconds)</label>
+          <input
+            id="interval"
+            type="number"
+            min={15}
+            value={settings.pollIntervalSecs}
+            onChange={(e) =>
+              setSettings({ ...settings, pollIntervalSecs: Number(e.target.value) || 45 })
+            }
+            onBlur={() => void saveSettings({ pollIntervalSecs: settings.pollIntervalSecs })}
+          />
+          <div className="field-hint">How often CORA checks GitHub for changes.</div>
+        </div>
       </section>
 
       <div className="row">
@@ -170,36 +170,3 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   );
 }
 
-function TrackByUrl({
-  onTracked,
-  onError,
-}: {
-  onTracked: () => void;
-  onError: (e: string) => void;
-}) {
-  const [url, setUrl] = useState("");
-  const track = async () => {
-    try {
-      await ipc.trackPrUrl(url);
-      setUrl("");
-      onTracked();
-    } catch (e) {
-      onError(String(e));
-    }
-  };
-  return (
-    <div className="field">
-      <div className="row">
-        <input
-          placeholder="https://github.com/owner/repo/pull/123"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && url && void track()}
-        />
-        <button className="action-btn" disabled={!url} onClick={() => void track()}>
-          Track
-        </button>
-      </div>
-    </div>
-  );
-}
