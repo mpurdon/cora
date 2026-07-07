@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { TrackedPr } from "../bindings/TrackedPr";
-import { StatusStrip } from "../components/StatusStrip";
+import { StatusStrip, unreadTitle } from "../components/StatusStrip";
 import { ipc } from "../lib/ipc";
 import { timeAgo, usePrStore } from "../state/prStore";
 
@@ -31,7 +31,11 @@ function Row({ pr, pulsing }: { pr: TrackedPr; pulsing: boolean }) {
       </span>
       <span className="right">
         <span className="ago">{timeAgo(pr.lastChangeAt)}</span>
-        {pr.unread.length > 0 && <span className="unread-count">{pr.unread.length}</span>}
+        {pr.unread.length > 0 && (
+          <span className="unread-count" title={unreadTitle(pr)}>
+            {pr.unread.length}
+          </span>
+        )}
       </span>
     </button>
   );

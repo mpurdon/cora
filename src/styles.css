@@ -321,12 +321,128 @@ input:focus-visible {
 }
 
 .rail {
-  width: 270px;
   flex: none;
   background: var(--ink-1);
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
+}
+
+.rail-resizer {
+  flex: none;
+  width: 5px;
+  margin-left: -3px;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.rail-resizer:hover {
+  background: color-mix(in srgb, var(--text) 20%, transparent);
+}
+
+.rail-controls {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px 8px;
+}
+
+.filter-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 11px;
+  user-select: text;
+}
+
+.rail-controls select {
+  flex: none;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 4px 4px;
+}
+
+.group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.group-header:hover {
+  background: var(--ink-2);
+}
+
+.group-header .chevron {
+  color: var(--muted);
+  font-size: 9px;
+  width: 10px;
+  flex: none;
+}
+
+.group-header .spacer {
+  flex: 1;
+}
+
+.group-count {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 13px;
+}
+
+.repo-org {
+  color: var(--idle);
+}
+
+/* one-time legend explaining the lamps and unread badge */
+.legend {
+  margin: 0 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.7;
+  position: relative;
+}
+
+.legend .lamp {
+  display: inline-block;
+  vertical-align: middle;
+  margin: -2px 3px 0 0;
+}
+
+.legend .unread-count {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 3px;
+}
+
+.legend-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.legend-close:hover {
+  color: var(--text);
 }
 
 .rail-header {
