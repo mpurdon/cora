@@ -63,9 +63,9 @@ pub fn run() {
 
 fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(app, "toggle-callout", "Toggle Callout", true, None::<&str>)?;
-    let open = MenuItem::with_id(app, "open-main", "Open Cora", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open-main", "Open CORA", true, None::<&str>)?;
     let poll = MenuItem::with_id(app, "poll-now", "Refresh Now", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Cora", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit CORA", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&toggle, &open, &poll, &quit])?;
 
     TrayIconBuilder::with_id("cora-tray")
