@@ -45,6 +45,16 @@ export function timeAgo(iso: string): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+const TITLE_TYPE_RE =
+  /^(feat|fix|chore|docs|refactor|test|style|perf|build|ci|revert)(\([^)]*\))?!?:\s*/i;
+
+/** Split a conventional-commit style title into its type and clean text. */
+export function parseTitle(title: string): { type: string; clean: string } {
+  const m = title.match(TITLE_TYPE_RE);
+  if (!m) return { type: "unknown", clean: title };
+  return { type: m[1].toLowerCase(), clean: title.slice(m[0].length) || title };
+}
+
 export type DotTone = "ok" | "bad" | "warn" | "idle";
 
 export function ciTone(pr: TrackedPr): DotTone {

@@ -1,9 +1,9 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { TrackedPr } from "../bindings/TrackedPr";
-import { StatusStrip, unreadTitle } from "../components/StatusStrip";
+import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { ipc } from "../lib/ipc";
-import { timeAgo, usePrStore } from "../state/prStore";
+import { parseTitle, timeAgo, usePrStore } from "../state/prStore";
 
 function Row({ pr, pulsing }: { pr: TrackedPr; pulsing: boolean }) {
   return (
@@ -16,6 +16,7 @@ function Row({ pr, pulsing }: { pr: TrackedPr; pulsing: boolean }) {
       }}
       title={`${pr.repo}#${pr.number} — click to open, right-click to ${pr.muted ? "unmute" : "mute"}`}
     >
+      <UnreadMarker pr={pr} />
       <StatusStrip pr={pr} pulsing={pulsing} />
       <span className="body">
         <span className="meta">
@@ -26,16 +27,11 @@ function Row({ pr, pulsing }: { pr: TrackedPr; pulsing: boolean }) {
         </span>
         <span className="pr-title">
           {pr.isDraft ? "· draft · " : ""}
-          {pr.title}
+          {parseTitle(pr.title).clean}
         </span>
       </span>
       <span className="right">
         <span className="ago">{timeAgo(pr.lastChangeAt)}</span>
-        {pr.unread.length > 0 && (
-          <span className="unread-count" title={unreadTitle(pr)}>
-            {pr.unread.length}
-          </span>
-        )}
       </span>
     </button>
   );

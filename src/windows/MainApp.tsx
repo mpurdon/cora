@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PrSource } from "../bindings/PrSource";
 import type { TrackedPr } from "../bindings/TrackedPr";
-import { StatusStrip, unreadTitle } from "../components/StatusStrip";
+import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { ipc, onFocusPr } from "../lib/ipc";
-import { ciTone, mergeTone, reviewTone, timeAgo, usePrStore } from "../state/prStore";
+import { ciTone, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
 import { SettingsView } from "./SettingsView";
 
 /** Reason grouping: a PR appears once, under its most specific reason. */
@@ -16,7 +16,7 @@ const REASONS: { key: PrSource; label: string }[] = [
   { key: "watched-repo", label: "Watched repos" },
 ];
 
-type GroupMode = "org" | "repo" | "reason";
+type GroupMode = "org" | "repo" | "reason" | "type";
 type SortMode = "activity" | "attention" | "repo";
 
 /** "Ready for my review" requirements, one per lamp. */
@@ -91,8 +91,8 @@ function Legend() {
       <span className="lamp ok" /> good · <span className="lamp warn" /> waiting ·{" "}
       <span className="lamp bad" /> blocked · <span className="lamp" /> n/a
       <br />
-      <span className="unread-count">2</span> updates since you last opened that PR — hover any of
-      them for details.
+      On the left edge: <span className="marker new">◆</span> you haven't opened it yet ·{" "}
+      <span className="marker count">2</span> updates since you last looked. Hover for details.
     </div>
   );
 }
@@ -132,6 +132,7 @@ type Tab = "assessment" | "c4" | "diff";
 
 function Detail({ pr }: { pr: TrackedPr }) {
   const [tab, setTab] = useState<Tab>("assessment");
+  const { type, clean } = parseTitle(pr.title);
   return (
     <div className="detail">
       <div className="crumbs">
@@ -141,12 +142,13 @@ function Detail({ pr }: { pr: TrackedPr }) {
       </div>
       <h1>
         {pr.isDraft ? "Draft: " : ""}
-        {pr.title}
+        {clean}
       </h1>
       <div className="facts">
         <span className="fact">
           <StatusStrip pr={pr} />
         </span>
+        {type !== "unknown" && <span className="fact mono">{type}</span>}
         <span className="fact mono">{pr.state.toLowerCase()}</span>
         <span className="fact mono diffstat">
           <span className="add">+{pr.additions}</span> <span className="del">−{pr.deletions}</span>{" "}
@@ -301,7 +303,9 @@ export function MainApp() {
           ? [orgOf(pr.repo), orgOf(pr.repo)]
           : groupMode === "repo"
             ? [pr.repo, shortRepo(pr.repo)]
-            : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
+            : groupMode === "type"
+              ? [parseTitle(pr.title).type, parseTitle(pr.title).type]
+              : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
       const bucket = byKey.get(key) ?? { label, prs: [] };
       bucket.prs.push(pr);
       byKey.set(key, bucket);
@@ -311,6 +315,11 @@ export function MainApp() {
       entries.sort(
         (a, b) =>
           REASONS.findIndex((r) => r.key === a.key) - REASONS.findIndex((r) => r.key === b.key),
+      );
+    } else if (groupMode === "type") {
+      // known types alphabetical, "unknown" last
+      entries.sort((a, b) =>
+        a.key === "unknown" ? 1 : b.key === "unknown" ? -1 : a.label.localeCompare(b.label),
       );
     } else {
       entries.sort((a, b) => a.label.localeCompare(b.label));
@@ -357,6 +366,7 @@ export function MainApp() {
           >
             <option value="org">by org</option>
             <option value="repo">by repo</option>
+            <option value="type">by type</option>
             <option value="reason">by reason</option>
           </select>
           <select
@@ -432,8 +442,9 @@ export function MainApp() {
                       key={pr.id}
                       className={`rail-row${pr.id === selectedId ? " selected" : ""}`}
                       onClick={() => select(pr.id)}
-                      title={`${pr.repo}#${pr.number}`}
+                      title={`${pr.repo}#${pr.number} — ${pr.title}`}
                     >
+                      <UnreadMarker pr={pr} />
                       <StatusStrip pr={pr} />
                       <span className="body">
                         <span className="repo">
@@ -442,13 +453,8 @@ export function MainApp() {
                             <span className="repo-org"> · {orgOf(pr.repo)}</span>
                           )}
                         </span>
-                        <span className="pr-title">{pr.title}</span>
+                        <span className="pr-title">{parseTitle(pr.title).clean}</span>
                       </span>
-                      {pr.unread.length > 0 && (
-                        <span className="unread-count" title={unreadTitle(pr)}>
-                          {pr.unread.length}
-                        </span>
-                      )}
                     </button>
                   ))}
               </div>
