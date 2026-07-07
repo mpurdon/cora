@@ -206,10 +206,15 @@ input:focus-visible {
 
 .icon-btn {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 16px;
   line-height: 1;
-  padding: 3px 5px;
-  border-radius: 4px;
+  min-width: 28px;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  border-radius: 6px;
 }
 
 .icon-btn:hover {

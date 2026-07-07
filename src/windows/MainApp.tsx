@@ -147,7 +147,7 @@ export function MainApp() {
     <div className="main-shell">
       <nav className="rail">
         <div className="rail-header">
-          <span className="name">Cora</span>
+          <span className="name">CORA</span>
           <span className="eyebrow">{prs.length} tracked</span>
         </div>
         <div className="rail-list">

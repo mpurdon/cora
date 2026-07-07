@@ -54,7 +54,7 @@ export function CalloutApp() {
       <header className="callout-header" data-tauri-drag-region>
         <span className={`sync-dot ${syncClass}`} title={pollStatus?.message ?? "syncing"} />
         <span className="title" data-tauri-drag-region>
-          Cora
+          CORA
         </span>
         <span className="eyebrow" data-tauri-drag-region>
           {open.length} open
@@ -63,7 +63,7 @@ export function CalloutApp() {
         <button className="icon-btn" title="Refresh now" onClick={() => void ipc.pollNow()}>
           ⟳
         </button>
-        <button className="icon-btn" title="Open Cora" onClick={() => void ipc.showMainWindow()}>
+        <button className="icon-btn" title="Open CORA" onClick={() => void ipc.showMainWindow()}>
           ⌂
         </button>
         <button

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Cora",
+  "productName": "CORA",
   "version": "0.1.0",
   "identifier": "com.mp.cora",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Cora",
+        "title": "CORA",
         "width": 1200,
         "height": 800,
         "minWidth": 900,
@@ -22,7 +22,7 @@
       },
       {
         "label": "callout",
-        "title": "Cora Callout",
+        "title": "CORA Callout",
         "width": 340,
         "height": 480,
         "minWidth": 280,
