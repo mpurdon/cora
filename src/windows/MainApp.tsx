@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PrSource } from "../bindings/PrSource";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { TrackedPr } from "../bindings/TrackedPr";
+import { AssessmentView } from "../components/analysis/AssessmentView";
+import { C4Canvas } from "../components/analysis/C4Canvas";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { ipc, onFocusPr } from "../lib/ipc";
+import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { ciTone, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
 import { SettingsView } from "./SettingsView";
 
@@ -134,6 +137,85 @@ function TrackPrInput({ onDone }: { onDone: () => void }) {
 
 type Tab = "assessment" | "c4" | "diff";
 
+/** Assessment + C4 tabs share one L1 analysis run per PR head. */
+function AnalysisPanel({
+  pr,
+  tab,
+  highlight,
+  onFocusNodes,
+}: {
+  pr: TrackedPr;
+  tab: "assessment" | "c4";
+  highlight: string[];
+  onFocusNodes: (ids: string[]) => void;
+}) {
+  const { runs, init, ensure, start } = useAnalysisStore();
+  const run = runs[analysisKey(pr.id, "context")];
+
+  useEffect(() => {
+    void init().then(() => ensure(pr.id, "context"));
+  }, [pr.id, pr.headSha, init, ensure]);
+
+  if (!run || run.status === "idle") {
+    return (
+      <div className="placeholder">
+        <p>
+          CORA reads the diff and explores the repository to place this change in the
+          architecture — external-boundary effects first.
+        </p>
+        <button className="action-btn analyze-btn" onClick={() => void start(pr.id, "context")}>
+          Analyze architecture
+        </button>
+      </div>
+    );
+  }
+
+  if (run.status === "running") {
+    return (
+      <div className="placeholder analysis-running">
+        <span className="sync-dot live" />
+        <div className="progress-ticker">
+          {run.progress.slice(-8).map((message, i) => (
+            <div key={i} className={i === run.progress.slice(-8).length - 1 ? "current" : ""}>
+              {message}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (run.status === "error") {
+    return (
+      <div className="placeholder">
+        <p className="analysis-error">{run.error}</p>
+        <button className="action-btn" onClick={() => void start(pr.id, "context")}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const result = run.result!;
+  if (result.headSha !== pr.headSha) {
+    // Stale — new commits landed since this analysis.
+    return (
+      <div className="placeholder">
+        <p>New commits landed since the last analysis.</p>
+        <button className="action-btn" onClick={() => void start(pr.id, "context")}>
+          Re-analyze
+        </button>
+      </div>
+    );
+  }
+
+  return tab === "assessment" ? (
+    <AssessmentView assessment={result.assessment} onFocusNodes={onFocusNodes} />
+  ) : (
+    <C4Canvas graph={result.graph} highlightIds={highlight} />
+  );
+}
+
 function Detail({
   pr,
   repoPriority,
@@ -144,7 +226,12 @@ function Detail({
   onRepoPriority: (p: RepoPriority) => Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>("assessment");
+  const [highlight, setHighlight] = useState<string[]>([]);
   const { type, clean } = parseTitle(pr.title);
+  const focusNodes = (ids: string[]) => {
+    setHighlight(ids);
+    if (ids.length > 0) setTab("c4");
+  };
   return (
     <div className="detail">
       <div className="crumbs">
@@ -216,17 +303,8 @@ function Detail({
         ))}
       </div>
 
-      {tab === "assessment" && (
-        <div className="placeholder">
-          Architecture-fit assessment lands here next: boundary impacts first, then
-          Well-Architected findings by pillar.
-        </div>
-      )}
-      {tab === "c4" && (
-        <div className="placeholder">
-          The interactive C4 canvas lands here next: affected containers and the boundaries this
-          change crosses, drill-down on demand.
-        </div>
+      {(tab === "assessment" || tab === "c4") && (
+        <AnalysisPanel pr={pr} tab={tab} highlight={highlight} onFocusNodes={focusNodes} />
       )}
       {tab === "diff" && (
         <div className="placeholder">
