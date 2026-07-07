@@ -369,6 +369,52 @@ input:focus-visible {
   padding: 4px 4px;
 }
 
+.filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px 8px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 3px 9px;
+}
+
+.chip .lamp {
+  width: 6px;
+  height: 6px;
+  opacity: 0.4;
+}
+
+.chip:hover {
+  background: var(--ink-2);
+}
+
+.chip.on {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--text) 40%, transparent);
+  background: var(--ink-2);
+}
+
+.chip.on .lamp {
+  opacity: 1;
+}
+
+.hidden-note {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--idle);
+}
+
 .group-header {
   width: 100%;
   display: flex;

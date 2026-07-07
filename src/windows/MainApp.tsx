@@ -19,6 +19,20 @@ const REASONS: { key: PrSource; label: string }[] = [
 type GroupMode = "org" | "repo" | "reason";
 type SortMode = "activity" | "attention" | "repo";
 
+/** "Ready for my review" requirements, one per lamp. */
+type ReadyFilters = { ciPass: boolean; reviewNeeded: boolean; noConflicts: boolean };
+const NO_READY_FILTERS: ReadyFilters = { ciPass: false, reviewNeeded: false, noConflicts: false };
+
+function passesReady(pr: TrackedPr, f: ReadyFilters): boolean {
+  // ciPass admits "no checks configured" (idle) — nothing is blocking.
+  if (f.ciPass && !["ok", "idle"].includes(ciTone(pr))) return false;
+  // reviewNeeded keeps only PRs still awaiting a decision.
+  if (f.reviewNeeded && reviewTone(pr) !== "warn") return false;
+  // noConflicts drops only known-conflicting; UNKNOWN is GitHub still computing.
+  if (f.noConflicts && mergeTone(pr) === "bad") return false;
+  return true;
+}
+
 const orgOf = (repo: string) => repo.split("/")[0] ?? repo;
 const shortRepo = (repo: string) => repo.split("/")[1] ?? repo;
 
@@ -206,6 +220,20 @@ export function MainApp() {
   const [groupMode, setGroupMode] = usePersisted<GroupMode>("cora.groupMode", "org");
   const [sortMode, setSortMode] = usePersisted<SortMode>("cora.sortMode", "attention");
   const [filter, setFilter] = useState("");
+  const [ready, setReady] = useState<ReadyFilters>(() => {
+    try {
+      return { ...NO_READY_FILTERS, ...JSON.parse(localStorage.getItem("cora.readyFilters") ?? "{}") };
+    } catch {
+      return NO_READY_FILTERS;
+    }
+  });
+  const toggleReady = (key: keyof ReadyFilters) => {
+    setReady((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      localStorage.setItem("cora.readyFilters", JSON.stringify(next));
+      return next;
+    });
+  };
   const [collapsed, setCollapsed] = useState<Set<string>>(
     () => new Set(JSON.parse(localStorage.getItem("cora.collapsed") ?? "[]") as string[]),
   );
@@ -252,9 +280,9 @@ export function MainApp() {
     localStorage.setItem("cora.railWidth", String(railWidth));
   };
 
-  const grouped = useMemo(() => {
+  const { grouped, hiddenByReady } = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const visible = prs.filter(
+    const textMatched = prs.filter(
       (pr) =>
         !q ||
         pr.repo.toLowerCase().includes(q) ||
@@ -262,6 +290,8 @@ export function MainApp() {
         pr.author.toLowerCase().includes(q) ||
         String(pr.number).includes(q),
     );
+    const visible = textMatched.filter((pr) => passesReady(pr, ready));
+    const hiddenByReady = textMatched.length - visible.length;
     const sorted = [...visible].sort(SORTERS[sortMode]);
 
     const byKey = new Map<string, { label: string; prs: TrackedPr[] }>();
@@ -285,8 +315,8 @@ export function MainApp() {
     } else {
       entries.sort((a, b) => a.label.localeCompare(b.label));
     }
-    return entries;
-  }, [prs, filter, sortMode, groupMode]);
+    return { grouped: entries, hiddenByReady };
+  }, [prs, filter, sortMode, groupMode, ready]);
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
@@ -338,6 +368,31 @@ export function MainApp() {
             <option value="activity">activity</option>
             <option value="repo">repo</option>
           </select>
+        </div>
+
+        <div className="filter-chips">
+          <button
+            className={`chip${ready.ciPass ? " on" : ""}`}
+            title="Show only PRs whose CI checks pass (or that have no checks)"
+            onClick={() => toggleReady("ciPass")}
+          >
+            <span className="lamp ok" /> ci passing
+          </button>
+          <button
+            className={`chip${ready.reviewNeeded ? " on" : ""}`}
+            title="Show only PRs still awaiting a review decision"
+            onClick={() => toggleReady("reviewNeeded")}
+          >
+            <span className="lamp warn" /> needs review
+          </button>
+          <button
+            className={`chip${ready.noConflicts ? " on" : ""}`}
+            title="Hide PRs with merge conflicts"
+            onClick={() => toggleReady("noConflicts")}
+          >
+            <span className="lamp bad" /> no conflicts
+          </button>
+          {hiddenByReady > 0 && <span className="hidden-note">−{hiddenByReady}</span>}
         </div>
 
         <Legend />
