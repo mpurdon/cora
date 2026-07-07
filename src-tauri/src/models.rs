@@ -86,11 +86,25 @@ pub struct TrackedPr {
     pub last_change_at: String,
 }
 
+/// Per-repo attention weighting. Ignored repos are never tracked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum RepoPriority {
+    High,
+    Normal,
+    Low,
+    Ignored,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub watched_repos: Vec<String>,
+    /// "owner/name" → priority; absent means Normal.
+    #[serde(default)]
+    pub repo_priorities: std::collections::HashMap<String, RepoPriority>,
     #[ts(type = "number")]
     pub poll_interval_secs: u64,
     pub github_graphql_url: String,
@@ -103,6 +117,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             watched_repos: Vec::new(),
+            repo_priorities: std::collections::HashMap::new(),
             poll_interval_secs: 45,
             github_graphql_url: "https://api.github.com/graphql".into(),
             aws_profile: "default".into(),
