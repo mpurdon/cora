@@ -1,0 +1,87 @@
+import { create } from "zustand";
+import type { PollStatus } from "../bindings/PollStatus";
+import type { TrackedPr } from "../bindings/TrackedPr";
+import { ipc, onPollStatus, onPrChanged, onPrsSnapshot } from "../lib/ipc";
+
+/** Ids that changed in the last poll cycle — drives the pulse animation. */
+interface PrState {
+  prs: TrackedPr[];
+  pollStatus: PollStatus | null;
+  recentlyChanged: Set<string>;
+  init: () => Promise<void>;
+}
+
+export const usePrStore = create<PrState>((set, get) => ({
+  prs: [],
+  pollStatus: null,
+  recentlyChanged: new Set(),
+
+  init: async () => {
+    await onPrsSnapshot((prs) => set({ prs }));
+    await onPollStatus((pollStatus) => set({ pollStatus }));
+    await onPrChanged(({ pr }) => {
+      const next = new Set(get().recentlyChanged);
+      next.add(pr.id);
+      set({ recentlyChanged: next });
+      setTimeout(() => {
+        const after = new Set(get().recentlyChanged);
+        after.delete(pr.id);
+        set({ recentlyChanged: after });
+      }, 4000);
+    });
+    set({ prs: await ipc.listPrs() });
+  },
+}));
+
+export function timeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const secs = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (secs < 60) return "now";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+export type DotTone = "ok" | "bad" | "warn" | "idle";
+
+export function ciTone(pr: TrackedPr): DotTone {
+  switch (pr.ciStatus) {
+    case "SUCCESS":
+      return "ok";
+    case "FAILURE":
+    case "ERROR":
+      return "bad";
+    case "PENDING":
+    case "EXPECTED":
+      return "warn";
+    default:
+      return "idle";
+  }
+}
+
+export function reviewTone(pr: TrackedPr): DotTone {
+  switch (pr.reviewDecision) {
+    case "APPROVED":
+      return "ok";
+    case "CHANGES_REQUESTED":
+      return "bad";
+    case "REVIEW_REQUIRED":
+      return "warn";
+    default:
+      return "idle";
+  }
+}
+
+export function mergeTone(pr: TrackedPr): DotTone {
+  switch (pr.mergeable) {
+    case "MERGEABLE":
+      return "ok";
+    case "CONFLICTING":
+      return "bad";
+    default:
+      return "idle";
+  }
+}
