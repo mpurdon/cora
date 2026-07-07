@@ -485,6 +485,73 @@ input:focus-visible {
   color: var(--idle);
 }
 
+.prio-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 13px;
+}
+
+.prio-tag.high {
+  color: var(--ink-0);
+  background: var(--text);
+  font-weight: 700;
+}
+
+.prio-tag.low {
+  color: var(--idle);
+  border: 1px solid var(--line);
+}
+
+.flag-btn {
+  color: var(--idle);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  opacity: 0;
+}
+
+.group-header:hover .flag-btn {
+  opacity: 1;
+}
+
+.flag-btn:hover {
+  color: var(--text);
+  background: var(--ink-0);
+}
+
+.prio-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.prio-select select,
+.prio-row select {
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
+.prio-row {
+  margin-bottom: 6px;
+}
+
+.prio-repo {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* one-time legend explaining the lamps and unread badge */
 .legend {
   margin: 0 10px 8px;

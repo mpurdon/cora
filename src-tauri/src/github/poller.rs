@@ -10,6 +10,7 @@ use crate::error::AppResult;
 use crate::github::{parse_pr, query::{split_by_alias, GraphQlClient, PollRequest}};
 use crate::models::{
     compute_changes, events, ChangeKind, PollStatus, PrChangedEvent, PrInfo, PrSource,
+    RepoPriority,
 };
 use crate::secrets;
 use crate::store::Store;
@@ -113,6 +114,13 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
         .collect();
 
     for (id, (info, sources)) in &merged {
+        // Ignored repos never enter (or stay in) the tracked set.
+        if settings.repo_priorities.get(&info.repo) == Some(&RepoPriority::Ignored) {
+            if existing.contains_key(id) {
+                store.untrack(id)?;
+            }
+            continue;
+        }
         let changes = match existing.get(id) {
             Some(prev) => compute_changes(&prev.info, info),
             None => vec![ChangeKind::New],

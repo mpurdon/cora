@@ -106,6 +106,36 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             onBlur={() => void saveRepos()}
           />
         </div>
+        {Object.keys(settings.repoPriorities).length > 0 && (
+          <div className="field">
+            <label>Repository priorities</label>
+            {Object.entries(settings.repoPriorities)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([repo, prio]) => (
+                <div key={repo} className="row prio-row">
+                  <span className="mono prio-repo">{repo}</span>
+                  <select
+                    value={prio}
+                    onChange={(e) => {
+                      const next = { ...settings.repoPriorities };
+                      if (e.target.value === "normal") delete next[repo];
+                      else next[repo] = e.target.value as typeof prio;
+                      void saveSettings({ repoPriorities: next });
+                    }}
+                  >
+                    <option value="high">high</option>
+                    <option value="normal">normal</option>
+                    <option value="low">low</option>
+                    <option value="ignored">ignored</option>
+                  </select>
+                </div>
+              ))}
+            <div className="field-hint">
+              Flag repos from the PR list with ⚑ (group by repo). Ignored repos are never
+              tracked; setting one back to normal removes it from this list.
+            </div>
+          </div>
+        )}
       </section>
 
       <section>

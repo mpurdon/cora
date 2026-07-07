@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PrSource } from "../bindings/PrSource";
+import type { RepoPriority } from "../bindings/RepoPriority";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { ipc, onFocusPr } from "../lib/ipc";
@@ -18,6 +19,9 @@ const REASONS: { key: PrSource; label: string }[] = [
 
 type GroupMode = "org" | "repo" | "reason" | "type";
 type SortMode = "activity" | "attention" | "repo";
+
+const PRIORITY_WEIGHT: Record<RepoPriority, number> = { high: 0, normal: 1, low: 2, ignored: 3 };
+const PRIORITY_CYCLE: RepoPriority[] = ["normal", "high", "low", "ignored"];
 
 /** "Ready for my review" requirements, one per lamp. */
 type ReadyFilters = { ciPass: boolean; reviewNeeded: boolean; noConflicts: boolean };
@@ -130,7 +134,15 @@ function TrackPrInput({ onDone }: { onDone: () => void }) {
 
 type Tab = "assessment" | "c4" | "diff";
 
-function Detail({ pr }: { pr: TrackedPr }) {
+function Detail({
+  pr,
+  repoPriority,
+  onRepoPriority,
+}: {
+  pr: TrackedPr;
+  repoPriority: RepoPriority;
+  onRepoPriority: (p: RepoPriority) => Promise<void>;
+}) {
   const [tab, setTab] = useState<Tab>("assessment");
   const { type, clean } = parseTitle(pr.title);
   return (
@@ -170,6 +182,18 @@ function Detail({ pr }: { pr: TrackedPr }) {
         <button className="action-btn" onClick={() => void ipc.untrackPr(pr.id)}>
           Untrack
         </button>
+        <label className="prio-select">
+          repo priority
+          <select
+            value={repoPriority}
+            onChange={(e) => void onRepoPriority(e.target.value as RepoPriority)}
+          >
+            <option value="high">high</option>
+            <option value="normal">normal</option>
+            <option value="low">low</option>
+            <option value="ignored">ignored</option>
+          </select>
+        </label>
       </div>
 
       <div className="tabs" role="tablist">
@@ -236,6 +260,23 @@ export function MainApp() {
       return next;
     });
   };
+
+  const [priorities, setPriorities] = useState<Record<string, RepoPriority>>({});
+  useEffect(() => {
+    void ipc.getSettings().then((s) => setPriorities(s.repoPriorities));
+  }, [showSettings]); // re-read after the settings page closes
+  const prioOf = useCallback(
+    (repo: string): RepoPriority => priorities[repo] ?? "normal",
+    [priorities],
+  );
+  const setRepoPriority = async (repo: string, p: RepoPriority) => {
+    const s = await ipc.getSettings();
+    const next = { ...s.repoPriorities };
+    if (p === "normal") delete next[repo];
+    else next[repo] = p;
+    await ipc.setSettings({ ...s, repoPriorities: next });
+    setPriorities(next);
+  };
   const [collapsed, setCollapsed] = useState<Set<string>>(
     () => new Set(JSON.parse(localStorage.getItem("cora.collapsed") ?? "[]") as string[]),
   );
@@ -292,9 +333,14 @@ export function MainApp() {
         pr.author.toLowerCase().includes(q) ||
         String(pr.number).includes(q),
     );
-    const visible = textMatched.filter((pr) => passesReady(pr, ready));
-    const hiddenByReady = textMatched.length - visible.length;
-    const sorted = [...visible].sort(SORTERS[sortMode]);
+    const unignored = textMatched.filter((pr) => prioOf(pr.repo) !== "ignored");
+    const visible = unignored.filter((pr) => passesReady(pr, ready));
+    const hiddenByReady = unignored.length - visible.length;
+    const sorted = [...visible].sort(
+      (a, b) =>
+        PRIORITY_WEIGHT[prioOf(a.repo)] - PRIORITY_WEIGHT[prioOf(b.repo)] ||
+        SORTERS[sortMode](a, b),
+    );
 
     const byKey = new Map<string, { label: string; prs: TrackedPr[] }>();
     for (const pr of sorted) {
@@ -311,6 +357,9 @@ export function MainApp() {
       byKey.set(key, bucket);
     }
     const entries = [...byKey.entries()].map(([key, v]) => ({ key, ...v }));
+    // High-priority repos surface their groups first in every mode.
+    const groupWeight = (g: { prs: TrackedPr[] }) =>
+      Math.min(...g.prs.map((p) => PRIORITY_WEIGHT[prioOf(p.repo)]));
     if (groupMode === "reason") {
       entries.sort(
         (a, b) =>
@@ -318,14 +367,16 @@ export function MainApp() {
       );
     } else if (groupMode === "type") {
       // known types alphabetical, "unknown" last
-      entries.sort((a, b) =>
-        a.key === "unknown" ? 1 : b.key === "unknown" ? -1 : a.label.localeCompare(b.label),
+      entries.sort(
+        (a, b) =>
+          groupWeight(a) - groupWeight(b) ||
+          (a.key === "unknown" ? 1 : b.key === "unknown" ? -1 : a.label.localeCompare(b.label)),
       );
     } else {
-      entries.sort((a, b) => a.label.localeCompare(b.label));
+      entries.sort((a, b) => groupWeight(a) - groupWeight(b) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
-  }, [prs, filter, sortMode, groupMode, ready]);
+  }, [prs, filter, sortMode, groupMode, ready, prioOf]);
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
@@ -416,6 +467,7 @@ export function MainApp() {
           {grouped.map((group) => {
             const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
             const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
+            const repoPrio = groupMode === "repo" ? prioOf(group.key) : null;
             return (
               <div key={group.key} className="rail-group">
                 <button
@@ -426,7 +478,28 @@ export function MainApp() {
                   <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
                   <span className="eyebrow">{group.label}</span>
                   <span className="group-count">{group.prs.length}</span>
+                  {repoPrio && repoPrio !== "normal" && (
+                    <span className={`prio-tag ${repoPrio}`}>{repoPrio}</span>
+                  )}
                   <span className="spacer" />
+                  {groupMode === "repo" && (
+                    <span
+                      className="flag-btn"
+                      role="button"
+                      title={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const next =
+                          PRIORITY_CYCLE[
+                            (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
+                              PRIORITY_CYCLE.length
+                          ];
+                        void setRepoPriority(group.key, next);
+                      }}
+                    >
+                      ⚑
+                    </span>
+                  )}
                   {unreadSum > 0 && (
                     <span
                       className="unread-count"
@@ -495,7 +568,11 @@ export function MainApp() {
         {showSettings ? (
           <SettingsView onClose={() => setShowSettings(false)} />
         ) : selected ? (
-          <Detail pr={selected} />
+          <Detail
+            pr={selected}
+            repoPriority={prioOf(selected.repo)}
+            onRepoPriority={(p) => setRepoPriority(selected.repo, p)}
+          />
         ) : (
           <div className="empty-detail">Select a pull request — or ⚙ to connect GitHub.</div>
         )}
