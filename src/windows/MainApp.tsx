@@ -122,7 +122,7 @@ function RefreshPrButton({ prId }: { prId: string }) {
   const [busy, setBusy] = useState(false);
   return (
     <button
-      className={`icon-btn${busy ? " spinning" : ""}`}
+      className={`icon-btn refresh-btn${busy ? " spinning" : ""}`}
       title="Refresh this PR from GitHub"
       disabled={busy}
       onClick={() => {
@@ -394,8 +394,8 @@ function AnalysisPanel({
         </span>
         <span className="spacer" />
         <RefreshPrButton prId={pr.id} />
-        <button className="icon-btn rerun-btn" title="Re-run the analysis" onClick={retry}>
-          ↻
+        <button className="icon-btn" title="Re-run the analysis" onClick={retry}>
+          ▶
         </button>
         <button className="action-btn" onClick={() => setDrawerOpen(true)}>
           Activity ›

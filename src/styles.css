@@ -894,11 +894,11 @@ input:focus-visible {
   opacity: 0.45;
 }
 
-.rerun-btn {
+.refresh-btn {
   color: var(--ok);
 }
 
-.rerun-btn:hover {
+.refresh-btn:hover {
   background: color-mix(in srgb, var(--ok) 12%, transparent);
   color: var(--ok);
 }
