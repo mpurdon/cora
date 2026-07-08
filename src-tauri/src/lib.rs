@@ -101,6 +101,7 @@ pub fn run() {
             commands::aws_sso_login,
             commands::check_aws,
             commands::take_pending_focus,
+            commands::open_notification_settings,
             commands::log_frontend_error,
             commands::get_dev_logs,
             commands::clear_dev_logs,

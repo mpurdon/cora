@@ -9,6 +9,7 @@ import { ActivityDrawer, formatTokens } from "../components/analysis/ActivityDra
 import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
+import { DiffPeek } from "../components/analysis/DiffPeek";
 import { DiffView } from "../components/analysis/DiffView";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { listen } from "@tauri-apps/api/event";
@@ -224,6 +225,7 @@ function AnalysisPanel({
   }, [pr.id, pr.headSha, frame.level, frame.focus, stack.length, init, ensure]);
 
   const [pendingDrill, setPendingDrill] = useState<C4Node | null>(null);
+  const [diffPeek, setDiffPeek] = useState<C4Node | null>(null);
 
   const pushDrill = (node: C4Node, next: AnalysisLevel) => {
     setPendingDrill(null);
@@ -414,7 +416,16 @@ function AnalysisPanel({
             graph={result.graph}
             highlightIds={highlight}
             onNodeDoubleClick={drillInto}
+            onNodeClick={(node) => {
+              // Single click peeks at the node's diff; boundary-ish kinds
+              // (people, external systems) have nothing to peek at.
+              if (node.kind === "person" || node.kind === "external-system") return;
+              setDiffPeek(node);
+            }}
           />
+          {diffPeek && (
+            <DiffPeek prId={pr.id} node={diffPeek} onClose={() => setDiffPeek(null)} />
+          )}
           {pendingDrill && (
             <div className="drill-confirm">
               <p>
