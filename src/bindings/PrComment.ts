@@ -3,4 +3,4 @@
 /**
  * A single comment on a PR (conversation or review thread).
  */
-export type PrComment = { id: string, author: string, body: string, createdAt: string, url: string, };
+export type PrComment = { id: string, author: string, isBot: boolean, body: string, createdAt: string, url: string, };
