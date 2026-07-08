@@ -21,7 +21,16 @@ use store::Store;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            // Remember positions/sizes, but let our own setting govern
+            // whether the callout is visible at launch.
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -121,7 +130,16 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             "poll-now" => {
                 app.state::<PollTrigger>().0.notify_one();
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                // Tray quit bypasses window close events — flush positions
+                // (callout included) so they restore next launch.
+                use tauri_plugin_window_state::AppHandleExt;
+                let _ = app.save_window_state(
+                    tauri_plugin_window_state::StateFlags::all()
+                        - tauri_plugin_window_state::StateFlags::VISIBLE,
+                );
+                app.exit(0);
+            }
             _ => {}
         })
         .build(app)?;
