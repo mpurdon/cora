@@ -54,13 +54,24 @@ pub struct PrInfo {
     #[serde(default)]
     #[ts(type = "number")]
     pub total_comments: i64,
-    /// Logins of the most recent commenters, oldest first; bot accounts are
-    /// normalized to end in "[bot]" so change detection can skip automation.
+    /// The most recent comments, oldest first — drives the human-comment
+    /// attention signal and reply notifications.
     #[serde(default)]
-    pub recent_comment_authors: Vec<String>,
+    pub recent_comments: Vec<RecentComment>,
     pub head_sha: String,
     pub updated_at: String,
     pub labels: Vec<Label>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentComment {
+    pub id: String,
+    pub author: String,
+    pub is_bot: bool,
+    /// First ~120 chars, for notification bodies.
+    pub snippet: String,
 }
 
 /// What changed between two observations of the same PR.
@@ -300,16 +311,17 @@ pub mod events {
     pub const FOCUS_PR: &str = "focus:pr";
 }
 
-/// Are any of the `delta` newest commenters human? Automation (SonarQube,
-/// CI bots) shouldn't light up the attention signal. When we can't see far
-/// enough back, assume human rather than silently dropping a real comment.
-fn has_human_among_latest(authors: &[String], delta: usize) -> bool {
-    if authors.is_empty() || delta > authors.len() {
-        return true;
-    }
-    authors[authors.len() - delta..]
-        .iter()
-        .any(|a| !a.ends_with("[bot]"))
+/// The newest human comment among the `delta` most recent, if any.
+/// Automation (SonarQube, CI bots) shouldn't light up the attention signal.
+/// When we can't see far enough back, fall back to the newest human we have —
+/// better a slightly-off notification than a silently dropped one.
+pub fn latest_human_comment(comments: &[RecentComment], delta: usize) -> Option<&RecentComment> {
+    let window = if delta > comments.len() {
+        comments
+    } else {
+        &comments[comments.len() - delta..]
+    };
+    window.iter().rev().find(|c| !c.is_bot)
 }
 
 /// Pure diff between two observations; drives events and unread badges.
@@ -336,10 +348,13 @@ pub fn compute_changes(old: &PrInfo, new: &PrInfo) -> Vec<ChangeKind> {
     // rows stored before comment tracking existed — don't spam on upgrade.
     if new.total_comments > old.total_comments
         && !(old.total_comments == 0 && new.total_comments > 1)
-        && has_human_among_latest(
-            &new.recent_comment_authors,
-            (new.total_comments - old.total_comments) as usize,
-        )
+        // No visibility into recent authors → assume human rather than drop.
+        && (new.recent_comments.is_empty()
+            || latest_human_comment(
+                &new.recent_comments,
+                (new.total_comments - old.total_comments) as usize,
+            )
+            .is_some())
     {
         changes.push(ChangeKind::NewComments);
     }
@@ -373,7 +388,7 @@ mod tests {
             deletions: 1,
             changed_files: 1,
             total_comments: 0,
-            recent_comment_authors: vec![],
+            recent_comments: vec![],
             head_sha: "abc".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             labels: vec![],

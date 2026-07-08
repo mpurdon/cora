@@ -41,7 +41,7 @@ pub fn parse_pr(v: &Value) -> Option<PrInfo> {
         deletions: v.get("deletions").and_then(Value::as_i64).unwrap_or(0),
         changed_files: v.get("changedFiles").and_then(Value::as_i64).unwrap_or(0),
         total_comments: v.get("totalCommentsCount").and_then(Value::as_i64).unwrap_or(0),
-        recent_comment_authors: v
+        recent_comments: v
             .pointer("/recentComments/nodes")
             .and_then(Value::as_array)
             .map(|nodes| {
@@ -50,11 +50,14 @@ pub fn parse_pr(v: &Value) -> Option<PrInfo> {
                     .filter_map(|c| {
                         let login = c.pointer("/author/login").and_then(Value::as_str)?;
                         let is_bot = c.pointer("/author/__typename").and_then(Value::as_str)
-                            == Some("Bot");
-                        Some(if is_bot && !login.ends_with("[bot]") {
-                            format!("{login}[bot]")
-                        } else {
-                            login.to_string()
+                            == Some("Bot")
+                            || login.ends_with("[bot]");
+                        let body = c.get("body").and_then(Value::as_str).unwrap_or("");
+                        Some(crate::models::RecentComment {
+                            id: c.get("id")?.as_str()?.to_string(),
+                            author: login.to_string(),
+                            is_bot,
+                            snippet: body.chars().take(120).collect(),
                         })
                     })
                     .collect()

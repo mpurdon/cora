@@ -333,6 +333,33 @@ pub fn run_analysis(
         }
         match outcome {
             Ok(result) => {
+                // External-boundary findings are the product's highest signal
+                // — worth a native ping when the window isn't focused.
+                let externals = result
+                    .assessment
+                    .boundary_impacts
+                    .iter()
+                    .filter(|i| i.kind == crate::analysis::types::ImpactKind::External)
+                    .count();
+                if externals > 0 {
+                    if let Ok(Some(pr)) = app.state::<Arc<Store>>().get_pr(&result.pr_id) {
+                        crate::notify::send(
+                            &app,
+                            &format!(
+                                "{} external-boundary impact{} in {}#{}",
+                                externals,
+                                if externals == 1 { "" } else { "s" },
+                                pr.info.repo.split('/').nth(1).unwrap_or(&pr.info.repo),
+                                pr.info.number
+                            ),
+                            &result.assessment.summary,
+                            Some(crate::notify::FocusTarget {
+                                pr_id: result.pr_id.clone(),
+                                comment_id: None,
+                            }),
+                        );
+                    }
+                }
                 let _ = app.emit(analysis_events::ANALYSIS_COMPLETE, result);
             }
             Err(e) => {
@@ -755,6 +782,25 @@ pub fn log_frontend_error(app: AppHandle, message: String) {
             let _ = writeln!(f, "{} {}", chrono::Utc::now().to_rfc3339(), message);
         }
     }
+}
+
+/// Claim the pending notification deep-link, if fresh. Called by the main
+/// window when it gains focus.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingFocusPayload {
+    pub pr_id: String,
+    pub comment_id: Option<String>,
+}
+
+#[tauri::command]
+pub fn take_pending_focus(
+    pending: State<'_, crate::notify::PendingFocus>,
+) -> Option<PendingFocusPayload> {
+    pending.take().map(|t| PendingFocusPayload {
+        pr_id: t.pr_id,
+        comment_id: t.comment_id,
+    })
 }
 
 // -- developer mode ---------------------------------------------------------------

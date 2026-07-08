@@ -2310,6 +2310,66 @@ input:focus-visible {
   font-style: italic;
 }
 
+/* ---------- onboarding ---------- */
+
+.onboarding {
+  max-width: 520px;
+  margin: 80px auto 0;
+  padding: 0 32px;
+}
+
+.onboarding h1 {
+  font-size: 20px;
+  font-weight: 650;
+  margin-bottom: 8px;
+}
+
+.onboarding-steps {
+  list-style: none;
+  counter-reset: step;
+  margin: 20px 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.onboarding-steps li {
+  counter-increment: step;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 34px;
+  position: relative;
+}
+
+.onboarding-steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-family: var(--mono);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.onboarding-step-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.onboarding-step-body {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 /* ---------- history / audit ---------- */
 
 .audit-entry {

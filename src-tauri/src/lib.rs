@@ -4,6 +4,7 @@ mod devlog;
 mod error;
 mod github;
 mod models;
+mod notify;
 mod secrets;
 mod store;
 
@@ -21,6 +22,7 @@ use store::Store;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             // Remember positions/sizes, but let our own setting govern
             // whether the callout is visible at launch.
@@ -41,6 +43,7 @@ pub fn run() {
                 std::collections::HashSet::new(),
             )));
             app.manage(devlog::DevLog::new());
+            app.manage(notify::PendingFocus::new());
 
             // Respect the "open callout at launch" preference.
             let show_callout = app
@@ -97,6 +100,7 @@ pub fn run() {
             commands::get_pr_diff,
             commands::aws_sso_login,
             commands::check_aws,
+            commands::take_pending_focus,
             commands::log_frontend_error,
             commands::get_dev_logs,
             commands::clear_dev_logs,

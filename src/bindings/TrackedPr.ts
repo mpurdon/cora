@@ -3,6 +3,7 @@ import type { ChangeKind } from "./ChangeKind";
 import type { Label } from "./Label";
 import type { PrPriority } from "./PrPriority";
 import type { PrSource } from "./PrSource";
+import type { RecentComment } from "./RecentComment";
 
 /**
  * A PR plus Cora-local tracking state. This is what both windows render.
@@ -41,7 +42,7 @@ mergeable: string, additions: number, deletions: number, changedFiles: number,
  */
 totalComments: number, 
 /**
- * Logins of the most recent commenters, oldest first; bot accounts are
- * normalized to end in "[bot]" so change detection can skip automation.
+ * The most recent comments, oldest first — drives the human-comment
+ * attention signal and reply notifications.
  */
-recentCommentAuthors: Array<string>, headSha: string, updatedAt: string, labels: Array<Label>, };
+recentComments: Array<RecentComment>, headSha: string, updatedAt: string, labels: Array<Label>, };
