@@ -68,6 +68,7 @@ pub fn run() {
             commands::clear_github_pat,
             commands::list_prs,
             commands::mark_pr_read,
+            commands::mark_pr_read_kinds,
             commands::set_pr_muted,
             commands::set_pr_priority,
             commands::get_pr_comments,

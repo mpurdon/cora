@@ -206,6 +206,24 @@ impl Store {
         Ok(())
     }
 
+    /// Acknowledge only specific change kinds — engagement-based clearing
+    /// (reading comments clears new-comments, viewing the diff clears
+    /// new-commits) instead of wiping everything on selection.
+    pub fn mark_read_kinds(&self, id: &str, kinds: &[ChangeKind]) -> AppResult<()> {
+        let Some(pr) = self.get_pr(id)? else { return Ok(()) };
+        let remaining: Vec<ChangeKind> = pr
+            .unread
+            .into_iter()
+            .filter(|k| !kinds.contains(k))
+            .collect();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE prs SET unread = ?2 WHERE id = ?1",
+            params![id, serde_json::to_string(&remaining).unwrap()],
+        )?;
+        Ok(())
+    }
+
     pub fn set_muted(&self, id: &str, muted: bool) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("UPDATE prs SET muted = ?2 WHERE id = ?1", params![id, muted])?;
