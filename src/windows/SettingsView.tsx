@@ -509,11 +509,21 @@ function AwsPane({ settings, save }: PaneProps) {
 
       <Field
         label="Model id or inference-profile ARN"
-        hint="An application-inference-profile ARN or a plain Bedrock model id."
+        hint="Used for the Context/Container analysis — the full-architecture pass."
       >
         <input
           value={settings.bedrockModelId}
           onChange={(e) => void save({ bedrockModelId: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Drill-down model"
+        hint="Faster model for Component/Code drill-downs (code-level, not system-wide). Empty = use the main model."
+      >
+        <input
+          value={settings.bedrockDrillModelId}
+          onChange={(e) => void save({ bedrockDrillModelId: e.target.value })}
         />
       </Field>
     </section>

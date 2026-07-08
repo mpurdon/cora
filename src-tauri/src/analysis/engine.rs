@@ -291,6 +291,16 @@ pub async fn run(
         settings.custom_system_prompt.clone()
     };
 
+    // Drill-downs analyze code, not system-wide architecture — the faster
+    // tier fits and roughly halves per-turn latency.
+    let model_id = if level == AnalysisLevel::Context || settings.bedrock_drill_model_id.is_empty()
+    {
+        settings.bedrock_model_id.clone()
+    } else {
+        settings.bedrock_drill_model_id.clone()
+    };
+    devlog::debug(app, "bedrock", format!("model for {} level: {model_id}", level.as_str()));
+
     let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
     if !settings.aws_profile.is_empty() {
         loader = loader.profile_name(&settings.aws_profile);
@@ -373,7 +383,7 @@ pub async fn run(
             };
             let attempt = client
                 .converse()
-                .model_id(&settings.bedrock_model_id)
+                .model_id(&model_id)
                 .set_system(Some(system_blocks))
                 .set_messages(Some(request_messages))
                 .tool_config(config)

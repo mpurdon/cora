@@ -463,6 +463,12 @@ pub fn set_pr_priority(
 /// On-demand refresh of a single PR (the ⟳ button in the PR panel).
 #[tauri::command]
 pub async fn refresh_pr(app: AppHandle, pr_id: String) -> AppResult<TrackedPr> {
+    refresh_pr_inner(&app, &pr_id).await
+}
+
+async fn refresh_pr_inner(app: &AppHandle, pr_id: &str) -> AppResult<TrackedPr> {
+    let app = app.clone();
+    let pr_id = pr_id.to_string();
     let store = app.state::<Arc<Store>>().inner().clone();
     let existing = store
         .get_pr(&pr_id)?
@@ -535,6 +541,151 @@ pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) ->
             &serde_json::json!({ "threadId": thread_id, "body": body }),
         )
         .await?;
+    Ok(())
+}
+
+/// Requested reviewers + latest review states, for the detail header strip.
+#[tauri::command]
+pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::models::PrReviews> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let (owner, name) = pr.info.repo.split_once('/').unwrap();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let data = client
+        .run(
+            "query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  reviewRequests(first: 20) {
+                    nodes { requestedReviewer {
+                      ... on User { login }
+                      ... on Team { name }
+                    } }
+                  }
+                  latestReviews(first: 30) {
+                    nodes { author { login } state submittedAt }
+                  }
+                }
+              }
+            }",
+            &serde_json::json!({ "owner": owner, "name": name, "number": pr.info.number }),
+        )
+        .await?;
+
+    let requested = data
+        .pointer("/repository/pullRequest/reviewRequests/nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| {
+                    n.pointer("/requestedReviewer/login")
+                        .or_else(|| n.pointer("/requestedReviewer/name"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let reviews = data
+        .pointer("/repository/pullRequest/latestReviews/nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| {
+                    Some(crate::models::ReviewSummary {
+                        author: n
+                            .pointer("/author/login")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("ghost")
+                            .to_string(),
+                        state: n.get("state")?.as_str()?.to_string(),
+                        submitted_at: n
+                            .get("submittedAt")
+                            .and_then(serde_json::Value::as_str)
+                            .map(String::from),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(crate::models::PrReviews { requested, reviews })
+}
+
+/// Merge / close / reopen — the PR lifecycle controls. All audited.
+#[tauri::command]
+pub async fn merge_pr(app: AppHandle, pr_id: String, method: String) -> AppResult<()> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let merge_method = match method.as_str() {
+        "merge" => "MERGE",
+        "rebase" => "REBASE",
+        _ => "SQUASH",
+    };
+    let doc = format!(
+        "mutation($prId: ID!) {{
+           mergePullRequest(input: {{ pullRequestId: $prId, mergeMethod: {merge_method} }}) {{
+             clientMutationId
+           }}
+         }}"
+    );
+    client.run(&doc, &serde_json::json!({ "prId": pr_id })).await?;
+    let label = pr_label(&store, &pr_id);
+    store.add_audit("merged", &pr_id, &label, "open", &format!("merged ({method})"))?;
+    refresh_pr_inner(&app, &pr_id).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    client
+        .run(
+            "mutation($prId: ID!) {
+               closePullRequest(input: { pullRequestId: $prId }) { clientMutationId }
+             }",
+            &serde_json::json!({ "prId": pr_id }),
+        )
+        .await?;
+    let label = pr_label(&store, &pr_id);
+    store.add_audit("closed", &pr_id, &label, "open", "closed")?;
+    refresh_pr_inner(&app, &pr_id).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reopen_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    client
+        .run(
+            "mutation($prId: ID!) {
+               reopenPullRequest(input: { pullRequestId: $prId }) { clientMutationId }
+             }",
+            &serde_json::json!({ "prId": pr_id }),
+        )
+        .await?;
+    let label = pr_label(&store, &pr_id);
+    store.add_audit("reopened", &pr_id, &label, "closed", "open")?;
+    refresh_pr_inner(&app, &pr_id).await?;
     Ok(())
 }
 
