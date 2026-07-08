@@ -192,6 +192,35 @@ pub struct AnalysisProgress {
     pub message: String,
 }
 
+/// Coarse failure classes the UI can build recovery flows around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum AnalysisErrorKind {
+    AwsAuth,
+    GithubAuth,
+    Other,
+}
+
+pub fn classify_error(message: &str) -> AnalysisErrorKind {
+    let lower = message.to_lowercase();
+    if lower.contains("github token") {
+        return AnalysisErrorKind::GithubAuth;
+    }
+    if lower.contains("credential")
+        || lower.contains("sso")
+        || lower.contains("expired")
+        || lower.contains("dispatch failure")
+        || lower.contains("unauthorized")
+        || lower.contains("access denied")
+        || lower.contains("security token")
+        || lower.contains("forbidden")
+    {
+        return AnalysisErrorKind::AwsAuth;
+    }
+    AnalysisErrorKind::Other
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -199,6 +228,7 @@ pub struct AnalysisError {
     pub pr_id: String,
     pub level: AnalysisLevel,
     pub error: String,
+    pub kind: AnalysisErrorKind,
 }
 
 pub mod events {
