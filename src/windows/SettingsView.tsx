@@ -1,218 +1,422 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { ipc } from "../lib/ipc";
+import { usePrStore } from "../state/prStore";
+
+type Pane = "general" | "github" | "repos" | "aws";
+
+const PANES: { key: Pane; label: string; glyph: string }[] = [
+  { key: "general", label: "General", glyph: "◐" },
+  { key: "github", label: "GitHub", glyph: "⎇" },
+  { key: "repos", label: "Repositories", glyph: "▤" },
+  { key: "aws", label: "AWS", glyph: "▲" },
+];
+
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      {children}
+      {hint && <div className="field-hint">{hint}</div>}
+    </div>
+  );
+}
 
 export function SettingsView({ onClose }: { onClose: () => void }) {
+  const [pane, setPane] = useState<Pane>("github");
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [patPresent, setPatPresent] = useState(false);
-  const [patDraft, setPatDraft] = useState("");
-  const [reposDraft, setReposDraft] = useState("");
-  const [saved, setSaved] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const prs = usePrStore((s) => s.prs);
 
   useEffect(() => {
-    void (async () => {
-      const s = await ipc.getSettings();
-      setSettings(s);
-      setReposDraft(s.watchedRepos.join("\n"));
-      setPatPresent(await ipc.githubPatPresent());
-    })();
+    void ipc.getSettings().then(setSettings);
   }, []);
 
   if (!settings) return null;
 
-  const flash = (msg: string) => {
-    setSaved(msg);
-    setError(null);
-    setTimeout(() => setSaved(null), 2500);
+  const save = async (patch: Partial<Settings>) => {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    try {
+      await ipc.setSettings(next);
+      setError(null);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1800);
+    } catch (e) {
+      setError(String(e));
+    }
   };
+
+  return (
+    <div className="settings-shell">
+      <nav className="settings-nav">
+        <span className="eyebrow settings-title">Settings</span>
+        {PANES.map((p) => (
+          <button
+            key={p.key}
+            className={`settings-nav-item${pane === p.key ? " active" : ""}`}
+            onClick={() => setPane(p.key)}
+          >
+            <span className="glyph">{p.glyph}</span>
+            {p.label}
+          </button>
+        ))}
+        <div className="settings-nav-footer">
+          {saved && <span className="save-note">saved</span>}
+          {error && <span className="settings-error">{error}</span>}
+          <button className="action-btn" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </nav>
+
+      <div className="settings-pane">
+        {pane === "general" && <GeneralPane settings={settings} save={save} />}
+        {pane === "github" && <GitHubPane settings={settings} save={save} />}
+        {pane === "repos" && (
+          <ReposPane settings={settings} save={save} activeRepos={prs.map((p) => p.repo)} />
+        )}
+        {pane === "aws" && <AwsPane settings={settings} save={save} />}
+      </div>
+    </div>
+  );
+}
+
+type PaneProps = { settings: Settings; save: (p: Partial<Settings>) => Promise<void> };
+
+// ---------------------------------------------------------------- general
+
+function GeneralPane({ settings, save }: PaneProps) {
+  const [legendReset, setLegendReset] = useState(false);
+  return (
+    <section className="pane-section">
+      <h2>General</h2>
+      <p className="pane-intro">How CORA behaves day to day.</p>
+
+      <Field label="Poll interval (seconds)" hint="How often CORA checks GitHub for changes. Minimum 15.">
+        <input
+          type="number"
+          min={15}
+          className="input-narrow"
+          value={settings.pollIntervalSecs}
+          onChange={(e) => void save({ pollIntervalSecs: Math.max(15, Number(e.target.value) || 45) })}
+        />
+      </Field>
+
+      <Field label="Symbol legend" hint="Show the lamps/markers explainer card again in the PR list.">
+        <button
+          className="action-btn"
+          disabled={legendReset}
+          onClick={() => {
+            localStorage.removeItem("cora.legendDismissed");
+            setLegendReset(true);
+          }}
+        >
+          {legendReset ? "Will show on next visit" : "Show legend again"}
+        </button>
+      </Field>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- github
+
+function GitHubPane({ settings, save }: PaneProps) {
+  const [patPresent, setPatPresent] = useState(false);
+  const [patDraft, setPatDraft] = useState("");
+  const [patError, setPatError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void ipc.githubPatPresent().then(setPatPresent);
+  }, []);
 
   const savePat = async () => {
     try {
       await ipc.setGithubPat(patDraft);
       setPatDraft("");
       setPatPresent(true);
-      flash("token stored in Keychain");
+      setPatError(null);
     } catch (e) {
-      setError(String(e));
+      setPatError(String(e));
     }
   };
-
-  const saveSettings = async (patch: Partial<Settings>) => {
-    const next = { ...settings, ...patch };
-    setSettings(next);
-    try {
-      await ipc.setSettings(next);
-      flash("saved");
-    } catch (e) {
-      setError(String(e));
-    }
-  };
-
-  const saveRepos = () =>
-    saveSettings({
-      watchedRepos: reposDraft
-        .split(/[\n,\s]+/)
-        .map((r) => r.trim())
-        .filter((r) => /^[\w.-]+\/[\w.-]+$/.test(r)),
-    });
 
   return (
-    <div className="settings">
-      <h1>Settings</h1>
+    <section className="pane-section">
+      <h2>GitHub</h2>
+      <p className="pane-intro">
+        How CORA talks to GitHub. The token lives in the macOS Keychain and never leaves the
+        Rust core.
+      </p>
 
-      <section>
-        <span className="eyebrow">GitHub</span>
-        <div className="field">
-          <label htmlFor="pat">Personal access token</label>
-          <div className="row">
-            <input
-              id="pat"
-              type="password"
-              placeholder={patPresent ? "••••••••  (stored in Keychain)" : "ghp_… or github_pat_…"}
-              value={patDraft}
-              onChange={(e) => setPatDraft(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && patDraft && void savePat()}
-            />
-            <button className="action-btn" disabled={!patDraft} onClick={() => void savePat()}>
-              Save
-            </button>
-            {patPresent && <span className="pat-ok">✓ connected</span>}
-          </div>
-          <div className="field-hint">
-            Needs repo read scope. The token is stored in the macOS Keychain and never leaves the
-            Rust core.
-          </div>
-        </div>
-        <div className="field">
-          <label htmlFor="gql">GraphQL endpoint</label>
+      <Field
+        label="Personal access token"
+        hint={patError ?? "Needs repo read scope (repo or fine-grained contents/pull-requests read)."}
+      >
+        <div className="row">
           <input
-            id="gql"
-            value={settings.githubGraphqlUrl}
-            onChange={(e) => setSettings({ ...settings, githubGraphqlUrl: e.target.value })}
-            onBlur={() => void saveSettings({ githubGraphqlUrl: settings.githubGraphqlUrl })}
+            type="password"
+            placeholder={patPresent ? "••••••••  (stored in Keychain)" : "ghp_… or github_pat_…"}
+            value={patDraft}
+            onChange={(e) => setPatDraft(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && patDraft && void savePat()}
           />
-          <div className="field-hint">
-            For GitHub Enterprise, use https://&lt;host&gt;/api/graphql.
-          </div>
+          <button className="action-btn" disabled={!patDraft} onClick={() => void savePat()}>
+            Save
+          </button>
+          {patPresent && <span className="pat-ok">✓ connected</span>}
         </div>
-        <div className="field">
-          <label htmlFor="repos">Watched repositories (owner/name, one per line)</label>
-          <input
-            id="repos"
-            placeholder="acme/api  acme/web"
-            value={reposDraft}
-            onChange={(e) => setReposDraft(e.target.value)}
-            onBlur={() => void saveRepos()}
-          />
-        </div>
-        {Object.keys(settings.repoPriorities).length > 0 && (
-          <div className="field">
-            <label>Repository priorities</label>
-            {Object.entries(settings.repoPriorities)
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([repo, prio]) => (
-                <div key={repo} className="row prio-row">
-                  <span className="mono prio-repo">{repo}</span>
+      </Field>
+
+      {patPresent && (
+        <Field label="Disconnect" hint="Removes the token from the Keychain. Polling stops until a new token is saved.">
+          <button
+            className="action-btn danger"
+            onClick={() =>
+              void ipc.clearGithubPat().then(() => setPatPresent(false))
+            }
+          >
+            Remove token
+          </button>
+        </Field>
+      )}
+
+      <Field
+        label="GraphQL endpoint"
+        hint={
+          <>
+            For GitHub Enterprise use <span className="mono">https://&lt;host&gt;/api/graphql</span>.
+            The REST base for analysis tools is derived from this.
+          </>
+        }
+      >
+        <input
+          value={settings.githubGraphqlUrl}
+          onChange={(e) => void save({ githubGraphqlUrl: e.target.value })}
+        />
+      </Field>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- repositories
+
+function ReposPane({
+  settings,
+  save,
+  activeRepos,
+}: PaneProps & { activeRepos: string[] }) {
+  const [draft, setDraft] = useState("");
+  const [draftError, setDraftError] = useState<string | null>(null);
+
+  const activeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const repo of activeRepos) counts.set(repo, (counts.get(repo) ?? 0) + 1);
+    return counts;
+  }, [activeRepos]);
+
+  const rows = useMemo(() => {
+    const all = new Set<string>([
+      ...settings.watchedRepos,
+      ...Object.keys(settings.repoPriorities),
+      ...activeCounts.keys(),
+    ]);
+    return [...all].sort().map((repo) => ({
+      repo,
+      watched: settings.watchedRepos.includes(repo),
+      priority: settings.repoPriorities[repo] ?? ("normal" as RepoPriority),
+      activePrs: activeCounts.get(repo) ?? 0,
+    }));
+  }, [settings, activeCounts]);
+
+  const addRepo = () => {
+    const repo = draft.trim();
+    if (!REPO_RE.test(repo)) {
+      setDraftError("Use the owner/name form, e.g. team-and-tech/core-services");
+      return;
+    }
+    if (settings.watchedRepos.includes(repo)) {
+      setDraftError("Already watched.");
+      return;
+    }
+    setDraftError(null);
+    setDraft("");
+    void save({ watchedRepos: [...settings.watchedRepos, repo].sort() });
+  };
+
+  const toggleWatched = (repo: string, watched: boolean) => {
+    void save({
+      watchedRepos: watched
+        ? [...settings.watchedRepos, repo].sort()
+        : settings.watchedRepos.filter((r) => r !== repo),
+    });
+  };
+
+  const setPriority = (repo: string, priority: RepoPriority) => {
+    const next = { ...settings.repoPriorities };
+    if (priority === "normal") delete next[repo];
+    else next[repo] = priority;
+    void save({ repoPriorities: next });
+  };
+
+  const removeRepo = (repo: string) => {
+    const priorities = { ...settings.repoPriorities };
+    delete priorities[repo];
+    void save({
+      watchedRepos: settings.watchedRepos.filter((r) => r !== repo),
+      repoPriorities: priorities,
+    });
+  };
+
+  return (
+    <section className="pane-section pane-wide">
+      <h2>Repositories</h2>
+      <p className="pane-intro">
+        <strong>Watched</strong> repos have every open PR tracked, not just the ones involving
+        you. <strong>Priority</strong> weights a repo anywhere it appears — high floats to the
+        top, low sinks, ignored is never tracked at all.
+      </p>
+
+      <div className="repo-add">
+        <input
+          placeholder="owner/name — press Enter to watch"
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setDraftError(null);
+          }}
+          onKeyDown={(e) => e.key === "Enter" && draft && addRepo()}
+        />
+        <button className="action-btn" disabled={!draft} onClick={addRepo}>
+          Watch
+        </button>
+      </div>
+      {draftError && <div className="settings-error">{draftError}</div>}
+
+      {rows.length === 0 ? (
+        <p className="pane-intro">
+          Nothing yet — repos appear here once you watch one or once PRs involving you are
+          tracked.
+        </p>
+      ) : (
+        <table className="repo-table">
+          <thead>
+            <tr>
+              <th>Repository</th>
+              <th className="col-center">Open PRs</th>
+              <th className="col-center">Watch all PRs</th>
+              <th>Priority</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.repo} className={row.priority === "ignored" ? "row-ignored" : ""}>
+                <td className="mono repo-cell">{row.repo}</td>
+                <td className="col-center mono">{row.activePrs > 0 ? row.activePrs : "—"}</td>
+                <td className="col-center">
+                  <input
+                    type="checkbox"
+                    checked={row.watched}
+                    onChange={(e) => toggleWatched(row.repo, e.target.checked)}
+                  />
+                </td>
+                <td>
                   <select
-                    value={prio}
-                    onChange={(e) => {
-                      const next = { ...settings.repoPriorities };
-                      if (e.target.value === "normal") delete next[repo];
-                      else next[repo] = e.target.value as typeof prio;
-                      void saveSettings({ repoPriorities: next });
-                    }}
+                    value={row.priority}
+                    onChange={(e) => setPriority(row.repo, e.target.value as RepoPriority)}
                   >
                     <option value="high">high</option>
                     <option value="normal">normal</option>
                     <option value="low">low</option>
                     <option value="ignored">ignored</option>
                   </select>
-                </div>
-              ))}
-            <div className="field-hint">
-              Flag repos from the PR list with ⚑ (group by repo). Ignored repos are never
-              tracked; setting one back to normal removes it from this list.
-            </div>
-          </div>
-        )}
-      </section>
-
-      <section>
-        <span className="eyebrow">AWS</span>
-        <div className="field">
-          <label htmlFor="profile">AWS profile</label>
-          <input
-            id="profile"
-            value={settings.awsProfile}
-            onChange={(e) => setSettings({ ...settings, awsProfile: e.target.value })}
-            onBlur={() => void saveSettings({ awsProfile: settings.awsProfile })}
-          />
-          <div className="field-hint">
-            A named profile from ~/.aws/config. If analysis fails with an auth error, refresh
-            with: aws sso login --profile {settings.awsProfile || "…"}
-          </div>
-        </div>
-        <div className="field">
-          <label htmlFor="region">Region</label>
-          <input
-            id="region"
-            placeholder="us-east-2"
-            value={settings.awsRegion}
-            onChange={(e) => setSettings({ ...settings, awsRegion: e.target.value })}
-            onBlur={() => void saveSettings({ awsRegion: settings.awsRegion })}
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="endpoint">Custom endpoint URL (optional)</label>
-          <input
-            id="endpoint"
-            placeholder="https://bedrock-runtime.…"
-            value={settings.awsEndpointUrl}
-            onChange={(e) => setSettings({ ...settings, awsEndpointUrl: e.target.value })}
-            onBlur={() => void saveSettings({ awsEndpointUrl: settings.awsEndpointUrl })}
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="model">Bedrock model id or inference-profile ARN</label>
-          <input
-            id="model"
-            value={settings.bedrockModelId}
-            onChange={(e) => setSettings({ ...settings, bedrockModelId: e.target.value })}
-            onBlur={() => void saveSettings({ bedrockModelId: settings.bedrockModelId })}
-          />
-          <div className="field-hint">
-            Accepts a model id or an application-inference-profile ARN.
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <span className="eyebrow">CORA</span>
-        <div className="field">
-          <label htmlFor="interval">Poll interval (seconds)</label>
-          <input
-            id="interval"
-            type="number"
-            min={15}
-            value={settings.pollIntervalSecs}
-            onChange={(e) =>
-              setSettings({ ...settings, pollIntervalSecs: Number(e.target.value) || 45 })
-            }
-            onBlur={() => void saveSettings({ pollIntervalSecs: settings.pollIntervalSecs })}
-          />
-          <div className="field-hint">How often CORA checks GitHub for changes.</div>
-        </div>
-      </section>
-
-      <div className="row">
-        <button className="action-btn" onClick={onClose}>
-          Done
-        </button>
-        {saved && <span className="save-note">{saved}</span>}
-        {error && <span style={{ color: "var(--bad)", fontSize: 11 }}>{error}</span>}
-      </div>
-    </div>
+                </td>
+                <td className="col-center">
+                  {(row.watched || row.priority !== "normal") && (
+                    <button
+                      className="icon-btn"
+                      title="Unwatch and clear priority"
+                      onClick={() => removeRepo(row.repo)}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 
+// ---------------------------------------------------------------- aws
+
+function AwsPane({ settings, save }: PaneProps) {
+  return (
+    <section className="pane-section">
+      <h2>AWS</h2>
+      <p className="pane-intro">
+        Bedrock powers the architecture analysis. Credentials come from your local AWS config —
+        CORA never stores them.
+      </p>
+
+      <Field
+        label="Profile"
+        hint={
+          <>
+            From ~/.aws/config. If analysis fails with an auth error, refresh with{" "}
+            <span className="mono">aws sso login --profile {settings.awsProfile || "…"}</span>
+          </>
+        }
+      >
+        <input
+          className="input-narrow"
+          value={settings.awsProfile}
+          onChange={(e) => void save({ awsProfile: e.target.value })}
+        />
+      </Field>
+
+      <Field label="Region">
+        <input
+          className="input-narrow"
+          placeholder="us-east-2"
+          value={settings.awsRegion}
+          onChange={(e) => void save({ awsRegion: e.target.value })}
+        />
+      </Field>
+
+      <Field label="Custom endpoint URL" hint="Optional — only if your org routes Bedrock through a private endpoint.">
+        <input
+          placeholder="https://bedrock-runtime.…"
+          value={settings.awsEndpointUrl}
+          onChange={(e) => void save({ awsEndpointUrl: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Model id or inference-profile ARN"
+        hint="An application-inference-profile ARN or a plain Bedrock model id."
+      >
+        <input
+          value={settings.bedrockModelId}
+          onChange={(e) => void save({ bedrockModelId: e.target.value })}
+        />
+      </Field>
+    </section>
+  );
+}
