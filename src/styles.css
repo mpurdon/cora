@@ -1180,6 +1180,48 @@ input:focus-visible {
   color: var(--muted);
 }
 
+.drill-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.crumb-sep {
+  color: var(--idle);
+  font-size: 11px;
+  padding: 0 3px;
+}
+
+.crumb {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 3px 7px;
+  border-radius: 5px;
+}
+
+.crumb:not(:disabled):hover {
+  background: var(--ink-2);
+  color: var(--text);
+}
+
+.crumb.current {
+  color: var(--text);
+  font-weight: 600;
+  cursor: default;
+}
+
+.drill-hint {
+  margin-bottom: 8px;
+  text-align: right;
+}
+
 .drawer-backdrop {
   position: fixed;
   inset: 0;
