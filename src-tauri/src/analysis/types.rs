@@ -73,9 +73,11 @@ pub struct C4Edge {
     pub id: String,
     pub source: String,
     pub target: String,
+    #[serde(default)]
     pub label: String,
     #[serde(default)]
     pub protocol: Option<String>,
+    #[serde(default)]
     pub crosses_boundary: bool,
     pub change: ChangeStatus,
 }
@@ -159,11 +161,16 @@ pub struct Assessment {
     /// What this change *is*, in system terms — 2-4 sentences.
     pub summary: String,
     pub fit: FitVerdict,
+    /// Defaults tolerate models that omit "empty" fields despite the schema.
+    #[serde(default)]
     pub fit_rationale: String,
     /// Ordered most-important-first; external impacts always lead.
+    #[serde(default)]
     pub boundary_impacts: Vec<BoundaryImpact>,
+    #[serde(default)]
     pub well_architected: Vec<WaFinding>,
     /// What a reviewer without full context needs to know.
+    #[serde(default)]
     pub context_notes: Vec<String>,
 }
 
