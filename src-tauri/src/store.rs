@@ -322,6 +322,7 @@ mod tests {
             deletions: 0,
             changed_files: 0,
             total_comments: 0,
+            recent_comment_authors: vec![],
             head_sha: "abc".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             labels: vec![],

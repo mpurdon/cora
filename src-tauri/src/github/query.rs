@@ -13,6 +13,7 @@ fragment PrFields on PullRequest {
   mergeable
   additions deletions changedFiles
   totalCommentsCount
+  recentComments: comments(last: 5) { nodes { author { login __typename } } }
   labels(first: 10) { nodes { name color } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
 }

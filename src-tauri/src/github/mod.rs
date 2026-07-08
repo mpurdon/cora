@@ -41,6 +41,25 @@ pub fn parse_pr(v: &Value) -> Option<PrInfo> {
         deletions: v.get("deletions").and_then(Value::as_i64).unwrap_or(0),
         changed_files: v.get("changedFiles").and_then(Value::as_i64).unwrap_or(0),
         total_comments: v.get("totalCommentsCount").and_then(Value::as_i64).unwrap_or(0),
+        recent_comment_authors: v
+            .pointer("/recentComments/nodes")
+            .and_then(Value::as_array)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|c| {
+                        let login = c.pointer("/author/login").and_then(Value::as_str)?;
+                        let is_bot = c.pointer("/author/__typename").and_then(Value::as_str)
+                            == Some("Bot");
+                        Some(if is_bot && !login.ends_with("[bot]") {
+                            format!("{login}[bot]")
+                        } else {
+                            login.to_string()
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         head_sha: last_commit
             .and_then(|c| c.get("oid"))
             .and_then(Value::as_str)
