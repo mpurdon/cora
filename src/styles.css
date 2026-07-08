@@ -1208,27 +1208,195 @@ input:focus-visible {
 
 /* settings */
 
-.settings {
+.settings-shell {
+  display: flex;
+  height: 100%;
+}
+
+.settings-nav {
+  width: 190px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  padding: 20px 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-title {
+  padding: 0 10px 10px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: left;
+}
+
+.settings-nav-item .glyph {
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+}
+
+.settings-nav-item:hover {
+  background: var(--ink-1);
+  color: var(--text);
+}
+
+.settings-nav-item.active {
+  background: var(--ink-2);
+  color: var(--text);
+}
+
+.settings-nav-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px;
+}
+
+.settings-error {
+  color: var(--bad);
+  font-size: 11px;
+  font-family: var(--mono);
+  user-select: text;
+}
+
+.settings-pane {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.pane-section {
   padding: 26px 32px;
-  max-width: 620px;
+  max-width: 560px;
 }
 
-.settings h1 {
-  font-size: 18px;
-  margin-bottom: 20px;
+.pane-section.pane-wide {
+  max-width: 780px;
 }
 
-.settings section {
-  margin-bottom: 26px;
+.pane-section h2 {
+  font-size: 17px;
+  font-weight: 650;
+  margin-bottom: 6px;
 }
 
-.settings section > .eyebrow {
-  display: block;
-  margin-bottom: 10px;
+.pane-intro {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 22px;
+}
+
+.pane-intro strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.input-narrow {
+  max-width: 240px;
+}
+
+.action-btn.danger {
+  border-color: color-mix(in srgb, var(--bad) 50%, transparent);
+  color: var(--bad);
+}
+
+.action-btn.danger:hover {
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+}
+
+/* repositories table */
+
+.repo-add {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.repo-add input {
+  flex: 1;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  user-select: text;
+}
+
+.repo-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 14px;
+}
+
+.repo-table th {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-align: left;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.repo-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.repo-table .col-center {
+  text-align: center;
+}
+
+.repo-cell {
+  font-size: 11.5px;
+  user-select: text;
+}
+
+.repo-table select {
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
+.repo-table input[type="checkbox"] {
+  accent-color: var(--text);
+  width: 14px;
+  height: 14px;
+}
+
+.repo-table .row-ignored td {
+  opacity: 0.45;
+}
+
+.repo-table .icon-btn {
+  min-width: 26px;
+  min-height: 24px;
+  font-size: 13px;
 }
 
 .field {
-  margin-bottom: 12px;
+  margin-bottom: 20px;
 }
 
 .field label {
@@ -1261,7 +1429,7 @@ input:focus-visible {
   line-height: 1.5;
 }
 
-.settings .row {
+.row {
   display: flex;
   gap: 8px;
   align-items: center;
