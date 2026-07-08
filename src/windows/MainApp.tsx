@@ -586,7 +586,11 @@ export function MainApp() {
   );
   const dragging = useRef(false);
   const filterRef = useRef<HTMLInputElement>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number; pr: TrackedPr } | null>(null);
+  const [menu, setMenu] = useState<
+    | { x: number; y: number; kind: "pr"; pr: TrackedPr }
+    | { x: number; y: number; kind: "repo"; repo: string }
+    | null
+  >(null);
   const [showHotkeys, setShowHotkeys] = useState(false);
   const [pendingComment, setPendingComment] = useState<string | null>(null);
 
@@ -847,6 +851,13 @@ export function MainApp() {
                 <button
                   className="group-header"
                   onClick={() => toggleGroup(`${groupMode}:${group.key}`)}
+                  onContextMenu={(e) => {
+                    // Repo groups get the repo-priority menu; a group's PRs all
+                    // share one repo in by-repo mode.
+                    if (groupMode !== "repo") return;
+                    e.preventDefault();
+                    setMenu({ x: e.clientX, y: e.clientY, kind: "repo", repo: group.key });
+                  }}
                   aria-expanded={!isCollapsed}
                 >
                   <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
@@ -891,7 +902,7 @@ export function MainApp() {
                       onClick={() => select(pr.id)}
                       onContextMenu={(e) => {
                         e.preventDefault();
-                        setMenu({ x: e.clientX, y: e.clientY, pr });
+                        setMenu({ x: e.clientX, y: e.clientY, kind: "pr", pr });
                       }}
                       title={`${pr.repo}#${pr.number} — ${pr.title}`}
                     >
@@ -963,45 +974,66 @@ export function MainApp() {
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
-          sections={[
-            {
-              title: `PR #${menu.pr.number} priority`,
-              items: (["high", "normal", "low"] as PrPriority[]).map((p) => ({
-                label: p,
-                checked: menu.pr.priority === p,
-                onClick: () => void ipc.setPrPriority(menu.pr.id, p),
-              })),
-            },
-            {
-              items: [
-                {
-                  label: menu.pr.muted ? "Unmute" : "Mute",
-                  onClick: () => void ipc.setPrMuted(menu.pr.id, !menu.pr.muted),
-                },
-                {
-                  label: "Mark read",
-                  onClick: () => void ipc.markPrRead(menu.pr.id),
-                },
-                {
-                  label: "Open on GitHub",
-                  onClick: () => void openUrl(menu.pr.url),
-                },
-                {
-                  label: "Untrack",
-                  danger: true,
-                  onClick: () => void ipc.untrackPr(menu.pr.id),
-                },
-              ],
-            },
-            {
-              title: `${menu.pr.repo} priority`,
-              items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
-                label: p,
-                checked: prioOf(menu.pr.repo) === p,
-                onClick: () => void setRepoPriority(menu.pr.repo, p),
-              })),
-            },
-          ]}
+          sections={
+            menu.kind === "pr"
+              ? [
+                  {
+                    title: `PR #${menu.pr.number} priority`,
+                    items: (["high", "normal", "low"] as PrPriority[]).map((p) => ({
+                      label: p,
+                      checked: menu.pr.priority === p,
+                      onClick: () => void ipc.setPrPriority(menu.pr.id, p),
+                    })),
+                  },
+                  {
+                    items: [
+                      {
+                        label: menu.pr.muted ? "Unmute" : "Mute",
+                        onClick: () => void ipc.setPrMuted(menu.pr.id, !menu.pr.muted),
+                      },
+                      {
+                        label: "Mark read",
+                        onClick: () => void ipc.markPrRead(menu.pr.id),
+                      },
+                      {
+                        label: "Open on GitHub",
+                        onClick: () => void openUrl(menu.pr.url),
+                      },
+                      {
+                        label: "Untrack",
+                        danger: true,
+                        onClick: () => void ipc.untrackPr(menu.pr.id),
+                      },
+                    ],
+                  },
+                  {
+                    title: `${menu.pr.repo} priority`,
+                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
+                      label: p,
+                      checked: prioOf(menu.pr.repo) === p,
+                      onClick: () => void setRepoPriority(menu.pr.repo, p),
+                    })),
+                  },
+                ]
+              : [
+                  {
+                    title: `${menu.repo} priority`,
+                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
+                      label: p,
+                      checked: prioOf(menu.repo) === p,
+                      onClick: () => void setRepoPriority(menu.repo, p),
+                    })),
+                  },
+                  {
+                    items: [
+                      {
+                        label: "Open on GitHub",
+                        onClick: () => void openUrl(`https://github.com/${menu.repo}`),
+                      },
+                    ],
+                  },
+                ]
+          }
         />
       )}
 
