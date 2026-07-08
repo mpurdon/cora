@@ -303,6 +303,7 @@ mod tests {
             additions: 0,
             deletions: 0,
             changed_files: 0,
+            total_comments: 0,
             head_sha: "abc".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             labels: vec![],

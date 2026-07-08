@@ -50,6 +50,10 @@ pub struct PrInfo {
     pub deletions: i64,
     #[ts(type = "number")]
     pub changed_files: i64,
+    /// Issue + review comments; drives the "new comments" attention signal.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub total_comments: i64,
     pub head_sha: String,
     pub updated_at: String,
     pub labels: Vec<Label>,
@@ -64,6 +68,7 @@ pub enum ChangeKind {
     CiChanged,
     ReviewChanged,
     NewCommits,
+    NewComments,
     TitleChanged,
     Merged,
     Closed,
@@ -277,6 +282,13 @@ pub fn compute_changes(old: &PrInfo, new: &PrInfo) -> Vec<ChangeKind> {
     if old.head_sha != new.head_sha {
         changes.push(ChangeKind::NewCommits);
     }
+    // `old == 0 && new > 1` is almost always the one-time migration blip from
+    // rows stored before comment tracking existed — don't spam on upgrade.
+    if new.total_comments > old.total_comments
+        && !(old.total_comments == 0 && new.total_comments > 1)
+    {
+        changes.push(ChangeKind::NewComments);
+    }
     if old.title != new.title {
         changes.push(ChangeKind::TitleChanged);
     }
@@ -306,6 +318,7 @@ mod tests {
             additions: 1,
             deletions: 1,
             changed_files: 1,
+            total_comments: 0,
             head_sha: "abc".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             labels: vec![],
