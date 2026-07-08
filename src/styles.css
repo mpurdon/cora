@@ -321,6 +321,126 @@ input:focus-visible {
   color: var(--muted);
 }
 
+/* action-console rows */
+
+.action-bucket {
+  margin-bottom: 10px;
+}
+
+.bucket-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px 4px;
+}
+
+.bucket-count {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 13px;
+}
+
+.action-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.action-row:hover {
+  background: var(--ink-2);
+}
+
+.verb-chip {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  padding: 3px 7px;
+  width: 52px;
+  text-align: center;
+}
+
+.verb-chip.fix {
+  background: color-mix(in srgb, var(--bad) 22%, transparent);
+  color: var(--bad);
+}
+
+.verb-chip.address {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+}
+
+.verb-chip.merge {
+  background: color-mix(in srgb, var(--ok) 22%, transparent);
+  color: var(--ok);
+}
+
+.verb-chip.review {
+  background: color-mix(in srgb, var(--chat) 22%, transparent);
+  color: var(--chat);
+}
+
+.verb-chip.updates {
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.action-row .body {
+  flex: 1;
+  min-width: 0;
+}
+
+.action-row .pr-title {
+  display: block;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.action-reason {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.action-reason .repo {
+  color: var(--idle);
+}
+
+.action-reason .badge-chat {
+  margin-left: 6px;
+}
+
+.action-row .right {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.row-pulse .verb-chip {
+  animation: strip-pulse 1.2s ease-out 2;
+}
+
 .callout-empty {
   flex: 1;
   display: flex;
