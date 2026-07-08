@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PrSource } from "../bindings/PrSource";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { TrackedPr } from "../bindings/TrackedPr";
+import type { AnalysisLevel } from "../bindings/AnalysisLevel";
+import type { C4Node } from "../bindings/C4Node";
+import type { C4NodeKind } from "../bindings/C4NodeKind";
 import { ActivityDrawer, formatTokens } from "../components/analysis/ActivityDrawer";
 import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
@@ -139,7 +142,28 @@ function TrackPrInput({ onDone }: { onDone: () => void }) {
 
 type Tab = "assessment" | "c4" | "diff";
 
-/** Assessment + C4 tabs share one L1 analysis run per PR head. */
+/** C4 drill state: which level we're viewing and the path down to it. */
+interface DrillFrame {
+  level: AnalysisLevel;
+  focus?: string;
+  label: string;
+}
+
+const ROOT_FRAME: DrillFrame = { level: "context", label: "System" };
+const LEVEL_DEPTH: Record<AnalysisLevel, number> = { context: 0, component: 1, code: 2 };
+
+function nextDrillLevel(kind: C4NodeKind, current: AnalysisLevel): AnalysisLevel | null {
+  const next: AnalysisLevel | null =
+    kind === "system" || kind === "container"
+      ? "component"
+      : kind === "component"
+        ? "code"
+        : null;
+  if (!next || LEVEL_DEPTH[next] <= LEVEL_DEPTH[current]) return null;
+  return next;
+}
+
+/** Assessment + C4 tabs share one analysis run per (PR head, drill frame). */
 function AnalysisPanel({
   pr,
   tab,
@@ -152,12 +176,41 @@ function AnalysisPanel({
   onFocusNodes: (ids: string[]) => void;
 }) {
   const { runs, init, ensure, start } = useAnalysisStore();
-  const run = runs[analysisKey(pr.id, "context")];
+  const [stack, setStack] = useState<DrillFrame[]>([ROOT_FRAME]);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  useEffect(() => setStack([ROOT_FRAME]), [pr.id]);
+
+  const frame = stack[stack.length - 1];
+  const run = runs[analysisKey(pr.id, frame.level, frame.focus)];
+
   useEffect(() => {
-    void init().then(() => ensure(pr.id, "context"));
-  }, [pr.id, pr.headSha, init, ensure]);
+    // Drilled levels auto-run on arrival; the root level waits for the user.
+    void init().then(() => ensure(pr.id, frame.level, frame.focus, stack.length > 1));
+  }, [pr.id, pr.headSha, frame.level, frame.focus, stack.length, init, ensure]);
+
+  const drillInto = (node: C4Node) => {
+    const next = nextDrillLevel(node.kind, frame.level);
+    if (!next) return;
+    setStack((s) => [...s, { level: next, focus: node.id, label: node.name }]);
+  };
+
+  const crumbs = stack.length > 1 && (
+    <nav className="drill-crumbs">
+      {stack.map((f, i) => (
+        <span key={i} className="crumb-wrap">
+          {i > 0 && <span className="crumb-sep">›</span>}
+          <button
+            className={`crumb${i === stack.length - 1 ? " current" : ""}`}
+            disabled={i === stack.length - 1}
+            onClick={() => setStack(stack.slice(0, i + 1))}
+          >
+            {f.label}
+          </button>
+        </span>
+      ))}
+    </nav>
+  );
 
   const liveSteps = (run?.progress ?? []).map((p) => ({
     at: p.at,
@@ -174,6 +227,8 @@ function AnalysisPanel({
     />
   );
 
+  const retry = () => void start(pr.id, frame.level, frame.focus);
+
   if (!run || run.status === "idle") {
     return (
       <div className="placeholder">
@@ -181,7 +236,7 @@ function AnalysisPanel({
           CORA reads the diff and explores the repository to place this change in the
           architecture — external-boundary effects first.
         </p>
-        <button className="action-btn analyze-btn" onClick={() => void start(pr.id, "context")}>
+        <button className="action-btn analyze-btn" onClick={retry}>
           Analyze architecture
         </button>
       </div>
@@ -193,6 +248,7 @@ function AnalysisPanel({
     return (
       <>
         <div className="panel-meta">
+          {crumbs}
           <span className="spacer" />
           <button className="action-btn" onClick={() => setDrawerOpen(true)}>
             Activity ›
@@ -215,12 +271,7 @@ function AnalysisPanel({
 
   if (run.status === "error") {
     if (run.errorKind === "aws-auth") {
-      return (
-        <AwsAuthCard
-          detail={run.error ?? ""}
-          onSignedIn={() => void start(pr.id, "context")}
-        />
-      );
+      return <AwsAuthCard detail={run.error ?? ""} onSignedIn={retry} />;
     }
     if (run.errorKind === "github-auth") {
       return (
@@ -234,7 +285,7 @@ function AnalysisPanel({
             token in Settings → GitHub, then retry.
           </p>
           <div className="auth-actions">
-            <button className="action-btn" onClick={() => void start(pr.id, "context")}>
+            <button className="action-btn" onClick={retry}>
               Retry
             </button>
           </div>
@@ -249,9 +300,14 @@ function AnalysisPanel({
         </div>
         <pre className="auth-detail">{run.error}</pre>
         <div className="auth-actions">
-          <button className="action-btn" onClick={() => void start(pr.id, "context")}>
+          <button className="action-btn" onClick={retry}>
             Retry
           </button>
+          {stack.length > 1 && (
+            <button className="action-btn" onClick={() => setStack(stack.slice(0, -1))}>
+              Back up
+            </button>
+          )}
         </div>
       </div>
     );
@@ -263,7 +319,7 @@ function AnalysisPanel({
     return (
       <div className="placeholder">
         <p>New commits landed since the last analysis.</p>
-        <button className="action-btn" onClick={() => void start(pr.id, "context")}>
+        <button className="action-btn" onClick={retry}>
           Re-analyze
         </button>
       </div>
@@ -273,6 +329,7 @@ function AnalysisPanel({
   return (
     <>
       <div className="panel-meta">
+        {crumbs}
         <span className="mono panel-usage">
           analyzed {timeAgo(result.createdAt)} ago
           {result.usage.turns > 0 && (
@@ -287,18 +344,23 @@ function AnalysisPanel({
         <button className="action-btn" onClick={() => setDrawerOpen(true)}>
           Activity ›
         </button>
-        <button
-          className="action-btn"
-          title="Discard and analyze again"
-          onClick={() => void start(pr.id, "context")}
-        >
+        <button className="action-btn" title="Discard and analyze again" onClick={retry}>
           Re-run
         </button>
       </div>
       {tab === "assessment" ? (
         <AssessmentView assessment={result.assessment} onFocusNodes={onFocusNodes} />
       ) : (
-        <C4Canvas graph={result.graph} highlightIds={highlight} />
+        <>
+          {frame.level !== "code" && (
+            <div className="drill-hint eyebrow">double-click a node to drill in</div>
+          )}
+          <C4Canvas
+            graph={result.graph}
+            highlightIds={highlight}
+            onNodeDoubleClick={drillInto}
+          />
+        </>
       )}
       {drawer}
     </>
