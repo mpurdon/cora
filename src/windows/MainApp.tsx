@@ -611,9 +611,22 @@ export function MainApp() {
   };
 
   const [priorities, setPriorities] = useState<Record<string, RepoPriority>>({});
+  const [watchedRepos, setWatchedRepos] = useState<string[]>([]);
   useEffect(() => {
-    void ipc.getSettings().then((s) => setPriorities(s.repoPriorities));
+    void ipc.getSettings().then((s) => {
+      setPriorities(s.repoPriorities);
+      setWatchedRepos(s.watchedRepos);
+    });
   }, [showSettings]); // re-read after the settings page closes
+
+  const toggleWatchRepo = async (repo: string) => {
+    const s = await ipc.getSettings();
+    const watched = s.watchedRepos.includes(repo)
+      ? s.watchedRepos.filter((r) => r !== repo)
+      : [...s.watchedRepos, repo].sort();
+    await ipc.setSettings({ ...s, watchedRepos: watched });
+    setWatchedRepos(watched);
+  };
   const prioOf = useCallback(
     (repo: string): RepoPriority => priorities[repo] ?? "normal",
     [priorities],
@@ -1118,6 +1131,15 @@ export function MainApp() {
                       onClick: () => void setRepoPriority(menu.pr.repo, p),
                     })),
                   },
+                  {
+                    items: [
+                      {
+                        label: "Watch all PRs in this repo",
+                        checked: watchedRepos.includes(menu.pr.repo),
+                        onClick: () => void toggleWatchRepo(menu.pr.repo),
+                      },
+                    ],
+                  },
                 ]
               : [
                   {
@@ -1130,6 +1152,11 @@ export function MainApp() {
                   },
                   {
                     items: [
+                      {
+                        label: "Watch all PRs in this repo",
+                        checked: watchedRepos.includes(menu.repo),
+                        onClick: () => void toggleWatchRepo(menu.repo),
+                      },
                       {
                         label: "Open on GitHub",
                         onClick: () => void openUrl(`https://github.com/${menu.repo}`),
