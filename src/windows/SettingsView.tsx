@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { ipc } from "../lib/ipc";
@@ -144,6 +145,18 @@ function GeneralPane({ settings, save }: PaneProps) {
           }}
         >
           {legendReset ? "Will show on next visit" : "Show legend again"}
+        </button>
+      </Field>
+
+      <Field
+        label="Notifications"
+        hint="Note: in dev builds macOS attributes notifications to the terminal that launched CORA; packaged builds notify as CORA."
+      >
+        <button
+          className="action-btn"
+          onClick={() => void invoke("open_notification_settings")}
+        >
+          Open macOS notification settings
         </button>
       </Field>
 

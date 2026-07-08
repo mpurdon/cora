@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -164,11 +164,14 @@ async function layout(graph: C4Graph, highlight: Set<string>): Promise<LaidOut> 
 function Flow({
   laidOut,
   onNodeDoubleClick,
+  onNodeClick,
 }: {
   laidOut: LaidOut;
   onNodeDoubleClick?: (node: C4Node) => void;
+  onNodeClick?: (node: C4Node) => void;
 }) {
   const { fitBounds } = useReactFlow();
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   return (
     <ReactFlow
       nodes={laidOut.nodes}
@@ -179,7 +182,18 @@ function Flow({
       minZoom={0.2}
       maxZoom={2}
       proOptions={{ hideAttribution: true }}
+      onNodeClick={(_, node) => {
+        if (!onNodeClick) return;
+        // Delay so a double-click (drill) can cancel the single-click peek.
+        if (clickTimer.current) clearTimeout(clickTimer.current);
+        const data = node.data as C4FlowNode["data"];
+        clickTimer.current = setTimeout(() => onNodeClick(data.c4), 260);
+      }}
       onNodeDoubleClick={(_, node) => {
+        if (clickTimer.current) {
+          clearTimeout(clickTimer.current);
+          clickTimer.current = null;
+        }
         if (!onNodeDoubleClick) return;
         const data = node.data as C4FlowNode["data"];
         // Zoom into the node first — the drill lands mid-animation so the
@@ -228,10 +242,12 @@ export function C4Canvas({
   graph,
   highlightIds,
   onNodeDoubleClick,
+  onNodeClick,
 }: {
   graph: C4Graph;
   highlightIds: string[];
   onNodeDoubleClick?: (node: C4Node) => void;
+  onNodeClick?: (node: C4Node) => void;
 }) {
   const highlight = useMemo(() => new Set(highlightIds), [highlightIds]);
   const [laidOut, setLaidOut] = useState<LaidOut | null>(null);
@@ -253,7 +269,7 @@ export function C4Canvas({
   return (
     <div className="c4-canvas">
       <ReactFlowProvider>
-        <Flow laidOut={laidOut} onNodeDoubleClick={onNodeDoubleClick} />
+        <Flow laidOut={laidOut} onNodeDoubleClick={onNodeDoubleClick} onNodeClick={onNodeClick} />
       </ReactFlowProvider>
     </div>
   );

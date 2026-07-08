@@ -784,6 +784,16 @@ pub fn log_frontend_error(app: AppHandle, message: String) {
     }
 }
 
+/// Jump to macOS System Settings → Notifications.
+#[tauri::command]
+pub fn open_notification_settings() -> AppResult<()> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+        .spawn()
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    Ok(())
+}
+
 /// Claim the pending notification deep-link, if fresh. Called by the main
 /// window when it gains focus.
 #[derive(serde::Serialize)]

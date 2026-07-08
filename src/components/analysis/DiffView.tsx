@@ -5,14 +5,14 @@ import { ipc } from "../../lib/ipc";
 import { timeAgo } from "../../state/prStore";
 import { CommentBody, Composer, ReactionBar } from "./CommentsView";
 
-interface DiffLine {
+export interface DiffLine {
   kind: "add" | "del" | "ctx" | "hunk";
   text: string;
   /** Line number on the new (RIGHT) side — where review comments anchor. */
   newLine: number | null;
 }
 
-interface DiffFile {
+export interface DiffFile {
   path: string;
   oldPath?: string;
   additions: number;
@@ -20,7 +20,7 @@ interface DiffFile {
   lines: DiffLine[];
 }
 
-function parseDiff(raw: string): DiffFile[] {
+export function parseDiff(raw: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
   let newLine = 0;
