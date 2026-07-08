@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AnalysisErrorKind } from "../bindings/AnalysisErrorKind";
 import type { AnalysisLevel } from "../bindings/AnalysisLevel";
 import type { AnalysisResult } from "../bindings/AnalysisResult";
 import {
@@ -16,6 +17,7 @@ interface Run {
   progress: string[];
   result?: AnalysisResult;
   error?: string;
+  errorKind?: AnalysisErrorKind;
 }
 
 interface AnalysisState {
@@ -64,7 +66,10 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
     await onAnalysisError((e) => {
       const key = analysisKey(e.prId, e.level);
       set((s) => ({
-        runs: { ...s.runs, [key]: { status: "error", progress: [], error: e.error } },
+        runs: {
+          ...s.runs,
+          [key]: { status: "error", progress: [], error: e.error, errorKind: e.kind },
+        },
       }));
     });
   },

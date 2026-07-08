@@ -5,7 +5,11 @@ export type Settings = { watchedRepos: Array<string>,
 /**
  * "owner/name" → priority; absent means Normal.
  */
-repoPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, githubGraphqlUrl: string, awsProfile: string, 
+repoPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, 
+/**
+ * Show the always-on-top callout window when the app starts.
+ */
+showCalloutOnStartup: boolean, githubGraphqlUrl: string, awsProfile: string, 
 /**
  * Explicit region override; some SSO profiles don't carry one.
  */

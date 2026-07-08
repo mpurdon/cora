@@ -1059,6 +1059,109 @@ input:focus-visible {
   user-select: text;
 }
 
+/* ---------- analysis: auth / failure cards ---------- */
+
+.auth-card {
+  max-width: 520px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px 22px;
+  background: var(--ink-1);
+}
+
+.auth-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 650;
+  margin-bottom: 8px;
+}
+
+.auth-title .lamp {
+  width: 8px;
+  height: 8px;
+}
+
+.auth-body {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+
+.auth-body .mono {
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+.auth-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.auth-primary {
+  border-color: color-mix(in srgb, var(--ok) 55%, transparent);
+  color: var(--ok);
+}
+
+.auth-primary:hover {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.auth-waiting {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  color: var(--text);
+  padding: 6px 0;
+}
+
+.auth-failure {
+  margin-top: 12px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--bad);
+  user-select: text;
+}
+
+.auth-cmd {
+  color: var(--text);
+  background: var(--ink-0);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.auth-detail-toggle {
+  margin-top: 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--idle);
+}
+
+.auth-detail-toggle:hover {
+  color: var(--muted);
+}
+
+.auth-detail {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+  user-select: text;
+}
+
 /* ---------- analysis: C4 canvas ---------- */
 
 .c4-canvas {
@@ -1397,6 +1500,21 @@ input:focus-visible {
 
 .field {
   margin-bottom: 20px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.check-row input[type="checkbox"] {
+  accent-color: var(--text);
+  width: 14px;
+  height: 14px;
 }
 
 .field label {

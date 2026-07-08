@@ -3,6 +3,7 @@ import type { PrSource } from "../bindings/PrSource";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import { AssessmentView } from "../components/analysis/AssessmentView";
+import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { ipc, onFocusPr } from "../lib/ipc";
@@ -186,12 +187,45 @@ function AnalysisPanel({
   }
 
   if (run.status === "error") {
+    if (run.errorKind === "aws-auth") {
+      return (
+        <AwsAuthCard
+          detail={run.error ?? ""}
+          onSignedIn={() => void start(pr.id, "context")}
+        />
+      );
+    }
+    if (run.errorKind === "github-auth") {
+      return (
+        <div className="auth-card">
+          <div className="auth-title">
+            <span className="lamp bad" />
+            GitHub token needed
+          </div>
+          <p className="auth-body">
+            The analysis engine reads the repository through GitHub. Add a personal access
+            token in Settings → GitHub, then retry.
+          </p>
+          <div className="auth-actions">
+            <button className="action-btn" onClick={() => void start(pr.id, "context")}>
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
     return (
-      <div className="placeholder">
-        <p className="analysis-error">{run.error}</p>
-        <button className="action-btn" onClick={() => void start(pr.id, "context")}>
-          Retry
-        </button>
+      <div className="auth-card">
+        <div className="auth-title">
+          <span className="lamp bad" />
+          Analysis failed
+        </div>
+        <pre className="auth-detail">{run.error}</pre>
+        <div className="auth-actions">
+          <button className="action-btn" onClick={() => void start(pr.id, "context")}>
+            Retry
+          </button>
+        </div>
       </div>
     );
   }

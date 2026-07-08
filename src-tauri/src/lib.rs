@@ -31,6 +31,18 @@ pub fn run() {
                 std::collections::HashSet::new(),
             )));
 
+            // Respect the "open callout at launch" preference.
+            let show_callout = app
+                .state::<Arc<Store>>()
+                .settings()
+                .map(|s| s.show_callout_on_startup)
+                .unwrap_or(true);
+            if !show_callout {
+                if let Some(callout) = app.get_webview_window("callout") {
+                    let _ = callout.hide();
+                }
+            }
+
             setup_tray(app.handle())?;
             github::poller::spawn(app.handle().clone());
 
@@ -59,6 +71,8 @@ pub fn run() {
             commands::track_pr_url,
             commands::get_analysis,
             commands::run_analysis,
+            commands::aws_sso_login,
+            commands::check_aws,
             commands::poll_now,
             commands::show_main_window,
             commands::toggle_callout,
