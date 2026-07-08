@@ -34,8 +34,8 @@ export const ipc = {
   pollNow: () => invoke<void>("poll_now"),
   getAnalysis: (prId: string, level: AnalysisLevel, focus?: string) =>
     invoke<AnalysisResult | null>("get_analysis", { prId, level, focus: focus ?? null }),
-  runAnalysis: (prId: string, level: AnalysisLevel, focus?: string) =>
-    invoke<void>("run_analysis", { prId, level, focus: focus ?? null }),
+  runAnalysis: (prId: string, level: AnalysisLevel, focus?: string, force?: boolean) =>
+    invoke<void>("run_analysis", { prId, level, focus: focus ?? null, force: force ?? false }),
   awsSsoLogin: (profile: string) => invoke<void>("aws_sso_login", { profile }),
   checkAws: (profile: string, region: string) =>
     invoke<string>("check_aws", { profile, region }),
