@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PrComment } from "../../bindings/PrComment";
 import type { PrConversation } from "../../bindings/PrConversation";
 import type { ReviewThread } from "../../bindings/ReviewThread";
@@ -8,7 +11,39 @@ import { timeAgo } from "../../state/prStore";
 /** Comment id → DOM anchor, so reply notifications can deep-link here. */
 export const commentAnchor = (commentId: string) => `comment-${commentId}`;
 
+/** GitHub-flavored markdown, with links opening in the system browser. */
+function CommentBody({ body }: { body: string }) {
+  return (
+    <div className="comment-body markdown">
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              onClick={(e) => {
+                e.preventDefault();
+                if (href) void openUrl(href);
+              }}
+            >
+              {children}
+            </a>
+          ),
+          img: ({ src, alt }) => (
+            // Badges and screenshots — keep them small and never broken-huge.
+            <img src={src ?? ""} alt={alt ?? ""} className="md-img" loading="lazy" />
+          ),
+        }}
+      >
+        {body}
+      </Markdown>
+    </div>
+  );
+}
+
 function Comment({ comment, isReply }: { comment: PrComment; isReply: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = comment.body.length > 1500;
   return (
     <div className={`pr-comment${isReply ? " reply" : ""}`} id={commentAnchor(comment.id)}>
       <div className="comment-head">
@@ -18,7 +53,14 @@ function Comment({ comment, isReply }: { comment: PrComment; isReply: boolean })
           ↗
         </a>
       </div>
-      <div className="comment-body">{comment.body}</div>
+      <div className={long && !expanded ? "comment-clamped" : undefined}>
+        <CommentBody body={comment.body} />
+      </div>
+      {long && (
+        <button className="comment-expand" onClick={() => setExpanded((e) => !e)}>
+          {expanded ? "show less" : "show more"}
+        </button>
+      )}
     </div>
   );
 }
