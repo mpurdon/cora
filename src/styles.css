@@ -2127,13 +2127,41 @@ input:focus-visible {
   text-align: left;
 }
 
-.diff-file-header:hover {
+button.diff-file-header:hover {
   background: var(--ink-2);
+}
+
+/* Header is a div when it carries the viewed checkbox; the toggle is the
+   clickable part. */
+.diff-file-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  padding: 0;
 }
 
 .diff-file-header .chevron {
   color: var(--muted);
   font-size: 9px;
+}
+
+.viewed-check {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.diff-file.viewed {
+  opacity: 0.55;
+}
+
+.diff-file.viewed .diff-path {
+  text-decoration: line-through;
+  text-decoration-color: var(--idle);
 }
 
 .diff-path {

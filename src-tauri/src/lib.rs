@@ -102,6 +102,8 @@ pub fn run() {
             commands::check_aws,
             commands::take_pending_focus,
             commands::open_notification_settings,
+            commands::get_viewed_files,
+            commands::set_file_viewed,
             commands::log_frontend_error,
             commands::get_dev_logs,
             commands::clear_dev_logs,
