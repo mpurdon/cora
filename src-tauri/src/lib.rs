@@ -1,5 +1,6 @@
 mod analysis;
 mod commands;
+mod devlog;
 mod error;
 mod github;
 mod models;
@@ -30,6 +31,7 @@ pub fn run() {
             app.manage(commands::AnalysisRuns(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )));
+            app.manage(devlog::DevLog::new());
 
             // Respect the "open callout at launch" preference.
             let show_callout = app
@@ -73,6 +75,10 @@ pub fn run() {
             commands::run_analysis,
             commands::aws_sso_login,
             commands::check_aws,
+            commands::get_dev_logs,
+            commands::clear_dev_logs,
+            commands::get_default_system_prompt,
+            commands::get_app_internals,
             commands::poll_now,
             commands::show_main_window,
             commands::toggle_callout,

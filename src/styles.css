@@ -1502,6 +1502,133 @@ input:focus-visible {
   margin-bottom: 20px;
 }
 
+/* developer pane */
+
+.dev-pane .tabs {
+  margin-bottom: 16px;
+}
+
+.dev-log-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.dev-log-controls select {
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 6px;
+}
+
+.dev-log-controls .spacer {
+  flex: 1;
+}
+
+.dev-log {
+  height: calc(100vh - 280px);
+  min-height: 260px;
+  overflow-y: auto;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.7;
+  user-select: text;
+}
+
+.dev-log-empty {
+  color: var(--idle);
+}
+
+.dev-log-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.dev-log-time {
+  color: var(--idle);
+  flex: none;
+}
+
+.dev-log-level {
+  flex: none;
+  width: 42px;
+}
+
+.dev-log-level.level-debug {
+  color: var(--idle);
+}
+.dev-log-level.level-info {
+  color: var(--ok);
+}
+.dev-log-level.level-warn {
+  color: var(--warn);
+}
+.dev-log-level.level-error {
+  color: var(--bad);
+}
+
+.dev-log-source {
+  color: var(--chat);
+  flex: none;
+  width: 62px;
+}
+
+.dev-log-msg {
+  color: var(--text);
+  word-break: break-word;
+}
+
+.dev-log-line.level-debug .dev-log-msg {
+  color: var(--muted);
+}
+
+.prompt-editor {
+  width: 100%;
+  height: calc(100vh - 340px);
+  min-height: 280px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.65;
+  padding: 12px 14px;
+  resize: vertical;
+  user-select: text;
+}
+
+.internals-facts {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 6px 14px;
+  margin-bottom: 20px;
+  font-size: 12px;
+}
+
+.internals-facts dt {
+  color: var(--muted);
+}
+
+.internals-facts dd {
+  user-select: text;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.internals-json {
+  max-height: 320px;
+}
+
 .check-row {
   display: flex;
   align-items: center;

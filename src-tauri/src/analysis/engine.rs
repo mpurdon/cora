@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::analysis::tools::RepoTools;
+use crate::devlog;
 use crate::analysis::types::{
     events, AnalysisLevel, AnalysisProgress, AnalysisResult, Assessment, C4Graph,
 };
@@ -18,7 +19,7 @@ use crate::models::{Settings, TrackedPr};
 const MAX_TURNS: usize = 30;
 const MAX_OUTPUT_TOKENS: i32 = 8192;
 
-const SYSTEM_PROMPT: &str = r#"You are a principal engineer reviewing a pull request. Your job is NOT line-level nitpicking (style, ternaries, null coalescing) — tools like Copilot handle that. Your job is to understand the change in relation to the whole system and explain it to a reviewer who lacks full context.
+pub const SYSTEM_PROMPT: &str = r#"You are a principal engineer reviewing a pull request. Your job is NOT line-level nitpicking (style, ternaries, null coalescing) — tools like Copilot handle that. Your job is to understand the change in relation to the whole system and explain it to a reviewer who lacks full context.
 
 Priorities, strictly in this order:
 1. EXTERNAL boundaries: effects on external systems — third-party APIs, other teams' services, queues/topics, webhooks, contracts, data leaving the system. These are always the most important findings.
@@ -214,6 +215,24 @@ pub async fn run(
 ) -> AppResult<AnalysisResult> {
     let pr_id = pr.info.id.clone();
     progress(app, &pr_id, level, "connecting to Bedrock");
+    devlog::info(
+        app,
+        "analysis",
+        format!(
+            "starting {} analysis for {}#{} (head {})",
+            level.as_str(),
+            pr.info.repo,
+            pr.info.number,
+            &pr.info.head_sha[..8.min(pr.info.head_sha.len())]
+        ),
+    );
+
+    let system_prompt = if settings.custom_system_prompt.trim().is_empty() {
+        SYSTEM_PROMPT.to_string()
+    } else {
+        devlog::warn(app, "analysis", "using CUSTOM system prompt from developer settings");
+        settings.custom_system_prompt.clone()
+    };
 
     let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
     if !settings.aws_profile.is_empty() {
@@ -224,7 +243,8 @@ pub async fn run(
     }
     let sdk_config = loader.load().await;
     let mut conf = aws_sdk_bedrockruntime::config::Builder::from(&sdk_config);
-    if !settings.aws_endpoint_url.is_empty() {
+    // Only apply a real URL — a pasted ARN here breaks dispatch cryptically.
+    if settings.aws_endpoint_url.starts_with("http") {
         conf = conf.endpoint_url(&settings.aws_endpoint_url);
     }
     conf = conf.timeout_config(
@@ -264,12 +284,14 @@ pub async fn run(
 
     let config = tool_config()?;
     let mut nudged = false;
+    let (mut total_in, mut total_out) = (0i32, 0i32);
 
-    for _turn in 0..MAX_TURNS {
+    for turn in 0..MAX_TURNS {
+        let started = std::time::Instant::now();
         let resp = client
             .converse()
             .model_id(&settings.bedrock_model_id)
-            .system(SystemContentBlock::Text(SYSTEM_PROMPT.into()))
+            .system(SystemContentBlock::Text(system_prompt.clone()))
             .set_messages(Some(messages.clone()))
             .tool_config(config.clone())
             .inference_config(
@@ -298,6 +320,23 @@ pub async fn run(
                 AppError::Other(format!("Bedrock: {detail}{hint}"))
             })?;
 
+        if let Some(usage) = resp.usage() {
+            total_in += usage.input_tokens();
+            total_out += usage.output_tokens();
+            devlog::debug(
+                app,
+                "bedrock",
+                format!(
+                    "turn {turn}: {}ms, {} in / {} out tokens (total {} / {})",
+                    started.elapsed().as_millis(),
+                    usage.input_tokens(),
+                    usage.output_tokens(),
+                    total_in,
+                    total_out,
+                ),
+            );
+        }
+
         let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {
             return Err(AppError::Other("Bedrock returned no message".into()));
         };
@@ -317,14 +356,28 @@ pub async fn run(
                     let input = document_to_value(tu.input());
                     progress(app, &pr_id, level, describe_tool_call(tu.name(), &input));
                     if tu.name() == "submit_analysis" {
+                        devlog::info(app, "analysis", "model submitted the analysis");
                         submitted = Some(input);
                         continue;
                     }
+                    devlog::debug(
+                        app,
+                        "analysis",
+                        format!("tool {}({})", tu.name(), serde_json::to_string(&input).unwrap_or_default()),
+                    );
                     let result = tools.execute(tu.name(), &input).await;
                     let (content, is_error) = match result {
                         Ok(text) => (text, false),
-                        Err(e) => (format!("error: {e}"), true),
+                        Err(e) => {
+                            devlog::warn(app, "analysis", format!("tool {} failed: {e}", tu.name()));
+                            (format!("error: {e}"), true)
+                        }
                     };
+                    devlog::debug(
+                        app,
+                        "analysis",
+                        format!("tool {} → {} chars", tu.name(), content.len()),
+                    );
                     let mut trb = ToolResultBlock::builder()
                         .tool_use_id(tu.tool_use_id())
                         .content(ToolResultContentBlock::Text(content));
@@ -340,6 +393,11 @@ pub async fn run(
         }
 
         if let Some(payload) = submitted {
+            devlog::info(
+                app,
+                "analysis",
+                format!("complete after {} turns — {total_in} in / {total_out} out tokens", turn + 1),
+            );
             return parse_submission(pr, level, focus_node_id, payload);
         }
 
