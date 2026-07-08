@@ -1,7 +1,7 @@
 use aws_sdk_bedrockruntime::types::{
-    ContentBlock, ConversationRole, InferenceConfiguration, Message, StopReason,
-    SystemContentBlock, Tool, ToolConfiguration, ToolInputSchema, ToolResultBlock,
-    ToolResultContentBlock, ToolSpecification,
+    CachePointBlock, CachePointType, ContentBlock, ConversationRole, InferenceConfiguration,
+    Message, StopReason, SystemContentBlock, Tool, ToolConfiguration, ToolInputSchema,
+    ToolResultBlock, ToolResultContentBlock, ToolSpecification,
 };
 use aws_smithy_types::Document;
 use chrono::Utc;
@@ -157,7 +157,14 @@ fn document_to_value(d: &Document) -> Value {
 
 // -----------------------------------------------------------------------------
 
-fn tool_config() -> AppResult<ToolConfiguration> {
+fn cache_point() -> CachePointBlock {
+    CachePointBlock::builder()
+        .r#type(CachePointType::Default)
+        .build()
+        .expect("cache point")
+}
+
+fn tool_config(with_cache: bool) -> AppResult<ToolConfiguration> {
     let mut builder = ToolConfiguration::builder();
     for (name, description, schema) in RepoTools::specs() {
         builder = builder.tools(Tool::ToolSpec(
@@ -177,7 +184,34 @@ fn tool_config() -> AppResult<ToolConfiguration> {
             .build()
             .map_err(|e| AppError::Other(e.to_string()))?,
     ));
+    if with_cache {
+        // Tool schemas are the largest static prefix — cache them.
+        builder = builder.tools(Tool::CachePoint(cache_point()));
+    }
     builder.build().map_err(|e| AppError::Other(e.to_string()))
+}
+
+/// Rolling cache checkpoint: mark the latest user message so the next turn's
+/// prefix (everything up to and including it) is a cache hit.
+fn with_message_cache_points(messages: &[Message]) -> Vec<Message> {
+    let last_user = messages.iter().rposition(|m| m.role() == &ConversationRole::User);
+    messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            if Some(i) == last_user {
+                let mut content = m.content().to_vec();
+                content.push(ContentBlock::CachePoint(cache_point()));
+                Message::builder()
+                    .role(m.role().clone())
+                    .set_content(Some(content))
+                    .build()
+                    .expect("message rebuild")
+            } else {
+                m.clone()
+            }
+        })
+        .collect()
 }
 
 fn progress(app: &AppHandle, pr_id: &str, level: AnalysisLevel, message: impl Into<String>) {
@@ -315,45 +349,68 @@ pub async fn run(
         .build()
         .map_err(|e| AppError::Other(e.to_string()))?];
 
-    let config = tool_config()?;
+    // Prompt caching slashes per-turn input cost/latency; some models or
+    // gateways reject cache points, so fall back cleanly on first complaint.
+    let mut use_cache = true;
     let mut nudged = false;
+    let mut resubmits = 0u32;
     let (mut total_in, mut total_out) = (0i32, 0i32);
     let mut trace: Vec<TraceStep> = Vec::new();
     note(app, &mut trace, &pr_id, level, "status", "starting exploration");
 
     for turn in 0..MAX_TURNS {
         let started = std::time::Instant::now();
-        let resp = client
-            .converse()
-            .model_id(&settings.bedrock_model_id)
-            .system(SystemContentBlock::Text(system_prompt.clone()))
-            .set_messages(Some(messages.clone()))
-            .tool_config(config.clone())
-            .inference_config(
-                InferenceConfiguration::builder()
-                    .max_tokens(MAX_OUTPUT_TOKENS)
-                    .build(),
-            )
-            .send()
-            .await
-            .map_err(|e| {
-                let detail =
-                    format!("{}", aws_smithy_types::error::display::DisplayErrorContext(&e));
-                let lower = detail.to_lowercase();
-                let hint = if lower.contains("token")
-                    || lower.contains("expired")
-                    || lower.contains("credential")
-                    || lower.contains("sso")
-                {
-                    format!(
-                        " — your SSO session may have expired; run: aws sso login --profile {}",
-                        settings.aws_profile
-                    )
-                } else {
-                    String::new()
-                };
-                AppError::Other(format!("Bedrock: {detail}{hint}"))
-            })?;
+        let resp = loop {
+            let config = tool_config(use_cache)?;
+            let mut system_blocks = vec![SystemContentBlock::Text(system_prompt.clone())];
+            if use_cache {
+                system_blocks.push(SystemContentBlock::CachePoint(cache_point()));
+            }
+            let request_messages = if use_cache {
+                with_message_cache_points(&messages)
+            } else {
+                messages.clone()
+            };
+            let attempt = client
+                .converse()
+                .model_id(&settings.bedrock_model_id)
+                .set_system(Some(system_blocks))
+                .set_messages(Some(request_messages))
+                .tool_config(config)
+                .inference_config(
+                    InferenceConfiguration::builder()
+                        .max_tokens(MAX_OUTPUT_TOKENS)
+                        .build(),
+                )
+                .send()
+                .await;
+            match attempt {
+                Ok(resp) => break resp,
+                Err(e) => {
+                    let detail =
+                        format!("{}", aws_smithy_types::error::display::DisplayErrorContext(&e));
+                    let lower = detail.to_lowercase();
+                    if use_cache && (lower.contains("cache") || lower.contains("cachepoint")) {
+                        devlog::warn(app, "bedrock", "model rejected prompt caching — disabling");
+                        use_cache = false;
+                        continue;
+                    }
+                    let hint = if lower.contains("token")
+                        || lower.contains("expired")
+                        || lower.contains("credential")
+                        || lower.contains("sso")
+                    {
+                        format!(
+                            " — your SSO session may have expired; run: aws sso login --profile {}",
+                            settings.aws_profile
+                        )
+                    } else {
+                        String::new()
+                    };
+                    return Err(AppError::Other(format!("Bedrock: {detail}{hint}")));
+                }
+            }
+        };
 
         if let Some(usage) = resp.usage() {
             total_in += usage.input_tokens();
@@ -376,8 +433,8 @@ pub async fn run(
             return Err(AppError::Other("Bedrock returned no message".into()));
         };
 
-        let mut tool_results: Vec<ContentBlock> = Vec::new();
-        let mut submitted: Option<Value> = None;
+        let mut tool_calls: Vec<(String, String, Value)> = Vec::new();
+        let mut submitted: Option<(String, Value)> = None;
 
         for block in message.content() {
             match block {
@@ -398,55 +455,85 @@ pub async fn run(
                         describe_tool_call(tu.name(), &input),
                     );
                     if tu.name() == "submit_analysis" {
-                        devlog::info(app, "analysis", "model submitted the analysis");
-                        submitted = Some(input);
-                        continue;
+                        submitted = Some((tu.tool_use_id().to_string(), input));
+                    } else {
+                        tool_calls.push((tu.tool_use_id().to_string(), tu.name().to_string(), input));
                     }
-                    devlog::debug(
-                        app,
-                        "analysis",
-                        format!("tool {}({})", tu.name(), serde_json::to_string(&input).unwrap_or_default()),
-                    );
-                    let result = tools.execute(tu.name(), &input).await;
-                    let (content, is_error) = match result {
-                        Ok(text) => (text, false),
-                        Err(e) => {
-                            devlog::warn(app, "analysis", format!("tool {} failed: {e}", tu.name()));
-                            (format!("error: {e}"), true)
-                        }
-                    };
-                    devlog::debug(
-                        app,
-                        "analysis",
-                        format!("tool {} → {} chars", tu.name(), content.len()),
-                    );
-                    let mut trb = ToolResultBlock::builder()
-                        .tool_use_id(tu.tool_use_id())
-                        .content(ToolResultContentBlock::Text(content));
-                    if is_error {
-                        trb = trb.status(aws_sdk_bedrockruntime::types::ToolResultStatus::Error);
-                    }
-                    tool_results.push(ContentBlock::ToolResult(
-                        trb.build().map_err(|e| AppError::Other(e.to_string()))?,
-                    ));
                 }
                 _ => {}
             }
         }
 
-        if let Some(payload) = submitted {
-            devlog::info(
-                app,
-                "analysis",
-                format!("complete after {} turns — {total_in} in / {total_out} out tokens", turn + 1),
-            );
-            note(app, &mut trace, &pr_id, level, "status", "assessment assembled");
-            let usage = AnalysisUsage {
-                input_tokens: total_in as i64,
-                output_tokens: total_out as i64,
-                turns: (turn + 1) as i64,
-            };
-            return parse_submission(pr, level, focus_node_id, payload, trace, usage);
+        // Execute the turn's tool calls concurrently — multi-file reads are
+        // the common case and serial awaits were pure added latency.
+        let mut tool_results: Vec<ContentBlock> = Vec::new();
+        if !tool_calls.is_empty() {
+            let executed = futures::future::join_all(tool_calls.iter().map(
+                |(_, name, input)| {
+                    let tools = &tools;
+                    async move { tools.execute(name, input).await }
+                },
+            ))
+            .await;
+            for ((id, name, _), result) in tool_calls.iter().zip(executed) {
+                let (content, is_error) = match result {
+                    Ok(text) => (text, false),
+                    Err(e) => {
+                        devlog::warn(app, "analysis", format!("tool {name} failed: {e}"));
+                        (format!("error: {e}"), true)
+                    }
+                };
+                devlog::debug(app, "analysis", format!("tool {name} → {} chars", content.len()));
+                let mut trb = ToolResultBlock::builder()
+                    .tool_use_id(id)
+                    .content(ToolResultContentBlock::Text(content));
+                if is_error {
+                    trb = trb.status(aws_sdk_bedrockruntime::types::ToolResultStatus::Error);
+                }
+                tool_results.push(ContentBlock::ToolResult(
+                    trb.build().map_err(|e| AppError::Other(e.to_string()))?,
+                ));
+            }
+        }
+
+        if let Some((submit_id, payload)) = submitted {
+            match parse_payload(&payload) {
+                Ok((graph, assessment)) => {
+                    devlog::info(
+                        app,
+                        "analysis",
+                        format!(
+                            "complete after {} turns — {total_in} in / {total_out} out tokens",
+                            turn + 1
+                        ),
+                    );
+                    note(app, &mut trace, &pr_id, level, "status", "assessment assembled");
+                    let usage = AnalysisUsage {
+                        input_tokens: total_in as i64,
+                        output_tokens: total_out as i64,
+                        turns: (turn + 1) as i64,
+                    };
+                    return Ok(build_result(pr, level, focus_node_id, graph, assessment, trace, usage));
+                }
+                Err(e) if resubmits < 2 => {
+                    // Don't waste the whole run on a malformed submission —
+                    // bounce the validation error back and let it fix itself.
+                    resubmits += 1;
+                    devlog::warn(app, "analysis", format!("invalid submission ({e}) — asking model to resubmit"));
+                    note(app, &mut trace, &pr_id, level, "status", "submission incomplete — retrying");
+                    tool_results.push(ContentBlock::ToolResult(
+                        ToolResultBlock::builder()
+                            .tool_use_id(submit_id)
+                            .content(ToolResultContentBlock::Text(format!(
+                                "Submission rejected: {e}. Call submit_analysis again with EVERY field present (empty arrays where nothing applies)."
+                            )))
+                            .status(aws_sdk_bedrockruntime::types::ToolResultStatus::Error)
+                            .build()
+                            .map_err(|e| AppError::Other(e.to_string()))?,
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         messages.push(message);
@@ -487,14 +574,7 @@ pub async fn run(
     )))
 }
 
-fn parse_submission(
-    pr: &TrackedPr,
-    level: AnalysisLevel,
-    focus_node_id: Option<String>,
-    payload: Value,
-    trace: Vec<TraceStep>,
-    usage: AnalysisUsage,
-) -> AppResult<AnalysisResult> {
+fn parse_payload(payload: &Value) -> AppResult<(C4Graph, Assessment)> {
     let graph: C4Graph = serde_json::from_value(
         payload
             .get("graph")
@@ -518,8 +598,20 @@ fn parse_submission(
             crate::analysis::types::ImpactKind::Service => 1,
             crate::analysis::types::ImpactKind::Internal => 2,
         });
+    Ok((graph, assessment))
+}
 
-    Ok(AnalysisResult {
+#[allow(clippy::too_many_arguments)]
+fn build_result(
+    pr: &TrackedPr,
+    level: AnalysisLevel,
+    focus_node_id: Option<String>,
+    graph: C4Graph,
+    assessment: Assessment,
+    trace: Vec<TraceStep>,
+    usage: AnalysisUsage,
+) -> AnalysisResult {
+    AnalysisResult {
         pr_id: pr.info.id.clone(),
         head_sha: pr.info.head_sha.clone(),
         level,
@@ -529,5 +621,5 @@ fn parse_submission(
         created_at: Utc::now().to_rfc3339(),
         trace,
         usage,
-    })
+    }
 }
