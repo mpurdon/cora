@@ -1518,26 +1518,64 @@ input:focus-visible {
 
 .crumb-sep {
   color: var(--idle);
-  font-size: 11px;
-  padding: 0 3px;
+  font-size: 12px;
+  padding: 0 5px;
 }
 
 .crumb {
-  font-size: 11.5px;
-  color: var(--muted);
-  padding: 3px 7px;
-  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 5px;
+  border-radius: 7px;
+  border: 1px solid transparent;
 }
 
 .crumb:not(:disabled):hover {
   background: var(--ink-2);
-  color: var(--text);
+  border-color: var(--line);
 }
 
 .crumb.current {
+  border-color: color-mix(in srgb, var(--chat) 55%, transparent);
+  background: color-mix(in srgb, var(--chat) 8%, transparent);
+  cursor: default;
+}
+
+.crumb-level {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.crumb-level.level-context {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.crumb-level.level-component {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.crumb-level.level-code {
+  color: var(--chat);
+  border-color: color-mix(in srgb, var(--chat) 45%, transparent);
+}
+
+.crumb-name {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.crumb.current .crumb-name {
   color: var(--text);
   font-weight: 600;
-  cursor: default;
 }
 
 .drill-hint {

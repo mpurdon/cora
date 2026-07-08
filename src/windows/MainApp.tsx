@@ -244,20 +244,30 @@ function AnalysisPanel({
     pushDrill(node, next);
   };
 
-  const crumbs = stack.length > 1 && (
-    <nav className="drill-crumbs">
-      {stack.map((f, i) => (
-        <span key={i} className="crumb-wrap">
-          {i > 0 && <span className="crumb-sep">›</span>}
-          <button
-            className={`crumb${i === stack.length - 1 ? " current" : ""}`}
-            disabled={i === stack.length - 1}
-            onClick={() => setStack(stack.slice(0, i + 1))}
-          >
-            {f.label}
-          </button>
-        </span>
-      ))}
+  const LEVEL_NAME: Record<AnalysisLevel, string> = {
+    context: "context",
+    component: "component",
+    code: "code",
+  };
+  const crumbs = (
+    <nav className="drill-crumbs" aria-label="C4 level">
+      {stack.map((f, i) => {
+        const current = i === stack.length - 1;
+        return (
+          <span key={i} className="crumb-wrap">
+            {i > 0 && <span className="crumb-sep">›</span>}
+            <button
+              className={`crumb${current ? " current" : ""}`}
+              disabled={current}
+              title={current ? undefined : `Back up to ${f.label}`}
+              onClick={() => setStack(stack.slice(0, i + 1))}
+            >
+              <span className={`crumb-level level-${f.level}`}>{LEVEL_NAME[f.level]}</span>
+              <span className="crumb-name">{f.label}</span>
+            </button>
+          </span>
+        );
+      })}
     </nav>
   );
 
