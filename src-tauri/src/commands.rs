@@ -102,6 +102,15 @@ pub fn mark_pr_read_kinds(
     Ok(())
 }
 
+fn pr_label(store: &Store, id: &str) -> String {
+    store
+        .get_pr(id)
+        .ok()
+        .flatten()
+        .map(|p| format!("{}#{} — {}", p.info.repo, p.info.number, p.info.title))
+        .unwrap_or_else(|| id.to_string())
+}
+
 #[tauri::command]
 pub fn set_pr_muted(
     app: AppHandle,
@@ -109,14 +118,113 @@ pub fn set_pr_muted(
     id: String,
     muted: bool,
 ) -> AppResult<()> {
+    let label = pr_label(&store, &id);
     store.set_muted(&id, muted)?;
+    store.add_audit(
+        if muted { "muted" } else { "unmuted" },
+        &id,
+        &label,
+        &(!muted).to_string(),
+        &muted.to_string(),
+    )?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
     Ok(())
 }
 
 #[tauri::command]
 pub fn untrack_pr(app: AppHandle, store: State<'_, Arc<Store>>, id: String) -> AppResult<()> {
+    let label = pr_label(&store, &id);
     store.untrack(&id)?;
+    store.add_audit("untracked", &id, &label, "tracked", "untracked")?;
+    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    Ok(())
+}
+
+/// Repo priority as a first-class, audited action (context menus + detail).
+#[tauri::command]
+pub fn set_repo_priority(
+    app: AppHandle,
+    store: State<'_, Arc<Store>>,
+    trigger: State<'_, PollTrigger>,
+    repo: String,
+    priority: crate::models::RepoPriority,
+) -> AppResult<()> {
+    let mut settings = store.settings()?;
+    let old = settings
+        .repo_priorities
+        .get(&repo)
+        .copied()
+        .unwrap_or(crate::models::RepoPriority::Normal);
+    if priority == crate::models::RepoPriority::Normal {
+        settings.repo_priorities.remove(&repo);
+    } else {
+        settings.repo_priorities.insert(repo.clone(), priority);
+    }
+    store.save_settings(&settings)?;
+    store.add_audit(
+        "repo-priority",
+        &repo,
+        &repo,
+        &format!("{old:?}").to_lowercase(),
+        &format!("{priority:?}").to_lowercase(),
+    )?;
+    trigger.0.notify_one();
+    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_audit_log(store: State<'_, Arc<Store>>) -> AppResult<Vec<crate::models::AuditEntry>> {
+    store.list_audit(200)
+}
+
+/// Reverse a recorded action by restoring its old value.
+#[tauri::command]
+pub fn undo_audit(
+    app: AppHandle,
+    store: State<'_, Arc<Store>>,
+    trigger: State<'_, PollTrigger>,
+    id: i64,
+) -> AppResult<()> {
+    let entry = store
+        .get_audit(id)?
+        .ok_or_else(|| AppError::Other("audit entry not found".into()))?;
+    if entry.undone {
+        return Err(AppError::Other("already undone".into()));
+    }
+    match entry.action.as_str() {
+        "muted" => store.set_muted(&entry.subject_id, false)?,
+        "unmuted" => store.set_muted(&entry.subject_id, true)?,
+        "untracked" => store.retrack(&entry.subject_id)?,
+        "tracked" => store.untrack(&entry.subject_id)?,
+        "pr-priority" => {
+            store.set_pr_priority(
+                &entry.subject_id,
+                crate::models::PrPriority::parse(&entry.old_value),
+            )?;
+        }
+        "repo-priority" => {
+            let mut settings = store.settings()?;
+            let old = match entry.old_value.as_str() {
+                "high" => Some(crate::models::RepoPriority::High),
+                "low" => Some(crate::models::RepoPriority::Low),
+                "ignored" => Some(crate::models::RepoPriority::Ignored),
+                _ => None,
+            };
+            match old {
+                Some(p) => {
+                    settings.repo_priorities.insert(entry.subject_id.clone(), p);
+                }
+                None => {
+                    settings.repo_priorities.remove(&entry.subject_id);
+                }
+            }
+            store.save_settings(&settings)?;
+            trigger.0.notify_one();
+        }
+        other => return Err(AppError::Other(format!("cannot undo action: {other}"))),
+    }
+    store.mark_audit_undone(id)?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
     Ok(())
 }
@@ -156,6 +264,13 @@ pub async fn track_pr_url(
 
     let now = Utc::now().to_rfc3339();
     let stored = store.upsert_pr(&info, &[PrSource::Manual], &[ChangeKind::New], &now)?;
+    store.add_audit(
+        "tracked",
+        &stored.info.id,
+        &format!("{}#{} — {}", stored.info.repo, stored.info.number, stored.info.title),
+        "untracked",
+        "tracked",
+    )?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
     Ok(stored)
 }
@@ -307,7 +422,13 @@ pub fn set_pr_priority(
     id: String,
     priority: crate::models::PrPriority,
 ) -> AppResult<()> {
+    let label = pr_label(&store, &id);
+    let old = store
+        .get_pr(&id)?
+        .map(|p| p.priority)
+        .unwrap_or(crate::models::PrPriority::Normal);
     store.set_pr_priority(&id, priority)?;
+    store.add_audit("pr-priority", &id, &label, old.as_str(), priority.as_str())?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
     Ok(())
 }
