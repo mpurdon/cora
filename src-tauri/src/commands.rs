@@ -511,6 +511,76 @@ pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) ->
     Ok(())
 }
 
+/// New line-anchored review comment from the diff view. Uses the REST
+/// endpoint because it creates a standalone comment without a pending review.
+#[tauri::command]
+pub async fn add_diff_comment(
+    app: AppHandle,
+    pr_id: String,
+    path: String,
+    line: i64,
+    body: String,
+) -> AppResult<()> {
+    if body.trim().is_empty() {
+        return Err(AppError::Other("comment is empty".into()));
+    }
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let tools = crate::analysis::tools::RepoTools::new(
+        &settings.github_graphql_url,
+        &pr.info.repo,
+        pr.info.number,
+        &pr.info.head_sha,
+        &token,
+    )?;
+    tools
+        .post(
+            &format!("repos/{}/pulls/{}/comments", tools.repo(), tools.pr_number()),
+            &serde_json::json!({
+                "body": body,
+                "commit_id": tools.head_ref(),
+                "path": path,
+                "line": line,
+                "side": "RIGHT",
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Toggle an emoji reaction on any comment.
+#[tauri::command]
+pub async fn toggle_reaction(
+    app: AppHandle,
+    subject_id: String,
+    content: String,
+    remove: bool,
+) -> AppResult<()> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let doc = if remove {
+        "mutation($subjectId: ID!, $content: ReactionContent!) {
+           removeReaction(input: { subjectId: $subjectId, content: $content }) { clientMutationId }
+         }"
+    } else {
+        "mutation($subjectId: ID!, $content: ReactionContent!) {
+           addReaction(input: { subjectId: $subjectId, content: $content }) { clientMutationId }
+         }"
+    };
+    client
+        .run(doc, &serde_json::json!({ "subjectId": subject_id, "content": content }))
+        .await?;
+    Ok(())
+}
+
 /// Conversation + review threads for the Comments tab.
 #[tauri::command]
 pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConversation> {
@@ -528,12 +598,20 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
       repository(owner: $owner, name: $name) {
         pullRequest(number: $number) {
           comments(first: 100) {
-            nodes { id author { login __typename } body createdAt url }
+            nodes {
+              id author { login __typename } body createdAt url
+              reactionGroups { content viewerHasReacted reactors { totalCount } }
+            }
           }
           reviewThreads(first: 100) {
             nodes {
               id isResolved isOutdated path line startLine
-              comments(first: 100) { nodes { id author { login __typename } body createdAt url } }
+              comments(first: 100) {
+                nodes {
+                  id author { login __typename } body createdAt url
+                  reactionGroups { content viewerHasReacted reactors { totalCount } }
+                }
+              }
             }
           }
         }
@@ -552,6 +630,29 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
         let is_bot = v.pointer("/author/__typename").and_then(serde_json::Value::as_str)
             == Some("Bot")
             || author.ends_with("[bot]");
+        let reactions = v
+            .get("reactionGroups")
+            .and_then(serde_json::Value::as_array)
+            .map(|groups| {
+                groups
+                    .iter()
+                    .filter_map(|g| {
+                        let count = g.pointer("/reactors/totalCount")?.as_i64()?;
+                        if count == 0 {
+                            return None; // only surface reactions that exist
+                        }
+                        Some(crate::models::ReactionGroup {
+                            content: g.get("content")?.as_str()?.to_string(),
+                            count,
+                            viewer_has_reacted: g
+                                .get("viewerHasReacted")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Some(PrComment {
             id: v.get("id")?.as_str()?.to_string(),
             author,
@@ -559,6 +660,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
             body: v.get("body")?.as_str()?.to_string(),
             created_at: v.get("createdAt")?.as_str()?.to_string(),
             url: v.get("url")?.as_str()?.to_string(),
+            reactions,
         })
     };
 

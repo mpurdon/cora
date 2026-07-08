@@ -124,6 +124,17 @@ impl PrPriority {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ReactionGroup {
+    /// GitHub reaction content: THUMBS_UP, HEART, ROCKET, …
+    pub content: String,
+    #[ts(type = "number")]
+    pub count: i64,
+    pub viewer_has_reacted: bool,
+}
+
 /// A single comment on a PR (conversation or review thread).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -136,6 +147,8 @@ pub struct PrComment {
     pub body: String,
     pub created_at: String,
     pub url: String,
+    #[serde(default)]
+    pub reactions: Vec<ReactionGroup>,
 }
 
 /// A review thread anchored to code.

@@ -88,6 +88,8 @@ pub fn run() {
             commands::refresh_pr,
             commands::add_pr_comment,
             commands::reply_to_thread,
+            commands::add_diff_comment,
+            commands::toggle_reaction,
             commands::untrack_pr,
             commands::track_pr_url,
             commands::get_analysis,

@@ -395,7 +395,7 @@ function AnalysisPanel({
         </span>
         <span className="spacer" />
         <RefreshPrButton prId={pr.id} />
-        <button className="icon-btn" title="Re-run the analysis" onClick={retry}>
+        <button className="icon-btn play-btn" title="Re-run the analysis" onClick={retry}>
           ▶
         </button>
         <button className="action-btn" onClick={() => setDrawerOpen(true)}>

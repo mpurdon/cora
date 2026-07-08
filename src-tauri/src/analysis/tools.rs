@@ -135,6 +135,37 @@ impl RepoTools {
         Ok(text)
     }
 
+    /// Authenticated REST POST (used by mutations like line comments).
+    pub async fn post(&self, path: &str, body: &Value) -> AppResult<Value> {
+        let resp = self
+            .http
+            .post(format!("{}/{}", self.api_base, path))
+            .bearer_auth(&self.token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(body)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let detail = resp.text().await.unwrap_or_default();
+            return Err(AppError::GitHub(format!("POST {path}: HTTP {status} — {detail}")));
+        }
+        Ok(resp.json().await?)
+    }
+
+    pub fn pr_number(&self) -> i64 {
+        self.number
+    }
+
+    pub fn head_ref(&self) -> &str {
+        &self.head_ref
+    }
+
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
     /// Untruncated diff, for the human-facing Diff tab.
     pub async fn pr_diff_full(&self) -> AppResult<String> {
         let resp = self
