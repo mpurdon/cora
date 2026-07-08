@@ -312,6 +312,84 @@ pub fn set_pr_priority(
     Ok(())
 }
 
+/// On-demand refresh of a single PR (the ⟳ button in the PR panel).
+#[tauri::command]
+pub async fn refresh_pr(app: AppHandle, pr_id: String) -> AppResult<TrackedPr> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let existing = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+
+    let doc = format!(
+        "query($id: ID!) {{ node(id: $id) {{ ... on PullRequest {{ ...PrFields }} }} }}\n{PR_FRAGMENT}"
+    );
+    let data = client.run(&doc, &serde_json::json!({ "id": pr_id })).await?;
+    let node = data
+        .pointer("/node")
+        .filter(|v| !v.is_null())
+        .ok_or_else(|| AppError::GitHub("PR no longer accessible".into()))?;
+    let info = parse_pr(node).ok_or_else(|| AppError::GitHub("unexpected PR shape".into()))?;
+
+    let changes = crate::models::compute_changes(&existing.info, &info);
+    if changes.contains(&ChangeKind::NewCommits) {
+        store.invalidate_analyses(&pr_id)?;
+    }
+    let now = Utc::now().to_rfc3339();
+    let stored = store.upsert_pr(&info, &[], &changes, &now)?;
+    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    Ok(stored)
+}
+
+/// Post a top-level comment on the PR conversation.
+#[tauri::command]
+pub async fn add_pr_comment(app: AppHandle, pr_id: String, body: String) -> AppResult<()> {
+    if body.trim().is_empty() {
+        return Err(AppError::Other("comment is empty".into()));
+    }
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    client
+        .run(
+            "mutation($subjectId: ID!, $body: String!) {
+               addComment(input: { subjectId: $subjectId, body: $body }) { clientMutationId }
+             }",
+            &serde_json::json!({ "subjectId": pr_id, "body": body }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Reply to a code review thread.
+#[tauri::command]
+pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) -> AppResult<()> {
+    if body.trim().is_empty() {
+        return Err(AppError::Other("reply is empty".into()));
+    }
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    client
+        .run(
+            "mutation($threadId: ID!, $body: String!) {
+               addPullRequestReviewThreadReply(
+                 input: { pullRequestReviewThreadId: $threadId, body: $body }
+               ) { clientMutationId }
+             }",
+            &serde_json::json!({ "threadId": thread_id, "body": body }),
+        )
+        .await?;
+    Ok(())
+}
+
 /// Conversation + review threads for the Comments tab.
 #[tauri::command]
 pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConversation> {

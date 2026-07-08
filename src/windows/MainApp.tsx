@@ -117,6 +117,24 @@ function Legend() {
   );
 }
 
+/** Manual single-PR data refresh (status, checks, comments count). */
+function RefreshPrButton({ prId }: { prId: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      className={`icon-btn${busy ? " spinning" : ""}`}
+      title="Refresh this PR from GitHub"
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void ipc.refreshPr(prId).finally(() => setBusy(false));
+      }}
+    >
+      ⟳
+    </button>
+  );
+}
+
 function TrackPrInput({ onDone }: { onDone: () => void }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -375,11 +393,12 @@ function AnalysisPanel({
           )}
         </span>
         <span className="spacer" />
+        <RefreshPrButton prId={pr.id} />
+        <button className="icon-btn rerun-btn" title="Re-run the analysis" onClick={retry}>
+          ↻
+        </button>
         <button className="action-btn" onClick={() => setDrawerOpen(true)}>
           Activity ›
-        </button>
-        <button className="action-btn" title="Discard and analyze again" onClick={retry}>
-          Re-run
         </button>
       </div>
       {tab === "assessment" ? (
@@ -580,6 +599,16 @@ export function MainApp() {
     });
   };
 
+  const [showMuted, setShowMuted] = useState(
+    () => localStorage.getItem("cora.showMuted") === "1",
+  );
+  const toggleMuted = () => {
+    setShowMuted((s) => {
+      localStorage.setItem("cora.showMuted", s ? "0" : "1");
+      return !s;
+    });
+  };
+
   const [priorities, setPriorities] = useState<Record<string, RepoPriority>>({});
   useEffect(() => {
     void ipc.getSettings().then((s) => setPriorities(s.repoPriorities));
@@ -688,7 +717,9 @@ export function MainApp() {
         pr.author.toLowerCase().includes(q) ||
         String(pr.number).includes(q),
     );
-    const unignored = textMatched.filter((pr) => prioOf(pr.repo) !== "ignored");
+    const unignored = textMatched.filter(
+      (pr) => prioOf(pr.repo) !== "ignored" && (showMuted || !pr.muted),
+    );
     const bucketMatched = bucketFilter
       ? unignored.filter((pr) => inBucket(pr, bucketFilter))
       : unignored;
@@ -735,7 +766,7 @@ export function MainApp() {
       entries.sort((a, b) => groupWeight(a) - groupWeight(b) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
-  }, [prs, filter, sortMode, groupMode, ready, prioOf, bucketFilter]);
+  }, [prs, filter, sortMode, groupMode, ready, prioOf, bucketFilter, showMuted]);
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
@@ -882,6 +913,13 @@ export function MainApp() {
           >
             <span className="lamp bad" /> no conflicts
           </button>
+          <button
+            className={`chip${showMuted ? " on" : ""}`}
+            title="Muted PRs are hidden by default — toggle to see them (dimmed)"
+            onClick={toggleMuted}
+          >
+            <span className="lamp" /> muted
+          </button>
           {hiddenByReady > 0 && <span className="hidden-note">−{hiddenByReady}</span>}
         </div>
 
@@ -958,7 +996,7 @@ export function MainApp() {
                   group.prs.map((pr) => (
                     <button
                       key={pr.id}
-                      className={`rail-row${pr.id === selectedId ? " selected" : ""}`}
+                      className={`rail-row${pr.id === selectedId ? " selected" : ""}${pr.muted ? " muted-pr" : ""}`}
                       onClick={() => select(pr.id)}
                       onContextMenu={(e) => {
                         e.preventDefault();
