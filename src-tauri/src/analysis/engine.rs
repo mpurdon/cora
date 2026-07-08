@@ -37,7 +37,7 @@ C4 graph rules:
 - Use `boundary` to nest: containers inside their system, components inside their container.
 - Mark every node/edge with its change status. Edges that cross a boundary MUST set crossesBoundary=true.
 
-When you are done exploring, you MUST call submit_analysis exactly once with the complete result. Do not produce a final text answer."#;
+When you are done exploring, you MUST call submit_analysis exactly once with the complete result. Include EVERY field in the schema — when a list has nothing to report, pass an empty array, never omit the field. Do not produce a final text answer."#;
 
 fn level_instructions(level: AnalysisLevel, focus: Option<&str>) -> String {
     match level {

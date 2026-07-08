@@ -79,6 +79,7 @@ pub fn run() {
             commands::get_pr_diff,
             commands::aws_sso_login,
             commands::check_aws,
+            commands::log_frontend_error,
             commands::get_dev_logs,
             commands::clear_dev_logs,
             commands::get_default_system_prompt,

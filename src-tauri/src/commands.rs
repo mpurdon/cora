@@ -403,6 +403,23 @@ pub async fn get_pr_diff(app: AppHandle, pr_id: String) -> AppResult<String> {
     tools.pr_diff_full().await
 }
 
+/// Frontend crash reporter: devlog + a file we can read even when the UI is
+/// a white screen.
+#[tauri::command]
+pub fn log_frontend_error(app: AppHandle, message: String) {
+    crate::devlog::error(&app, "ui", message.clone());
+    if let Ok(dir) = app.path().app_data_dir() {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("frontend-errors.log"))
+        {
+            let _ = writeln!(f, "{} {}", chrono::Utc::now().to_rfc3339(), message);
+        }
+    }
+}
+
 // -- developer mode ---------------------------------------------------------------
 
 #[tauri::command]
