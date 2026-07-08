@@ -63,10 +63,19 @@ impl Store {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None),
                 e => Err(e),
             })?;
-        Ok(match json {
+        let mut settings: Settings = match json {
             Some(j) => serde_json::from_str(&j).unwrap_or_default(),
             None => Settings::default(),
-        })
+        };
+        // Migration: "default" was the pre-Bedrock-config placeholder profile;
+        // anyone still on it never configured AWS, so adopt the new defaults.
+        if settings.aws_profile == "default" {
+            let fresh = Settings::default();
+            settings.aws_profile = fresh.aws_profile;
+            settings.aws_region = fresh.aws_region;
+            settings.bedrock_model_id = fresh.bedrock_model_id;
+        }
+        Ok(settings)
     }
 
     pub fn save_settings(&self, settings: &Settings) -> AppResult<()> {
