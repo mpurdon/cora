@@ -205,12 +205,14 @@ pub fn run_analysis(
                 let _ = app.emit(analysis_events::ANALYSIS_COMPLETE, result);
             }
             Err(e) => {
+                let error = e.to_string();
                 let _ = app.emit(
                     analysis_events::ANALYSIS_ERROR,
                     crate::analysis::types::AnalysisError {
                         pr_id,
                         level,
-                        error: e.to_string(),
+                        kind: crate::analysis::types::classify_error(&error),
+                        error,
                     },
                 );
             }
@@ -257,6 +259,61 @@ async fn execute_analysis(
         &result.created_at,
     )?;
     Ok(result)
+}
+
+// -- AWS session helpers ---------------------------------------------------------
+
+/// Run `aws sso login` for the configured profile. Opens the browser and
+/// blocks until the CLI reports the session is established.
+#[tauri::command]
+pub async fn aws_sso_login(window: WebviewWindow, profile: String) -> AppResult<()> {
+    require_main(&window)?;
+    if profile.trim().is_empty() {
+        return Err(AppError::Other("no AWS profile configured".into()));
+    }
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        std::process::Command::new("aws")
+            .args(["sso", "login", "--profile", profile.trim()])
+            .output()
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+    .map_err(|e| {
+        AppError::Other(format!(
+            "could not run the AWS CLI ({e}) — is `aws` installed and on PATH?"
+        ))
+    })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(AppError::Other(stderr.trim().to_string()))
+    }
+}
+
+/// Cheap credentials probe: resolves the profile's credential chain without
+/// calling Bedrock. Catches expired SSO sessions and missing profiles.
+#[tauri::command]
+pub async fn check_aws(profile: String, region: String) -> AppResult<String> {
+    use aws_credential_types::provider::ProvideCredentials;
+    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+    if !profile.is_empty() {
+        loader = loader.profile_name(&profile);
+    }
+    if !region.is_empty() {
+        loader = loader.region(aws_config::Region::new(region));
+    }
+    let config = loader.load().await;
+    let provider = config
+        .credentials_provider()
+        .ok_or_else(|| AppError::Other("no credentials provider for this profile".into()))?;
+    provider.provide_credentials().await.map_err(|e| {
+        AppError::Other(format!(
+            "{}",
+            aws_smithy_types::error::display::DisplayErrorContext(&e)
+        ))
+    })?;
+    Ok("credentials resolved".into())
 }
 
 // -- windows / poll control ----------------------------------------------------

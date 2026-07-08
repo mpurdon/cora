@@ -107,6 +107,9 @@ pub struct Settings {
     pub repo_priorities: std::collections::HashMap<String, RepoPriority>,
     #[ts(type = "number")]
     pub poll_interval_secs: u64,
+    /// Show the always-on-top callout window when the app starts.
+    #[serde(default = "default_true")]
+    pub show_callout_on_startup: bool,
     pub github_graphql_url: String,
     pub aws_profile: String,
     /// Explicit region override; some SSO profiles don't carry one.
@@ -121,12 +124,17 @@ fn default_aws_region() -> String {
     "us-east-2".into()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             watched_repos: Vec::new(),
             repo_priorities: std::collections::HashMap::new(),
             poll_interval_secs: 45,
+            show_callout_on_startup: true,
             github_graphql_url: "https://api.github.com/graphql".into(),
             aws_profile: "claude-code-bedrock".into(),
             aws_region: default_aws_region(),

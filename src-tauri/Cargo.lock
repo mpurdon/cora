@@ -4751,6 +4751,7 @@ name = "tauri-app"
 version = "0.1.0"
 dependencies = [
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-bedrockruntime",
  "aws-smithy-types",
  "chrono",

@@ -115,6 +115,20 @@ function GeneralPane({ settings, save }: PaneProps) {
         />
       </Field>
 
+      <Field
+        label="Callout window"
+        hint="The small always-on-top PR panel. You can always toggle it from the tray or with ▣."
+      >
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={settings.showCalloutOnStartup}
+            onChange={(e) => void save({ showCalloutOnStartup: e.target.checked })}
+          />
+          Open the callout at launch
+        </label>
+      </Field>
+
       <Field label="Symbol legend" hint="Show the lamps/markers explainer card again in the PR list.">
         <button
           className="action-btn"
@@ -367,6 +381,33 @@ function ReposPane({
 // ---------------------------------------------------------------- aws
 
 function AwsPane({ settings, save }: PaneProps) {
+  const [check, setCheck] = useState<
+    { state: "idle" } | { state: "checking" } | { state: "ok" } | { state: "err"; detail: string }
+  >({ state: "idle" });
+  const [signingIn, setSigningIn] = useState(false);
+
+  const test = async () => {
+    setCheck({ state: "checking" });
+    try {
+      await ipc.checkAws(settings.awsProfile, settings.awsRegion);
+      setCheck({ state: "ok" });
+    } catch (e) {
+      setCheck({ state: "err", detail: String(e) });
+    }
+  };
+
+  const signIn = async () => {
+    setSigningIn(true);
+    try {
+      await ipc.awsSsoLogin(settings.awsProfile);
+      await test();
+    } catch (e) {
+      setCheck({ state: "err", detail: String(e) });
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
   return (
     <section className="pane-section">
       <h2>AWS</h2>
@@ -374,6 +415,21 @@ function AwsPane({ settings, save }: PaneProps) {
         Bedrock powers the architecture analysis. Credentials come from your local AWS config —
         CORA never stores them.
       </p>
+
+      <Field label="Connection">
+        <div className="row">
+          <button className="action-btn" disabled={check.state === "checking"} onClick={() => void test()}>
+            {check.state === "checking" ? "Checking…" : "Test connection"}
+          </button>
+          {check.state === "ok" && <span className="pat-ok">✓ credentials valid</span>}
+          {check.state === "err" && (
+            <button className="action-btn auth-primary" disabled={signingIn} onClick={() => void signIn()}>
+              {signingIn ? "Waiting for browser…" : "Sign in with AWS SSO"}
+            </button>
+          )}
+        </div>
+        {check.state === "err" && <div className="settings-error">{check.detail}</div>}
+      </Field>
 
       <Field
         label="Profile"
