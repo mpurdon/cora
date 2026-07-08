@@ -108,7 +108,8 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
       },
     }));
     try {
-      await ipc.runAnalysis(prId, level, focus);
+      // Explicit starts always rebuild — cached results come via ensure().
+      await ipc.runAnalysis(prId, level, focus, true);
     } catch (e) {
       set((s) => ({
         runs: { ...s.runs, [key]: { status: "error", progress: [], error: String(e) } },
