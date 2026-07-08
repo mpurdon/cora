@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { Assessment } from "../../bindings/Assessment";
 import type { ImpactKind } from "../../bindings/ImpactKind";
 import type { Pillar } from "../../bindings/Pillar";
@@ -23,6 +24,37 @@ const FIT_LABEL = {
   tension: "in tension with the architecture",
   misfit: "does not fit the architecture",
 } as const;
+
+/** Collapsed by default: severity + the actionable "→ …" line. Expanding
+ *  reveals the full finding detail and the canvas link. */
+function WaFindingRow({
+  finding,
+  onFocusNodes,
+}: {
+  finding: WaFinding;
+  onFocusNodes: (nodeIds: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`wa-finding-row${open ? " open" : ""}`}>
+      <button className="wa-finding-header" onClick={() => setOpen((o) => !o)}>
+        <span className="chevron">{open ? "▾" : "▸"}</span>
+        <span className={`sev sev-${finding.severity}`}>{finding.severity}</span>
+        <span className="wa-rec-line">→ {finding.recommendation}</span>
+      </button>
+      {open && (
+        <div className="wa-finding-detail">
+          <p className="wa-text">{finding.finding}</p>
+          {finding.nodeIds.length > 0 && (
+            <button className="thread-anchor" onClick={() => onFocusNodes(finding.nodeIds)}>
+              show on canvas
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function AssessmentView({
   assessment,
@@ -77,13 +109,7 @@ export function AssessmentView({
             <div key={pillar} className="pillar-group">
               <div className="pillar-name">{PILLAR_LABEL[pillar]}</div>
               {findings.map((f, i) => (
-                <button key={i} className="wa-finding" onClick={() => onFocusNodes(f.nodeIds)}>
-                  <span className={`sev sev-${f.severity}`}>{f.severity}</span>
-                  <span className="wa-body">
-                    <span className="wa-text">{f.finding}</span>
-                    <span className="wa-rec">→ {f.recommendation}</span>
-                  </span>
-                </button>
+                <WaFindingRow key={i} finding={f} onFocusNodes={onFocusNodes} />
               ))}
             </div>
           ))}

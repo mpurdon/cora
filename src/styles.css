@@ -890,6 +890,29 @@ input:focus-visible {
   box-shadow: inset 2px 0 0 var(--text);
 }
 
+.rail-row.muted-pr {
+  opacity: 0.45;
+}
+
+.rerun-btn {
+  color: var(--ok);
+}
+
+.rerun-btn:hover {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.icon-btn.spinning {
+  animation: spin 0.9s linear infinite;
+}
+
 .rail-row .body {
   flex: 1;
   min-width: 0;
@@ -1178,19 +1201,50 @@ input:focus-visible {
   margin-bottom: 6px;
 }
 
-.wa-finding {
-  width: 100%;
-  display: flex;
-  gap: 10px;
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: 8px;
+.wa-finding-row {
   border: 1px solid transparent;
+  border-radius: 8px;
+  margin-bottom: 2px;
 }
 
-.wa-finding:hover {
-  background: var(--ink-1);
+.wa-finding-row.open {
   border-color: var(--line);
+  background: var(--ink-1);
+}
+
+.wa-finding-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 8px;
+}
+
+.wa-finding-header:hover {
+  background: var(--ink-1);
+}
+
+.wa-finding-header .chevron {
+  color: var(--muted);
+  font-size: 9px;
+  flex: none;
+}
+
+.wa-rec-line {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  user-select: text;
+}
+
+.wa-finding-detail {
+  padding: 2px 12px 10px 30px;
+}
+
+.wa-finding-detail .thread-anchor {
+  margin-top: 8px;
 }
 
 .sev {
@@ -1789,6 +1843,55 @@ input:focus-visible {
   100% {
     background: transparent;
   }
+}
+
+/* composer */
+
+.composer {
+  margin-top: 10px;
+}
+
+.composer textarea {
+  width: 100%;
+  min-height: 74px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 9px 11px;
+  resize: vertical;
+  user-select: text;
+}
+
+.composer textarea:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--text) 40%, transparent);
+}
+
+.composer-actions {
+  margin-top: 6px;
+}
+
+.composer-hint {
+  font-size: 9.5px;
+  color: var(--idle);
+}
+
+.thread-reply-btn {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 9px;
+}
+
+.thread-reply-btn:hover {
+  color: var(--text);
+  background: var(--ink-2);
 }
 
 /* code drawer */

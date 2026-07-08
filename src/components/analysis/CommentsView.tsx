@@ -67,13 +67,74 @@ function Comment({ comment, isReply }: { comment: PrComment; isReply: boolean })
   );
 }
 
+/** Textarea + submit, shared by the conversation composer and thread replies. */
+function Composer({
+  placeholder,
+  submitLabel,
+  onSubmit,
+  onCancel,
+}: {
+  placeholder: string;
+  submitLabel: string;
+  onSubmit: (body: string) => Promise<void>;
+  onCancel?: () => void;
+}) {
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onSubmit(body);
+      setBody("");
+      onCancel?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="composer">
+      <textarea
+        placeholder={placeholder}
+        value={body}
+        disabled={busy}
+        onChange={(e) => setBody(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && body.trim()) void submit();
+        }}
+      />
+      {error && <div className="settings-error">{error}</div>}
+      <div className="row composer-actions">
+        <span className="composer-hint mono">markdown · ⌘↩ to send</span>
+        <span className="spacer" />
+        {onCancel && (
+          <button className="action-btn" disabled={busy} onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+        <button className="action-btn" disabled={busy || !body.trim()} onClick={() => void submit()}>
+          {busy ? "Sending…" : submitLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Thread({
   thread,
   onShowCode,
+  onReplied,
 }: {
   thread: ReviewThread;
   onShowCode: (thread: ReviewThread) => void;
+  onReplied: () => void;
 }) {
+  const [replying, setReplying] = useState(false);
   const [root, ...replies] = thread.comments;
   if (!root) return null;
   return (
@@ -91,11 +152,28 @@ function Thread({
         )}
         {thread.resolved && <span className="thread-tag resolved-tag">resolved</span>}
         {thread.outdated && <span className="thread-tag">outdated</span>}
+        <span className="spacer" />
+        {!replying && (
+          <button className="thread-reply-btn" onClick={() => setReplying(true)}>
+            Reply
+          </button>
+        )}
       </div>
       <Comment comment={root} isReply={false} />
       {replies.map((c) => (
         <Comment key={c.id} comment={c} isReply />
       ))}
+      {replying && (
+        <Composer
+          placeholder="Reply to this thread…"
+          submitLabel="Reply"
+          onCancel={() => setReplying(false)}
+          onSubmit={async (body) => {
+            await ipc.replyToThread(thread.id, body);
+            onReplied();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -243,25 +321,31 @@ export function CommentsView({
         <section>
           <span className="eyebrow">Review threads ({open.length} open)</span>
           {open.map((t) => (
-            <Thread key={t.id} thread={t} onShowCode={setCodeThread} />
+            <Thread key={t.id} thread={t} onShowCode={setCodeThread} onReplied={load} />
           ))}
         </section>
       )}
 
-      {conversation.comments.length > 0 && (
-        <section>
-          <span className="eyebrow">Conversation</span>
-          {conversation.comments.map((c) => (
-            <Comment key={c.id} comment={c} isReply={false} />
-          ))}
-        </section>
-      )}
+      <section>
+        <span className="eyebrow">Conversation</span>
+        {conversation.comments.map((c) => (
+          <Comment key={c.id} comment={c} isReply={false} />
+        ))}
+        <Composer
+          placeholder="Comment on this pull request…"
+          submitLabel="Comment"
+          onSubmit={async (body) => {
+            await ipc.addPrComment(prId, body);
+            load();
+          }}
+        />
+      </section>
 
       {resolved.length > 0 && (
         <section>
           <span className="eyebrow">Resolved threads ({resolved.length})</span>
           {resolved.map((t) => (
-            <Thread key={t.id} thread={t} onShowCode={setCodeThread} />
+            <Thread key={t.id} thread={t} onShowCode={setCodeThread} onReplied={load} />
           ))}
         </section>
       )}
