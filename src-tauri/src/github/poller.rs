@@ -54,6 +54,9 @@ pub fn spawn(app: AppHandle) {
 }
 
 fn emit_status(app: &AppHandle, ok: bool, message: Option<String>, rate: Option<i64>) {
+    if let Some(msg) = &message {
+        crate::devlog::warn(app, "poller", msg.clone());
+    }
     let _ = app.emit(
         events::POLL_STATUS,
         PollStatus { ok, message, at: Utc::now().to_rfc3339(), rate_limit_remaining: rate },
@@ -142,6 +145,15 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
 
     let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
     let rate = data.pointer("/rateLimit/remaining").and_then(serde_json::Value::as_i64);
+    crate::devlog::debug(
+        app,
+        "poller",
+        format!(
+            "cycle complete: {} PRs merged from search, rate limit remaining {}",
+            merged.len(),
+            rate.unwrap_or(-1)
+        ),
+    );
     emit_status(app, true, None, rate);
     Ok(rate)
 }

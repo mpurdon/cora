@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AnalysisError } from "../bindings/AnalysisError";
+import type { LogEntry } from "../bindings/LogEntry";
 import type { AnalysisLevel } from "../bindings/AnalysisLevel";
 import type { AnalysisProgress } from "../bindings/AnalysisProgress";
 import type { AnalysisResult } from "../bindings/AnalysisResult";
@@ -38,6 +39,11 @@ export const ipc = {
   awsSsoLogin: (profile: string) => invoke<void>("aws_sso_login", { profile }),
   checkAws: (profile: string, region: string) =>
     invoke<string>("check_aws", { profile, region }),
+  getDevLogs: () => invoke<LogEntry[]>("get_dev_logs"),
+  clearDevLogs: () => invoke<void>("clear_dev_logs"),
+  getDefaultSystemPrompt: () => invoke<string>("get_default_system_prompt"),
+  getAppInternals: () =>
+    invoke<{ dataDir: string; dbPath: string; version: string }>("get_app_internals"),
   showMainWindow: (prId?: string) => invoke<void>("show_main_window", { prId: prId ?? null }),
   toggleCallout: () => invoke<void>("toggle_callout"),
 };
@@ -68,4 +74,8 @@ export function onAnalysisComplete(cb: (r: AnalysisResult) => void): Promise<Unl
 
 export function onAnalysisError(cb: (e: AnalysisError) => void): Promise<UnlistenFn> {
   return listen<AnalysisError>(events.analysisError, (e) => cb(e.payload));
+}
+
+export function onDevLog(cb: (entry: LogEntry) => void): Promise<UnlistenFn> {
+  return listen<LogEntry>("dev:log", (e) => cb(e.payload));
 }

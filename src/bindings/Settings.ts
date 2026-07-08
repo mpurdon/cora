@@ -17,4 +17,12 @@ awsRegion: string, awsEndpointUrl: string,
 /**
  * Bedrock model id — accepts application-inference-profile ARNs.
  */
-bedrockModelId: string, };
+bedrockModelId: string, 
+/**
+ * Unlocks the Developer settings pane (logs, prompt editing, internals).
+ */
+developerMode: boolean, 
+/**
+ * Overrides the analysis system prompt when non-empty.
+ */
+customSystemPrompt: string, };
