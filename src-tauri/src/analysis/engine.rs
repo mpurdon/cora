@@ -11,7 +11,8 @@ use tauri::{AppHandle, Emitter};
 use crate::analysis::tools::RepoTools;
 use crate::devlog;
 use crate::analysis::types::{
-    events, AnalysisLevel, AnalysisProgress, AnalysisResult, Assessment, C4Graph,
+    events, AnalysisLevel, AnalysisProgress, AnalysisResult, AnalysisUsage, Assessment, C4Graph,
+    TraceStep,
 };
 use crate::error::{AppError, AppResult};
 use crate::models::{Settings, TrackedPr};
@@ -183,6 +184,24 @@ fn progress(app: &AppHandle, pr_id: &str, level: AnalysisLevel, message: impl In
     );
 }
 
+/// Emit progress to the UI and record it in the persistent trace.
+fn note(
+    app: &AppHandle,
+    trace: &mut Vec<TraceStep>,
+    pr_id: &str,
+    level: AnalysisLevel,
+    kind: &str,
+    message: impl Into<String>,
+) {
+    let message = message.into();
+    trace.push(TraceStep {
+        at: Utc::now().to_rfc3339(),
+        kind: kind.to_string(),
+        message: message.clone(),
+    });
+    progress(app, pr_id, level, message);
+}
+
 fn describe_tool_call(name: &str, input: &Value) -> String {
     match name {
         "get_pr_diff" => "reading the PR diff".into(),
@@ -285,6 +304,8 @@ pub async fn run(
     let config = tool_config()?;
     let mut nudged = false;
     let (mut total_in, mut total_out) = (0i32, 0i32);
+    let mut trace: Vec<TraceStep> = Vec::new();
+    note(app, &mut trace, &pr_id, level, "status", "starting exploration");
 
     for turn in 0..MAX_TURNS {
         let started = std::time::Instant::now();
@@ -347,14 +368,21 @@ pub async fn run(
         for block in message.content() {
             match block {
                 ContentBlock::Text(t) => {
-                    let snippet: String = t.chars().take(140).collect();
+                    let snippet: String = t.chars().take(400).collect();
                     if !snippet.trim().is_empty() {
-                        progress(app, &pr_id, level, snippet);
+                        note(app, &mut trace, &pr_id, level, "thought", snippet);
                     }
                 }
                 ContentBlock::ToolUse(tu) => {
                     let input = document_to_value(tu.input());
-                    progress(app, &pr_id, level, describe_tool_call(tu.name(), &input));
+                    note(
+                        app,
+                        &mut trace,
+                        &pr_id,
+                        level,
+                        "tool",
+                        describe_tool_call(tu.name(), &input),
+                    );
                     if tu.name() == "submit_analysis" {
                         devlog::info(app, "analysis", "model submitted the analysis");
                         submitted = Some(input);
@@ -398,7 +426,13 @@ pub async fn run(
                 "analysis",
                 format!("complete after {} turns — {total_in} in / {total_out} out tokens", turn + 1),
             );
-            return parse_submission(pr, level, focus_node_id, payload);
+            note(app, &mut trace, &pr_id, level, "status", "assessment assembled");
+            let usage = AnalysisUsage {
+                input_tokens: total_in as i64,
+                output_tokens: total_out as i64,
+                turns: (turn + 1) as i64,
+            };
+            return parse_submission(pr, level, focus_node_id, payload, trace, usage);
         }
 
         messages.push(message);
@@ -444,6 +478,8 @@ fn parse_submission(
     level: AnalysisLevel,
     focus_node_id: Option<String>,
     payload: Value,
+    trace: Vec<TraceStep>,
+    usage: AnalysisUsage,
 ) -> AppResult<AnalysisResult> {
     let graph: C4Graph = serde_json::from_value(
         payload
@@ -477,5 +513,7 @@ fn parse_submission(
         graph,
         assessment,
         created_at: Utc::now().to_rfc3339(),
+        trace,
+        usage,
     })
 }

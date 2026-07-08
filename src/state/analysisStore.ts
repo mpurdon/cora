@@ -12,9 +12,14 @@ import {
 export const analysisKey = (prId: string, level: AnalysisLevel, focus?: string) =>
   `${prId}:${level}:${focus ?? ""}`;
 
+export interface ProgressStep {
+  at: string;
+  message: string;
+}
+
 interface Run {
   status: "idle" | "running" | "done" | "error";
-  progress: string[];
+  progress: ProgressStep[];
   result?: AnalysisResult;
   error?: string;
   errorKind?: AnalysisErrorKind;
@@ -46,7 +51,10 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
             [key]: {
               ...run,
               status: "running",
-              progress: [...run.progress.slice(-30), p.message],
+              progress: [
+                ...run.progress.slice(-400),
+                { at: new Date().toISOString(), message: p.message },
+              ],
             },
           },
         };
@@ -91,7 +99,13 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
   start: async (prId, level, focus) => {
     const key = analysisKey(prId, level, focus);
     set((s) => ({
-      runs: { ...s.runs, [key]: { status: "running", progress: ["starting analysis"] } },
+      runs: {
+        ...s.runs,
+        [key]: {
+          status: "running",
+          progress: [{ at: new Date().toISOString(), message: "starting analysis" }],
+        },
+      },
     }));
     try {
       await ipc.runAnalysis(prId, level, focus);
