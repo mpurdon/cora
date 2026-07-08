@@ -17,10 +17,19 @@ function describe(entry: AuditEntry): string {
       return `PR priority ${entry.oldValue} → ${entry.newValue}`;
     case "repo-priority":
       return `Repo priority ${entry.oldValue} → ${entry.newValue}`;
+    case "merged":
+      return `Merged (${entry.newValue.replace(/^merged \(|\)$/g, "")})`;
+    case "closed":
+      return "Closed";
+    case "reopened":
+      return "Reopened";
     default:
       return entry.action;
   }
 }
+
+/** Merges are permanent; close/reopen are reversed with the PR controls. */
+const UNDOABLE = new Set(["muted", "unmuted", "untracked", "tracked", "pr-priority", "repo-priority"]);
 
 /** Everything you did to CORA's tracking state, undoable. */
 export function HistoryDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -64,11 +73,11 @@ export function HistoryDrawer({ open, onClose }: { open: boolean; onClose: () =>
               </div>
               {entry.undone ? (
                 <span className="thread-tag">undone</span>
-              ) : (
+              ) : UNDOABLE.has(entry.action) ? (
                 <button className="thread-reply-btn" onClick={() => void undo(entry.id)}>
                   Undo
                 </button>
-              )}
+              ) : null}
             </div>
           ))}
         </div>

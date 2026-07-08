@@ -6,6 +6,7 @@ import type { ChangeKind } from "../bindings/ChangeKind";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { LogEntry } from "../bindings/LogEntry";
 import type { PrConversation } from "../bindings/PrConversation";
+import type { PrReviews } from "../bindings/PrReviews";
 import type { PrPriority } from "../bindings/PrPriority";
 import type { AnalysisLevel } from "../bindings/AnalysisLevel";
 import type { AnalysisProgress } from "../bindings/AnalysisProgress";
@@ -52,6 +53,11 @@ export const ipc = {
   undoAudit: (id: number) => invoke<void>("undo_audit", { id }),
   getPrComments: (prId: string) => invoke<PrConversation>("get_pr_comments", { prId }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),
+  getPrReviews: (prId: string) => invoke<PrReviews>("get_pr_reviews", { prId }),
+  mergePr: (prId: string, method: "squash" | "merge" | "rebase") =>
+    invoke<void>("merge_pr", { prId, method }),
+  closePr: (prId: string) => invoke<void>("close_pr", { prId }),
+  reopenPr: (prId: string) => invoke<void>("reopen_pr", { prId }),
   addPrComment: (prId: string, body: string) =>
     invoke<void>("add_pr_comment", { prId, body }),
   replyToThread: (threadId: string, body: string) =>

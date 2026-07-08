@@ -17,6 +17,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
 import type { PrPriority } from "../bindings/PrPriority";
+import type { PrReviews } from "../bindings/PrReviews";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
@@ -117,6 +118,131 @@ function Legend() {
       On the left edge: <span className="marker new">◆</span> you haven't opened it yet ·{" "}
       <span className="marker count">2</span> updates since you last looked. Hover for details.
     </div>
+  );
+}
+
+/** Requested reviewers + latest review states — visible before analyzing. */
+function ReviewStrip({ prId }: { prId: string }) {
+  const [reviews, setReviews] = useState<PrReviews | null>(null);
+  useEffect(() => {
+    setReviews(null);
+    void ipc.getPrReviews(prId).then(setReviews).catch(() => setReviews(null));
+  }, [prId]);
+
+  if (!reviews) return null;
+  if (reviews.requested.length === 0 && reviews.reviews.length === 0) return null;
+
+  const glyph = (state: string) =>
+    state === "APPROVED" ? "✓" : state === "CHANGES_REQUESTED" ? "±" : "💬";
+
+  return (
+    <div className="review-strip">
+      {reviews.reviews.map((r) => (
+        <span key={r.author} className={`review-chip state-${r.state.toLowerCase()}`}>
+          <span className="review-glyph">{glyph(r.state)}</span>
+          {r.author}
+          <span className="review-state">{r.state.toLowerCase().replace(/_/g, " ")}</span>
+        </span>
+      ))}
+      {reviews.requested.map((who) => (
+        <span key={who} className="review-chip state-requested">
+          <span className="review-glyph">…</span>
+          {who}
+          <span className="review-state">requested</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/** Merge / close / reopen with a two-step confirm — no accidental merges. */
+function PrControls({ pr }: { pr: TrackedPr }) {
+  const [method, setMethod] = useState<"squash" | "merge" | "rebase">(
+    () => (localStorage.getItem("cora.mergeMethod") as "squash" | "merge" | "rebase") ?? "squash",
+  );
+  const [confirming, setConfirming] = useState<"merge" | "close" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const act = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      setConfirming(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (pr.state === "MERGED") return null;
+
+  return (
+    <>
+      {pr.state === "CLOSED" ? (
+        <button
+          className="action-btn"
+          disabled={busy}
+          onClick={() => void act(() => ipc.reopenPr(pr.id))}
+        >
+          Reopen
+        </button>
+      ) : confirming === "merge" ? (
+        <>
+          <button
+            className="action-btn confirm-danger"
+            disabled={busy}
+            onClick={() => void act(() => ipc.mergePr(pr.id, method))}
+          >
+            {busy ? "Merging…" : `Confirm ${method} merge`}
+          </button>
+          <button className="action-btn" disabled={busy} onClick={() => setConfirming(null)}>
+            Cancel
+          </button>
+        </>
+      ) : confirming === "close" ? (
+        <>
+          <button
+            className="action-btn confirm-danger"
+            disabled={busy}
+            onClick={() => void act(() => ipc.closePr(pr.id))}
+          >
+            {busy ? "Closing…" : "Confirm close"}
+          </button>
+          <button className="action-btn" disabled={busy} onClick={() => setConfirming(null)}>
+            Cancel
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="merge-group">
+            <button className="action-btn merge-btn" onClick={() => setConfirming("merge")}>
+              Merge
+            </button>
+            <select
+              className="merge-method"
+              value={method}
+              title="Merge method"
+              onChange={(e) => {
+                const m = e.target.value as typeof method;
+                setMethod(m);
+                localStorage.setItem("cora.mergeMethod", m);
+              }}
+            >
+              <option value="squash">squash</option>
+              <option value="merge">merge</option>
+              <option value="rebase">rebase</option>
+            </select>
+          </span>
+          <button className="action-btn danger" onClick={() => setConfirming("close")}>
+            Close
+          </button>
+        </>
+      )}
+      {error && <span className="settings-error">{error}</span>}
+    </>
   );
 }
 
@@ -475,14 +601,10 @@ function AnalysisPanel({
 
 function Detail({
   pr,
-  repoPriority,
-  onRepoPriority,
   pendingComment,
   onPendingCommentHandled,
 }: {
   pr: TrackedPr;
-  repoPriority: RepoPriority;
-  onRepoPriority: (p: RepoPriority) => Promise<void>;
   pendingComment: string | null;
   onPendingCommentHandled: () => void;
 }) {
@@ -554,19 +676,10 @@ function Detail({
         <button className="action-btn" onClick={() => void ipc.untrackPr(pr.id)}>
           Untrack
         </button>
-        <label className="prio-select">
-          repo priority
-          <select
-            value={repoPriority}
-            onChange={(e) => void onRepoPriority(e.target.value as RepoPriority)}
-          >
-            <option value="high">high</option>
-            <option value="normal">normal</option>
-            <option value="low">low</option>
-            <option value="ignored">ignored</option>
-          </select>
-        </label>
+        <span className="spacer" />
+        <PrControls pr={pr} />
       </div>
+      <ReviewStrip prId={pr.id} />
 
       <div className="tabs" role="tablist">
         {TAB_ORDER.map(([key, label], i) => (
@@ -1112,8 +1225,6 @@ export function MainApp() {
         ) : selected ? (
           <Detail
             pr={selected}
-            repoPriority={prioOf(selected.repo)}
-            onRepoPriority={(p) => setRepoPriority(selected.repo, p)}
             pendingComment={pendingComment}
             onPendingCommentHandled={() => setPendingComment(null)}
           />
