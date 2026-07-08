@@ -5,4 +5,12 @@ export type Settings = { watchedRepos: Array<string>,
 /**
  * "owner/name" → priority; absent means Normal.
  */
-repoPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, githubGraphqlUrl: string, awsProfile: string, awsEndpointUrl: string, bedrockModelId: string, };
+repoPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, githubGraphqlUrl: string, awsProfile: string, 
+/**
+ * Explicit region override; some SSO profiles don't carry one.
+ */
+awsRegion: string, awsEndpointUrl: string, 
+/**
+ * Bedrock model id — accepts application-inference-profile ARNs.
+ */
+bedrockModelId: string, };
