@@ -43,11 +43,13 @@ function CommentBody({ body }: { body: string }) {
 
 function Comment({ comment, isReply }: { comment: PrComment; isReply: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const long = comment.body.length > 1500;
+  // Bot comments clamp aggressively — visible, but never dominant.
+  const long = comment.body.length > (comment.isBot ? 400 : 1500);
   return (
     <div className={`pr-comment${isReply ? " reply" : ""}`} id={commentAnchor(comment.id)}>
       <div className="comment-head">
         <span className="comment-author">{comment.author}</span>
+        {comment.isBot && <span className="thread-tag">bot</span>}
         <span className="comment-when">{timeAgo(comment.createdAt)} ago</span>
         <a className="comment-link" href={comment.url} target="_blank" rel="noreferrer" title="Open on GitHub">
           ↗

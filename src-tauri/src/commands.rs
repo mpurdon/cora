@@ -329,12 +329,12 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
       repository(owner: $owner, name: $name) {
         pullRequest(number: $number) {
           comments(first: 100) {
-            nodes { id author { login } body createdAt url }
+            nodes { id author { login __typename } body createdAt url }
           }
           reviewThreads(first: 100) {
             nodes {
               id isResolved isOutdated path line startLine
-              comments(first: 100) { nodes { id author { login } body createdAt url } }
+              comments(first: 100) { nodes { id author { login __typename } body createdAt url } }
             }
           }
         }
@@ -345,13 +345,18 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
         .await?;
 
     let parse_comment = |v: &serde_json::Value| -> Option<PrComment> {
+        let author = v
+            .pointer("/author/login")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("ghost")
+            .to_string();
+        let is_bot = v.pointer("/author/__typename").and_then(serde_json::Value::as_str)
+            == Some("Bot")
+            || author.ends_with("[bot]");
         Some(PrComment {
             id: v.get("id")?.as_str()?.to_string(),
-            author: v
-                .pointer("/author/login")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("ghost")
-                .to_string(),
+            author,
+            is_bot,
             body: v.get("body")?.as_str()?.to_string(),
             created_at: v.get("createdAt")?.as_str()?.to_string(),
             url: v.get("url")?.as_str()?.to_string(),

@@ -39,4 +39,9 @@ mergeable: string, additions: number, deletions: number, changedFiles: number,
 /**
  * Issue + review comments; drives the "new comments" attention signal.
  */
-totalComments: number, headSha: string, updatedAt: string, labels: Array<Label>, };
+totalComments: number, 
+/**
+ * Logins of the most recent commenters, oldest first; bot accounts are
+ * normalized to end in "[bot]" so change detection can skip automation.
+ */
+recentCommentAuthors: Array<string>, headSha: string, updatedAt: string, labels: Array<Label>, };

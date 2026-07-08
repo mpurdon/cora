@@ -54,6 +54,10 @@ pub struct PrInfo {
     #[serde(default)]
     #[ts(type = "number")]
     pub total_comments: i64,
+    /// Logins of the most recent commenters, oldest first; bot accounts are
+    /// normalized to end in "[bot]" so change detection can skip automation.
+    #[serde(default)]
+    pub recent_comment_authors: Vec<String>,
     pub head_sha: String,
     pub updated_at: String,
     pub labels: Vec<Label>,
@@ -127,6 +131,8 @@ impl PrPriority {
 pub struct PrComment {
     pub id: String,
     pub author: String,
+    #[serde(default)]
+    pub is_bot: bool,
     pub body: String,
     pub created_at: String,
     pub url: String,
@@ -262,6 +268,18 @@ pub mod events {
     pub const FOCUS_PR: &str = "focus:pr";
 }
 
+/// Are any of the `delta` newest commenters human? Automation (SonarQube,
+/// CI bots) shouldn't light up the attention signal. When we can't see far
+/// enough back, assume human rather than silently dropping a real comment.
+fn has_human_among_latest(authors: &[String], delta: usize) -> bool {
+    if authors.is_empty() || delta > authors.len() {
+        return true;
+    }
+    authors[authors.len() - delta..]
+        .iter()
+        .any(|a| !a.ends_with("[bot]"))
+}
+
 /// Pure diff between two observations; drives events and unread badges.
 pub fn compute_changes(old: &PrInfo, new: &PrInfo) -> Vec<ChangeKind> {
     let mut changes = Vec::new();
@@ -286,6 +304,10 @@ pub fn compute_changes(old: &PrInfo, new: &PrInfo) -> Vec<ChangeKind> {
     // rows stored before comment tracking existed — don't spam on upgrade.
     if new.total_comments > old.total_comments
         && !(old.total_comments == 0 && new.total_comments > 1)
+        && has_human_among_latest(
+            &new.recent_comment_authors,
+            (new.total_comments - old.total_comments) as usize,
+        )
     {
         changes.push(ChangeKind::NewComments);
     }
@@ -319,6 +341,7 @@ mod tests {
             deletions: 1,
             changed_files: 1,
             total_comments: 0,
+            recent_comment_authors: vec![],
             head_sha: "abc".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             labels: vec![],
