@@ -25,6 +25,18 @@ const FIT_LABEL = {
   misfit: "does not fit the architecture",
 } as const;
 
+function DetailExpander({ detail }: { detail: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="detail-expander">
+      <button className="detail-toggle" onClick={() => setOpen((o) => !o)}>
+        {open ? "▾ less" : "▸ more detail"}
+      </button>
+      {open && <p className="assess-detail">{detail}</p>}
+    </div>
+  );
+}
+
 /** Collapsed by default: severity + the actionable "→ …" line. Expanding
  *  reveals the full finding detail and the canvas link. */
 function WaFindingRow({
@@ -73,6 +85,7 @@ export function AssessmentView({
       <section>
         <span className="eyebrow">Summary</span>
         <p className="assess-summary">{assessment.summary}</p>
+        {assessment.detail && <DetailExpander detail={assessment.detail} />}
         <div className={`fit-verdict ${assessment.fit}`}>
           <span className="fit-chip">{assessment.fit}</span>
           <span>{FIT_LABEL[assessment.fit]}</span>

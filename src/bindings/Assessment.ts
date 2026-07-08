@@ -5,9 +5,13 @@ import type { WaFinding } from "./WaFinding";
 
 export type Assessment = { 
 /**
- * What this change *is*, in system terms — 2-4 sentences.
+ * The TLDR — at most two short sentences.
  */
-summary: string, fit: FitVerdict, 
+summary: string, 
+/**
+ * The fuller explanation, shown behind a "more detail" expander.
+ */
+detail: string, fit: FitVerdict, 
 /**
  * Defaults tolerate models that omit "empty" fields despite the schema.
  */

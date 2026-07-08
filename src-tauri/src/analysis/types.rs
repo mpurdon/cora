@@ -158,8 +158,11 @@ pub enum FitVerdict {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct Assessment {
-    /// What this change *is*, in system terms — 2-4 sentences.
+    /// The TLDR — at most two short sentences.
     pub summary: String,
+    /// The fuller explanation, shown behind a "more detail" expander.
+    #[serde(default)]
+    pub detail: String,
     pub fit: FitVerdict,
     /// Defaults tolerate models that omit "empty" fields despite the schema.
     #[serde(default)]
