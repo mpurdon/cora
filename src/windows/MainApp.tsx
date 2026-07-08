@@ -341,6 +341,13 @@ function AnalysisPanel({
   }
 
   const result = run.result!;
+
+  // Seeing a current-head analysis counts as having examined the new commits.
+  // (Hook order is safe: this render path always reaches here when done.)
+  if (result.headSha === pr.headSha && pr.unread.includes("new-commits")) {
+    void ipc.markPrReadKinds(pr.id, ["new-commits"]);
+  }
+
   if (result.headSha !== pr.headSha) {
     // Stale — new commits landed since this analysis.
     return (
@@ -450,6 +457,17 @@ function Detail({
   useEffect(() => {
     if (pendingComment) setTab("comments");
   }, [pendingComment]);
+
+  // Engagement-based acknowledgment: reading comments clears new-comments,
+  // examining the diff clears new-commits.
+  useEffect(() => {
+    if (tab === "comments" && pr.unread.includes("new-comments")) {
+      void ipc.markPrReadKinds(pr.id, ["new-comments"]);
+    }
+    if (tab === "diff" && pr.unread.includes("new-commits")) {
+      void ipc.markPrReadKinds(pr.id, ["new-commits"]);
+    }
+  }, [tab, pr.id, pr.unread]);
 
   // Number-key tab switching, dispatched from the window-level hotkeys.
   useEffect(() => {
@@ -598,10 +616,20 @@ export function MainApp() {
 
   useEffect(() => {
     void init();
+    const openKinds: import("../bindings/ChangeKind").ChangeKind[] = [
+      "new",
+      "title-changed",
+      "draft-changed",
+      "reopened",
+      "merged",
+      "closed",
+      "ci-changed",
+      "review-changed",
+    ];
     const unlisten = onFocusPr((id) => {
       setShowSettings(false);
       setSelectedId(id);
-      void ipc.markPrRead(id);
+      void ipc.markPrReadKinds(id, openKinds);
     });
     // Future reply notifications deep-link straight to a comment.
     const unlistenComment = listen<{ prId: string; commentId: string }>(
@@ -610,7 +638,7 @@ export function MainApp() {
         setShowSettings(false);
         setSelectedId(e.payload.prId);
         setPendingComment(e.payload.commentId);
-        void ipc.markPrRead(e.payload.prId);
+        void ipc.markPrReadKinds(e.payload.prId, openKinds);
       },
     );
     // Callout tile double-click: land here filtered to that bucket.
@@ -711,10 +739,22 @@ export function MainApp() {
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
+  // Opening a PR only acknowledges what the header makes visible at a glance.
+  // new-comments clears when you read the Comments tab; new-commits when you
+  // examine the diff or a current analysis — engagement, not selection.
   const select = (id: string) => {
     setShowSettings(false);
     setSelectedId(id);
-    void ipc.markPrRead(id);
+    void ipc.markPrReadKinds(id, [
+      "new",
+      "title-changed",
+      "draft-changed",
+      "reopened",
+      "merged",
+      "closed",
+      "ci-changed",
+      "review-changed",
+    ]);
   };
 
   // Visible PRs in display order, for j/k navigation.

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AnalysisError } from "../bindings/AnalysisError";
+import type { ChangeKind } from "../bindings/ChangeKind";
 import type { LogEntry } from "../bindings/LogEntry";
 import type { PrConversation } from "../bindings/PrConversation";
 import type { PrPriority } from "../bindings/PrPriority";
@@ -30,6 +31,8 @@ export const ipc = {
   clearGithubPat: () => invoke<void>("clear_github_pat"),
   listPrs: () => invoke<TrackedPr[]>("list_prs"),
   markPrRead: (id: string) => invoke<void>("mark_pr_read", { id }),
+  markPrReadKinds: (id: string, kinds: ChangeKind[]) =>
+    invoke<void>("mark_pr_read_kinds", { id, kinds }),
   setPrMuted: (id: string, muted: boolean) => invoke<void>("set_pr_muted", { id, muted }),
   untrackPr: (id: string) => invoke<void>("untrack_pr", { id }),
   trackPrUrl: (url: string) => invoke<TrackedPr>("track_pr_url", { url }),

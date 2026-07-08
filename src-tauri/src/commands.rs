@@ -91,6 +91,18 @@ pub fn mark_pr_read(app: AppHandle, store: State<'_, Arc<Store>>, id: String) ->
 }
 
 #[tauri::command]
+pub fn mark_pr_read_kinds(
+    app: AppHandle,
+    store: State<'_, Arc<Store>>,
+    id: String,
+    kinds: Vec<ChangeKind>,
+) -> AppResult<()> {
+    store.mark_read_kinds(&id, &kinds)?;
+    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn set_pr_muted(
     app: AppHandle,
     store: State<'_, Arc<Store>>,
@@ -256,7 +268,26 @@ async fn execute_analysis(
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
 
-    let result = crate::analysis::engine::run(app, &settings, &token, &pr, level, focus).await?;
+    // Ground drilled runs in the context-level result (graph + assessment
+    // only — the trace would just be noise) so they don't re-explore.
+    let parent_context = if level != AnalysisLevel::Context {
+        store
+            .get_analysis(pr_id, AnalysisLevel::Context.as_str(), "", &pr.info.head_sha)?
+            .and_then(|json| serde_json::from_str::<AnalysisResult>(&json).ok())
+            .map(|parent| {
+                serde_json::json!({
+                    "graph": parent.graph,
+                    "assessment": parent.assessment,
+                })
+                .to_string()
+            })
+    } else {
+        None
+    };
+
+    let result =
+        crate::analysis::engine::run(app, &settings, &token, &pr, level, focus, parent_context)
+            .await?;
 
     store.put_analysis(
         &result.pr_id,
