@@ -261,6 +261,46 @@ async fn execute_analysis(
     Ok(result)
 }
 
+// -- developer mode ---------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_dev_logs(logs: State<'_, crate::devlog::DevLog>) -> Vec<crate::devlog::LogEntry> {
+    logs.entries()
+}
+
+#[tauri::command]
+pub fn clear_dev_logs(logs: State<'_, crate::devlog::DevLog>) {
+    logs.clear();
+}
+
+/// The built-in analysis system prompt, so the Developer pane can show and
+/// diff against it.
+#[tauri::command]
+pub fn get_default_system_prompt() -> String {
+    crate::analysis::engine::SYSTEM_PROMPT.to_string()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInternals {
+    pub data_dir: String,
+    pub db_path: String,
+    pub version: String,
+}
+
+#[tauri::command]
+pub fn get_app_internals(app: AppHandle) -> AppResult<AppInternals> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    Ok(AppInternals {
+        db_path: data_dir.join("cora.sqlite").display().to_string(),
+        data_dir: data_dir.display().to_string(),
+        version: app.package_info().version.to_string(),
+    })
+}
+
 // -- AWS session helpers ---------------------------------------------------------
 
 /// Run `aws sso login` for the configured profile. Opens the browser and

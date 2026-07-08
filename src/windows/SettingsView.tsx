@@ -3,14 +3,16 @@ import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { ipc } from "../lib/ipc";
 import { usePrStore } from "../state/prStore";
+import { DeveloperPane } from "./DeveloperPane";
 
-type Pane = "general" | "github" | "repos" | "aws";
+type Pane = "general" | "github" | "repos" | "aws" | "developer";
 
-const PANES: { key: Pane; label: string; glyph: string }[] = [
+const PANES: { key: Pane; label: string; glyph: string; dev?: boolean }[] = [
   { key: "general", label: "General", glyph: "◐" },
   { key: "github", label: "GitHub", glyph: "⎇" },
   { key: "repos", label: "Repositories", glyph: "▤" },
   { key: "aws", label: "AWS", glyph: "▲" },
+  { key: "developer", label: "Developer", glyph: "⌬", dev: true },
 ];
 
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
@@ -63,7 +65,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
     <div className="settings-shell">
       <nav className="settings-nav">
         <span className="eyebrow settings-title">Settings</span>
-        {PANES.map((p) => (
+        {PANES.filter((p) => !p.dev || settings.developerMode).map((p) => (
           <button
             key={p.key}
             className={`settings-nav-item${pane === p.key ? " active" : ""}`}
@@ -89,6 +91,9 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           <ReposPane settings={settings} save={save} activeRepos={prs.map((p) => p.repo)} />
         )}
         {pane === "aws" && <AwsPane settings={settings} save={save} />}
+        {pane === "developer" && settings.developerMode && (
+          <DeveloperPane settings={settings} save={save} />
+        )}
       </div>
     </div>
   );
@@ -140,6 +145,20 @@ function GeneralPane({ settings, save }: PaneProps) {
         >
           {legendReset ? "Will show on next visit" : "Show legend again"}
         </button>
+      </Field>
+
+      <Field
+        label="Developer mode"
+        hint="Adds a Developer pane: live internal logs, the Bedrock system prompt editor, and app internals."
+      >
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={settings.developerMode}
+            onChange={(e) => void save({ developerMode: e.target.checked })}
+          />
+          Enable developer mode
+        </label>
       </Field>
     </section>
   );
@@ -456,7 +475,18 @@ function AwsPane({ settings, save }: PaneProps) {
         />
       </Field>
 
-      <Field label="Custom endpoint URL" hint="Optional — only if your org routes Bedrock through a private endpoint.">
+      <Field
+        label="Custom endpoint URL"
+        hint={
+          settings.awsEndpointUrl && !settings.awsEndpointUrl.startsWith("http") ? (
+            <span className="settings-error">
+              Must be an https:// URL — inference-profile ARNs go in the model field below.
+            </span>
+          ) : (
+            "Optional — only if your org routes Bedrock through a private endpoint (a URL, not an ARN)."
+          )
+        }
+      >
         <input
           placeholder="https://bedrock-runtime.…"
           value={settings.awsEndpointUrl}

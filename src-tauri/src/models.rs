@@ -118,6 +118,12 @@ pub struct Settings {
     pub aws_endpoint_url: String,
     /// Bedrock model id — accepts application-inference-profile ARNs.
     pub bedrock_model_id: String,
+    /// Unlocks the Developer settings pane (logs, prompt editing, internals).
+    #[serde(default)]
+    pub developer_mode: bool,
+    /// Overrides the analysis system prompt when non-empty.
+    #[serde(default)]
+    pub custom_system_prompt: String,
 }
 
 fn default_aws_region() -> String {
@@ -142,6 +148,8 @@ impl Default for Settings {
             bedrock_model_id:
                 "arn:aws:bedrock:us-east-2:224075521436:application-inference-profile/wl4brjw0ulcd"
                     .into(),
+            developer_mode: false,
+            custom_system_prompt: String::new(),
         }
     }
 }
