@@ -231,6 +231,7 @@ pub async fn run(
     pr: &TrackedPr,
     level: AnalysisLevel,
     focus_node_id: Option<String>,
+    parent_context: Option<String>,
 ) -> AppResult<AnalysisResult> {
     let pr_id = pr.info.id.clone();
     progress(app, &pr_id, level, "connecting to Bedrock");
@@ -281,8 +282,17 @@ pub async fn run(
         token,
     )?;
 
+    // Drilled runs inherit the higher-level result so the model doesn't
+    // re-derive (and re-fetch) the system map it already built.
+    let parent_section = match &parent_context {
+        Some(json) => format!(
+            "\n\nA higher-level analysis of this PR was already completed. Its result is below — trust it as your system map, do NOT re-explore what it already covers, and keep your node ids consistent with it. Focus your exploration budget on the drill target only.\n<previous_analysis>\n{json}\n</previous_analysis>"
+        ),
+        None => String::new(),
+    };
+
     let kickoff = format!(
-        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}\n\n{}\n\nStart by getting the diff and whatever repository context you need.",
+        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}\n\n{}{}\n\nStart by getting the diff and whatever repository context you need.",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -293,6 +303,7 @@ pub async fn run(
         pr.info.changed_files,
         pr.info.url,
         level_instructions(level, focus_node_id.as_deref()),
+        parent_section,
     );
 
     let mut messages = vec![Message::builder()
