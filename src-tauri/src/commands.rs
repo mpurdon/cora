@@ -184,6 +184,7 @@ pub fn run_analysis(
     pr_id: String,
     level: AnalysisLevel,
     focus: Option<String>,
+    force: Option<bool>,
 ) -> AppResult<()> {
     require_main(&window)?;
     let key = analysis_key(&pr_id, level, &focus);
@@ -193,9 +194,10 @@ pub fn run_analysis(
             return Ok(()); // already running
         }
     }
+    let force = force.unwrap_or(false);
 
     tauri::async_runtime::spawn(async move {
-        let outcome = execute_analysis(&app, &pr_id, level, focus.clone()).await;
+        let outcome = execute_analysis(&app, &pr_id, level, focus.clone(), force).await;
         {
             let runs = app.state::<AnalysisRuns>();
             runs.0.lock().unwrap().remove(&key);
@@ -226,21 +228,25 @@ async fn execute_analysis(
     pr_id: &str,
     level: AnalysisLevel,
     focus: Option<String>,
+    force: bool,
 ) -> AppResult<AnalysisResult> {
     let store = app.state::<Arc<Store>>().inner().clone();
     let pr = store
         .get_pr(pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
 
-    // Serve from cache when the head hasn't moved.
-    if let Some(json) = store.get_analysis(
-        pr_id,
-        level.as_str(),
-        focus.as_deref().unwrap_or(""),
-        &pr.info.head_sha,
-    )? {
-        if let Ok(cached) = serde_json::from_str::<AnalysisResult>(&json) {
-            return Ok(cached);
+    // Serve from cache when the head hasn't moved — unless the user forced
+    // a fresh run (Re-run always rebuilds).
+    if !force {
+        if let Some(json) = store.get_analysis(
+            pr_id,
+            level.as_str(),
+            focus.as_deref().unwrap_or(""),
+            &pr.info.head_sha,
+        )? {
+            if let Ok(cached) = serde_json::from_str::<AnalysisResult>(&json) {
+                return Ok(cached);
+            }
         }
     }
 
