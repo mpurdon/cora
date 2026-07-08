@@ -6,6 +6,8 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeProps,
@@ -159,6 +161,69 @@ async function layout(graph: C4Graph, highlight: Set<string>): Promise<LaidOut> 
   return { nodes: flowNodes, edges };
 }
 
+function Flow({
+  laidOut,
+  onNodeDoubleClick,
+}: {
+  laidOut: LaidOut;
+  onNodeDoubleClick?: (node: C4Node) => void;
+}) {
+  const { fitBounds } = useReactFlow();
+  return (
+    <ReactFlow
+      nodes={laidOut.nodes}
+      edges={laidOut.edges}
+      nodeTypes={nodeTypes}
+      fitView
+      fitViewOptions={{ padding: 0.15 }}
+      minZoom={0.2}
+      maxZoom={2}
+      proOptions={{ hideAttribution: true }}
+      onNodeDoubleClick={(_, node) => {
+        if (!onNodeDoubleClick) return;
+        const data = node.data as C4FlowNode["data"];
+        // Zoom into the node first — the drill lands mid-animation so the
+        // level change reads as diving in, not a hard cut.
+        const abs = absolutePosition(laidOut.nodes, node.id);
+        fitBounds(
+          {
+            x: abs.x,
+            y: abs.y,
+            width: node.width ?? LEAF_W,
+            height: node.height ?? LEAF_H,
+          },
+          { duration: 380, padding: 0.4 },
+        );
+        setTimeout(() => onNodeDoubleClick(data.c4), 320);
+      }}
+      colorMode="dark"
+    >
+      <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#2a3340" />
+      <MiniMap
+        pannable
+        zoomable
+        className="c4-minimap"
+        nodeColor={() => "#2a3340"}
+        maskColor="rgba(14, 17, 22, 0.75)"
+      />
+    </ReactFlow>
+  );
+}
+
+/** Child node positions are parent-relative; walk up for viewport coords. */
+function absolutePosition(nodes: C4FlowNode[], id: string): { x: number; y: number } {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  let node = byId.get(id);
+  let x = 0;
+  let y = 0;
+  while (node) {
+    x += node.position.x;
+    y += node.position.y;
+    node = node.parentId ? byId.get(node.parentId) : undefined;
+  }
+  return { x, y };
+}
+
 export function C4Canvas({
   graph,
   highlightIds,
@@ -187,30 +252,9 @@ export function C4Canvas({
 
   return (
     <div className="c4-canvas">
-      <ReactFlow
-        nodes={laidOut.nodes}
-        edges={laidOut.edges}
-        nodeTypes={nodeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.15 }}
-        minZoom={0.2}
-        maxZoom={2}
-        proOptions={{ hideAttribution: true }}
-        onNodeDoubleClick={(_, node) => {
-          const data = node.data as C4FlowNode["data"];
-          onNodeDoubleClick?.(data.c4);
-        }}
-        colorMode="dark"
-      >
-        <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#2a3340" />
-        <MiniMap
-          pannable
-          zoomable
-          className="c4-minimap"
-          nodeColor={() => "#2a3340"}
-          maskColor="rgba(14, 17, 22, 0.75)"
-        />
-      </ReactFlow>
+      <ReactFlowProvider>
+        <Flow laidOut={laidOut} onNodeDoubleClick={onNodeDoubleClick} />
+      </ReactFlowProvider>
     </div>
   );
 }
