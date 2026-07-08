@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AnalysisError } from "../bindings/AnalysisError";
+import type { AuditEntry } from "../bindings/AuditEntry";
 import type { ChangeKind } from "../bindings/ChangeKind";
+import type { RepoPriority } from "../bindings/RepoPriority";
 import type { LogEntry } from "../bindings/LogEntry";
 import type { PrConversation } from "../bindings/PrConversation";
 import type { PrPriority } from "../bindings/PrPriority";
@@ -44,6 +46,10 @@ export const ipc = {
   getPrDiff: (prId: string) => invoke<string>("get_pr_diff", { prId }),
   setPrPriority: (id: string, priority: PrPriority) =>
     invoke<void>("set_pr_priority", { id, priority }),
+  setRepoPriority: (repo: string, priority: RepoPriority) =>
+    invoke<void>("set_repo_priority", { repo, priority }),
+  getAuditLog: () => invoke<AuditEntry[]>("get_audit_log"),
+  undoAudit: (id: number) => invoke<void>("undo_audit", { id }),
   getPrComments: (prId: string) => invoke<PrConversation>("get_pr_comments", { prId }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),
   addPrComment: (prId: string, body: string) =>

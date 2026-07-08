@@ -17,6 +17,7 @@ import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
 import type { PrPriority } from "../bindings/PrPriority";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
+import { HistoryDrawer } from "../components/HistoryDrawer";
 import { ipc, onFocusPr } from "../lib/ipc";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { ciTone, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
@@ -122,7 +123,7 @@ function RefreshPrButton({ prId }: { prId: string }) {
   const [busy, setBusy] = useState(false);
   return (
     <button
-      className={`icon-btn refresh-btn${busy ? " spinning" : ""}`}
+      className="icon-btn refresh-btn"
       title="Refresh this PR from GitHub"
       disabled={busy}
       onClick={() => {
@@ -130,7 +131,7 @@ function RefreshPrButton({ prId }: { prId: string }) {
         void ipc.refreshPr(prId).finally(() => setBusy(false));
       }}
     >
-      ⟳
+      <span className={busy ? "glyph-spin" : undefined}>⟳</span>
     </button>
   );
 }
@@ -618,12 +619,9 @@ export function MainApp() {
     [priorities],
   );
   const setRepoPriority = async (repo: string, p: RepoPriority) => {
+    await ipc.setRepoPriority(repo, p); // audited server-side
     const s = await ipc.getSettings();
-    const next = { ...s.repoPriorities };
-    if (p === "normal") delete next[repo];
-    else next[repo] = p;
-    await ipc.setSettings({ ...s, repoPriorities: next });
-    setPriorities(next);
+    setPriorities(s.repoPriorities);
   };
   const [collapsed, setCollapsed] = useState<Set<string>>(
     () => new Set(JSON.parse(localStorage.getItem("cora.collapsed") ?? "[]") as string[]),
@@ -640,6 +638,7 @@ export function MainApp() {
     | null
   >(null);
   const [showHotkeys, setShowHotkeys] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [pendingComment, setPendingComment] = useState<string | null>(null);
   const [bucketFilter, setBucketFilter] = useState<ActionKind | null>(null);
 
@@ -1034,6 +1033,13 @@ export function MainApp() {
           </span>
           <button
             className="icon-btn"
+            title="History — your actions, undoable"
+            onClick={() => setShowHistory(true)}
+          >
+            ↺
+          </button>
+          <button
+            className="icon-btn"
             title="Toggle callout"
             onClick={() => void ipc.toggleCallout()}
           >
@@ -1136,6 +1142,7 @@ export function MainApp() {
       )}
 
       {showHotkeys && <HotkeysHelp onClose={() => setShowHotkeys(false)} />}
+      <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
     </div>
   );
 }

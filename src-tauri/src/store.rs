@@ -37,6 +37,16 @@ CREATE TABLE IF NOT EXISTS analyses (
   created_at TEXT NOT NULL,
   PRIMARY KEY (pr_id, level, focus)
 );
+CREATE TABLE IF NOT EXISTS audit (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  at            TEXT NOT NULL,
+  action        TEXT NOT NULL,
+  subject_id    TEXT NOT NULL,
+  subject_label TEXT NOT NULL,
+  old_value     TEXT NOT NULL DEFAULT '',
+  new_value     TEXT NOT NULL DEFAULT '',
+  undone        INTEGER NOT NULL DEFAULT 0
+);
 ";
 
 impl Store {
@@ -286,6 +296,70 @@ impl Store {
     pub fn invalidate_analyses(&self, pr_id: &str) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM analyses WHERE pr_id = ?1", params![pr_id])?;
+        Ok(())
+    }
+
+    // -- audit trail ---------------------------------------------------------
+
+    pub fn add_audit(
+        &self,
+        action: &str,
+        subject_id: &str,
+        subject_label: &str,
+        old_value: &str,
+        new_value: &str,
+    ) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO audit (at, action, subject_id, subject_label, old_value, new_value)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                chrono::Utc::now().to_rfc3339(),
+                action,
+                subject_id,
+                subject_label,
+                old_value,
+                new_value
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_audit(&self, limit: i64) -> AppResult<Vec<crate::models::AuditEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, at, action, subject_id, subject_label, old_value, new_value, undone
+             FROM audit ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| {
+            Ok(crate::models::AuditEntry {
+                id: r.get(0)?,
+                at: r.get(1)?,
+                action: r.get(2)?,
+                subject_id: r.get(3)?,
+                subject_label: r.get(4)?,
+                old_value: r.get(5)?,
+                new_value: r.get(6)?,
+                undone: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn get_audit(&self, id: i64) -> AppResult<Option<crate::models::AuditEntry>> {
+        Ok(self.list_audit(500)?.into_iter().find(|e| e.id == id))
+    }
+
+    pub fn mark_audit_undone(&self, id: i64) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE audit SET undone = 1 WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Bring an untracked PR back (undo of untrack).
+    pub fn retrack(&self, id: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE prs SET tracked = 1 WHERE id = ?1", params![id])?;
         Ok(())
     }
 
