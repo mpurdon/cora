@@ -1094,6 +1094,28 @@ input:focus-visible {
   user-select: text;
 }
 
+.detail-expander {
+  margin-top: 6px;
+}
+
+.detail-toggle {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--chat);
+  padding: 3px 0;
+}
+
+.assess-detail {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--muted);
+  border-left: 2px solid var(--line);
+  padding-left: 12px;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
 .fit-verdict {
   display: flex;
   align-items: center;
