@@ -934,11 +934,11 @@ input:focus-visible {
 
 .rail-row .repo {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  margin-right: 8px;
+  flex: none;
 }
 
 .rail-row .pr-title {
@@ -946,6 +946,12 @@ input:focus-visible {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.rail-row .body {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
 }
 
 .rail-footer {
