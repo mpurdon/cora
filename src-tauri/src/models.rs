@@ -220,6 +220,9 @@ pub struct Settings {
     pub aws_endpoint_url: String,
     /// Bedrock model id — accepts application-inference-profile ARNs.
     pub bedrock_model_id: String,
+    /// Cheaper/faster model for Component/Code drill-downs; empty = use main.
+    #[serde(default = "default_drill_model")]
+    pub bedrock_drill_model_id: String,
     /// Unlocks the Developer settings pane (logs, prompt editing, internals).
     #[serde(default)]
     pub developer_mode: bool,
@@ -234,6 +237,12 @@ fn default_aws_region() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_drill_model() -> String {
+    // The user's Sonnet inference profile — drill-downs analyze code, not
+    // system-wide architecture, so the faster tier fits.
+    "arn:aws:bedrock:us-east-2:000000000000:application-inference-profile/ijkl5678mnop".into()
 }
 
 fn default_pr_priority() -> PrPriority {
@@ -254,10 +263,32 @@ impl Default for Settings {
             bedrock_model_id:
                 "arn:aws:bedrock:us-east-2:000000000000:application-inference-profile/abcd1234efgh"
                     .into(),
+            bedrock_drill_model_id: default_drill_model(),
             developer_mode: false,
             custom_system_prompt: String::new(),
         }
     }
+}
+
+/// Who's been asked to review and what reviews exist — shown before analyzing.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSummary {
+    pub author: String,
+    /// APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
+    pub state: String,
+    pub submitted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PrReviews {
+    /// Logins/teams still requested to review.
+    pub requested: Vec<String>,
+    /// Latest review per reviewer.
+    pub reviews: Vec<ReviewSummary>,
 }
 
 /// One user-taken action, recorded for the History view. `old_value` is what

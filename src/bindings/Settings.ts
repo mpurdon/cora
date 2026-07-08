@@ -19,6 +19,10 @@ awsRegion: string, awsEndpointUrl: string,
  */
 bedrockModelId: string, 
 /**
+ * Cheaper/faster model for Component/Code drill-downs; empty = use main.
+ */
+bedrockDrillModelId: string, 
+/**
  * Unlocks the Developer settings pane (logs, prompt editing, internals).
  */
 developerMode: boolean, 
