@@ -148,7 +148,20 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             onChange={(e) => setSettings({ ...settings, awsProfile: e.target.value })}
             onBlur={() => void saveSettings({ awsProfile: settings.awsProfile })}
           />
-          <div className="field-hint">A named profile from ~/.aws/config.</div>
+          <div className="field-hint">
+            A named profile from ~/.aws/config. If analysis fails with an auth error, refresh
+            with: aws sso login --profile {settings.awsProfile || "…"}
+          </div>
+        </div>
+        <div className="field">
+          <label htmlFor="region">Region</label>
+          <input
+            id="region"
+            placeholder="us-east-2"
+            value={settings.awsRegion}
+            onChange={(e) => setSettings({ ...settings, awsRegion: e.target.value })}
+            onBlur={() => void saveSettings({ awsRegion: settings.awsRegion })}
+          />
         </div>
         <div className="field">
           <label htmlFor="endpoint">Custom endpoint URL (optional)</label>
@@ -161,13 +174,16 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           />
         </div>
         <div className="field">
-          <label htmlFor="model">Bedrock model id</label>
+          <label htmlFor="model">Bedrock model id or inference-profile ARN</label>
           <input
             id="model"
             value={settings.bedrockModelId}
             onChange={(e) => setSettings({ ...settings, bedrockModelId: e.target.value })}
             onBlur={() => void saveSettings({ bedrockModelId: settings.bedrockModelId })}
           />
+          <div className="field-hint">
+            Accepts a model id or an application-inference-profile ARN.
+          </div>
         </div>
       </section>
 

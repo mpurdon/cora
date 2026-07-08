@@ -219,6 +219,9 @@ pub async fn run(
     if !settings.aws_profile.is_empty() {
         loader = loader.profile_name(&settings.aws_profile);
     }
+    if !settings.aws_region.is_empty() {
+        loader = loader.region(aws_config::Region::new(settings.aws_region.clone()));
+    }
     let sdk_config = loader.load().await;
     let mut conf = aws_sdk_bedrockruntime::config::Builder::from(&sdk_config);
     if !settings.aws_endpoint_url.is_empty() {
@@ -277,10 +280,22 @@ pub async fn run(
             .send()
             .await
             .map_err(|e| {
-                AppError::Other(format!(
-                    "Bedrock: {}",
-                    aws_smithy_types::error::display::DisplayErrorContext(&e)
-                ))
+                let detail =
+                    format!("{}", aws_smithy_types::error::display::DisplayErrorContext(&e));
+                let lower = detail.to_lowercase();
+                let hint = if lower.contains("token")
+                    || lower.contains("expired")
+                    || lower.contains("credential")
+                    || lower.contains("sso")
+                {
+                    format!(
+                        " — your SSO session may have expired; run: aws sso login --profile {}",
+                        settings.aws_profile
+                    )
+                } else {
+                    String::new()
+                };
+                AppError::Other(format!("Bedrock: {detail}{hint}"))
             })?;
 
         let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {

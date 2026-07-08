@@ -109,8 +109,16 @@ pub struct Settings {
     pub poll_interval_secs: u64,
     pub github_graphql_url: String,
     pub aws_profile: String,
+    /// Explicit region override; some SSO profiles don't carry one.
+    #[serde(default = "default_aws_region")]
+    pub aws_region: String,
     pub aws_endpoint_url: String,
+    /// Bedrock model id — accepts application-inference-profile ARNs.
     pub bedrock_model_id: String,
+}
+
+fn default_aws_region() -> String {
+    "us-east-2".into()
 }
 
 impl Default for Settings {
@@ -120,9 +128,12 @@ impl Default for Settings {
             repo_priorities: std::collections::HashMap::new(),
             poll_interval_secs: 45,
             github_graphql_url: "https://api.github.com/graphql".into(),
-            aws_profile: "default".into(),
+            aws_profile: "claude-code-bedrock".into(),
+            aws_region: default_aws_region(),
             aws_endpoint_url: String::new(),
-            bedrock_model_id: "anthropic.claude-opus-4-8".into(),
+            bedrock_model_id:
+                "arn:aws:bedrock:us-east-2:224075521436:application-inference-profile/wl4brjw0ulcd"
+                    .into(),
         }
     }
 }
