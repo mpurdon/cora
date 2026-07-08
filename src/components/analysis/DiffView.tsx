@@ -20,6 +20,17 @@ export interface DiffFile {
   lines: DiffLine[];
 }
 
+/** Cheap stable digest of a file's patch — viewed-state goes stale when the
+ *  file's diff changes, without unviewing untouched files on every push. */
+export function fileDigest(file: DiffFile): string {
+  const s = file.lines.map((l) => l.kind + l.text).join("\n");
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  }
+  return `${h.toString(36)}:${s.length}`;
+}
+
 export function parseDiff(raw: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
@@ -124,30 +135,52 @@ function FileDiff({
   prId,
   threadsByLine,
   onChanged,
+  viewed,
+  onViewedChange,
 }: {
   file: DiffFile;
   prId: string;
   threadsByLine: Map<number, ReviewThread[]>;
   onChanged: () => void;
+  viewed: boolean;
+  onViewedChange: (viewed: boolean) => void;
 }) {
   const hasThreads = threadsByLine.size > 0;
-  const [open, setOpen] = useState(file.lines.length <= 400 || hasThreads);
+  const [open, setOpen] = useState(!viewed && (file.lines.length <= 400 || hasThreads));
+
+  // Marking viewed collapses the file (and vice versa), like GitHub.
+  useEffect(() => {
+    setOpen(!viewed && (file.lines.length <= 400 || hasThreads));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewed]);
+
   const [composeLine, setComposeLine] = useState<number | null>(null);
 
   return (
-    <div className="diff-file">
-      <button className="diff-file-header" onClick={() => setOpen((o) => !o)}>
-        <span className="chevron">{open ? "▾" : "▸"}</span>
-        <span className="diff-path mono">
-          {file.oldPath ? `${file.oldPath} → ` : ""}
-          {file.path}
-        </span>
-        {hasThreads && <span className="thread-tag">{threadsByLine.size} threads</span>}
-        <span className="spacer" />
-        <span className="diffstat mono">
-          <span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span>
-        </span>
-      </button>
+    <div className={`diff-file${viewed ? " viewed" : ""}`}>
+      <div className="diff-file-header">
+        <button className="diff-file-toggle" onClick={() => setOpen((o) => !o)}>
+          <span className="chevron">{open ? "▾" : "▸"}</span>
+          <span className="diff-path mono">
+            {file.oldPath ? `${file.oldPath} → ` : ""}
+            {file.path}
+          </span>
+          {hasThreads && <span className="thread-tag">{threadsByLine.size} threads</span>}
+          <span className="spacer" />
+          <span className="diffstat mono">
+            <span className="add">+{file.additions}</span>{" "}
+            <span className="del">−{file.deletions}</span>
+          </span>
+        </button>
+        <label className="viewed-check check-row" title="Mark as viewed — clears if the file changes again">
+          <input
+            type="checkbox"
+            checked={viewed}
+            onChange={(e) => onViewedChange(e.target.checked)}
+          />
+          viewed
+        </label>
+      </div>
       {open && (
         <pre className="diff-body">
           {file.lines.map((l, i) => {
@@ -201,6 +234,7 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   const [raw, setRaw] = useState<string | null>(null);
   const [conversation, setConversation] = useState<PrConversation | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [viewedMap, setViewedMap] = useState<Map<string, string>>(new Map());
 
   const loadComments = () =>
     void ipc
@@ -216,10 +250,28 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
       .then(setRaw)
       .catch((e) => setError(String(e)));
     loadComments();
+    void ipc
+      .getViewedFiles(prId)
+      .then((rows) => setViewedMap(new Map(rows.map((r) => [r.path, r.digest]))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prId, headSha]);
 
   const files = useMemo(() => (raw ? parseDiff(raw) : []), [raw]);
+
+  // A file counts as viewed only while its patch digest still matches —
+  // an update after viewing clears it automatically.
+  const isViewed = (file: DiffFile) => viewedMap.get(file.path) === fileDigest(file);
+
+  const setViewed = (file: DiffFile, viewed: boolean) => {
+    const digest = fileDigest(file);
+    setViewedMap((prev) => {
+      const next = new Map(prev);
+      if (viewed) next.set(file.path, digest);
+      else next.delete(file.path);
+      return next;
+    });
+    void ipc.setFileViewed(prId, file.path, digest, viewed);
+  };
 
   // Unresolved threads grouped per file → line.
   const threadsByFile = useMemo(() => {
@@ -242,12 +294,18 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   if (files.length === 0) {
     return <div className="placeholder">Empty diff.</div>;
   }
+  const viewedCount = files.filter(isViewed).length;
+
   return (
     <div className="diff-view">
       <div className="eyebrow diff-summary">
         {files.length} files ·{" "}
         <span className="add">+{files.reduce((n, f) => n + f.additions, 0)}</span>{" "}
         <span className="del">−{files.reduce((n, f) => n + f.deletions, 0)}</span>
+        {" · "}
+        <span className={viewedCount === files.length ? "add" : undefined}>
+          {viewedCount}/{files.length} viewed
+        </span>
         {" · hover a line and hit + to comment"}
       </div>
       {files.map((f) => (
@@ -257,6 +315,8 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
           prId={prId}
           threadsByLine={threadsByFile.get(f.path) ?? new Map()}
           onChanged={loadComments}
+          viewed={isViewed(f)}
+          onViewedChange={(v) => setViewed(f, v)}
         />
       ))}
     </div>

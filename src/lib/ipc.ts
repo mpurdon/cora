@@ -62,6 +62,10 @@ export const ipc = {
     invoke<void>("toggle_reaction", { subjectId, content, remove }),
   takePendingFocus: () =>
     invoke<{ prId: string; commentId: string | null } | null>("take_pending_focus"),
+  getViewedFiles: (prId: string) =>
+    invoke<{ path: string; digest: string }[]>("get_viewed_files", { prId }),
+  setFileViewed: (prId: string, path: string, digest: string, viewed: boolean) =>
+    invoke<void>("set_file_viewed", { prId, path, digest, viewed }),
   getFileAtHead: (prId: string, path: string) =>
     invoke<string>("get_file_at_head", { prId, path }),
   awsSsoLogin: (profile: string) => invoke<void>("aws_sso_login", { profile }),

@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS analyses (
   created_at TEXT NOT NULL,
   PRIMARY KEY (pr_id, level, focus)
 );
+CREATE TABLE IF NOT EXISTS viewed_files (
+  pr_id     TEXT NOT NULL,
+  path      TEXT NOT NULL,
+  digest    TEXT NOT NULL,
+  viewed_at TEXT NOT NULL,
+  PRIMARY KEY (pr_id, path)
+);
 CREATE TABLE IF NOT EXISTS audit (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   at            TEXT NOT NULL,
@@ -296,6 +303,41 @@ impl Store {
     pub fn invalidate_analyses(&self, pr_id: &str) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM analyses WHERE pr_id = ?1", params![pr_id])?;
+        Ok(())
+    }
+
+    // -- viewed files (diff review progress) ----------------------------------
+
+    /// path → digest of the file's patch when it was marked viewed.
+    pub fn viewed_files(&self, pr_id: &str) -> AppResult<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT path, digest FROM viewed_files WHERE pr_id = ?1")?;
+        let rows = stmt.query_map(params![pr_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn set_file_viewed(
+        &self,
+        pr_id: &str,
+        path: &str,
+        digest: &str,
+        viewed: bool,
+    ) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        if viewed {
+            conn.execute(
+                "INSERT INTO viewed_files (pr_id, path, digest, viewed_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(pr_id, path) DO UPDATE SET digest = ?3, viewed_at = ?4",
+                params![pr_id, path, digest, chrono::Utc::now().to_rfc3339()],
+            )?;
+        } else {
+            conn.execute(
+                "DELETE FROM viewed_files WHERE pr_id = ?1 AND path = ?2",
+                params![pr_id, path],
+            )?;
+        }
         Ok(())
     }
 
