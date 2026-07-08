@@ -60,6 +60,8 @@ export const ipc = {
     invoke<void>("add_diff_comment", { prId, path, line, body }),
   toggleReaction: (subjectId: string, content: string, remove: boolean) =>
     invoke<void>("toggle_reaction", { subjectId, content, remove }),
+  takePendingFocus: () =>
+    invoke<{ prId: string; commentId: string | null } | null>("take_pending_focus"),
   getFileAtHead: (prId: string, path: string) =>
     invoke<string>("get_file_at_head", { prId, path }),
   awsSsoLogin: (profile: string) => invoke<void>("aws_sso_login", { profile }),

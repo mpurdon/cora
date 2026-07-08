@@ -12,6 +12,7 @@ import { C4Canvas } from "../components/analysis/C4Canvas";
 import { DiffView } from "../components/analysis/DiffView";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
 import type { PrPriority } from "../bindings/PrPriority";
@@ -687,10 +688,24 @@ export function MainApp() {
       setShowSettings(false);
       setBucketFilter(e.payload);
     });
+    // Notification deep-link: macOS gives no click callback, so the first
+    // focus after a notification claims the pending target (2 min window).
+    const claimPending = () =>
+      void ipc.takePendingFocus().then((target) => {
+        if (!target) return;
+        setShowSettings(false);
+        setSelectedId(target.prId);
+        if (target.commentId) setPendingComment(target.commentId);
+        void ipc.markPrReadKinds(target.prId, openKinds);
+      });
+    const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) claimPending();
+    });
     return () => {
       void unlisten.then((fn) => fn());
       void unlistenComment.then((fn) => fn());
       void unlistenBucket.then((fn) => fn());
+      void unlistenFocus.then((fn) => fn());
     };
   }, [init]);
 
@@ -1081,6 +1096,8 @@ export function MainApp() {
             pendingComment={pendingComment}
             onPendingCommentHandled={() => setPendingComment(null)}
           />
+        ) : prs.length === 0 && pollStatus?.ok === false ? (
+          <Onboarding onOpenSettings={() => setShowSettings(true)} />
         ) : (
           <div className="empty-detail">Select a pull request — or ⚙ to connect GitHub.</div>
         )}
@@ -1170,6 +1187,36 @@ export function MainApp() {
 
       {showHotkeys && <HotkeysHelp onClose={() => setShowHotkeys(false)} />}
       <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
+    </div>
+  );
+}
+
+/** First-run guidance when nothing is connected yet. */
+function Onboarding({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const STEPS: [string, string][] = [
+    ["Connect GitHub", "Settings → GitHub — paste a PAT with repo read scope. Your review queue, authored PRs, and mentions appear within a poll."],
+    ["Point at Bedrock", "Settings → AWS — profile, region, and your inference-profile ARN. Test connection will tell you if SSO needs a refresh."],
+    ["Watch the repos you own", "Right-click any repo in the list (or Settings → Repositories) to track every PR, not just yours."],
+    ["Live in the callout", "The small always-on-top window shows only what needs you. ? shows the keyboard shortcuts."],
+  ];
+  return (
+    <div className="onboarding">
+      <h1>Welcome to CORA</h1>
+      <p className="pane-intro">
+        Principal-engineer PR review: architecture fit, boundary impacts, and Well-Architected
+        findings — not lint nits.
+      </p>
+      <ol className="onboarding-steps">
+        {STEPS.map(([title, body], i) => (
+          <li key={i}>
+            <span className="onboarding-step-title">{title}</span>
+            <span className="onboarding-step-body">{body}</span>
+          </li>
+        ))}
+      </ol>
+      <button className="action-btn auth-primary" onClick={onOpenSettings}>
+        Open settings
+      </button>
     </div>
   );
 }

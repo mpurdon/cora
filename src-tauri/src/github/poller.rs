@@ -74,6 +74,48 @@ fn source_for_alias(alias: &str) -> Option<PrSource> {
     }
 }
 
+/// Native notifications for the changes worth interrupting for: a human
+/// replied, or CI went red on your own PR.
+fn notify_for_changes(app: &AppHandle, pr: &crate::models::TrackedPr, changes: &[ChangeKind]) {
+    let short = format!(
+        "{}#{}",
+        pr.info.repo.split('/').nth(1).unwrap_or(&pr.info.repo),
+        pr.info.number
+    );
+
+    if changes.contains(&ChangeKind::NewComments) {
+        let newest = crate::models::latest_human_comment(&pr.info.recent_comments, 5);
+        let (title, body) = match newest {
+            Some(c) => (
+                format!("{} commented on {short}", c.author),
+                c.snippet.clone(),
+            ),
+            None => (format!("New comments on {short}"), pr.info.title.clone()),
+        };
+        crate::notify::send(
+            app,
+            &title,
+            &body,
+            Some(crate::notify::FocusTarget {
+                pr_id: pr.info.id.clone(),
+                comment_id: newest.map(|c| c.id.clone()),
+            }),
+        );
+    }
+
+    if changes.contains(&ChangeKind::CiChanged)
+        && pr.sources.contains(&PrSource::Authored)
+        && matches!(pr.info.ci_status.as_deref(), Some("FAILURE") | Some("ERROR"))
+    {
+        crate::notify::send(
+            app,
+            &format!("CI failing on your PR {short}"),
+            &pr.info.title,
+            Some(crate::notify::FocusTarget { pr_id: pr.info.id.clone(), comment_id: None }),
+        );
+    }
+}
+
 /// One poll cycle. Returns remaining rate limit on success.
 async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
     let Some(token) = secrets::github_pat()? else {
@@ -139,6 +181,7 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
             continue;
         }
         if !changes.is_empty() && !stored.muted {
+            notify_for_changes(app, &stored, &changes);
             let _ = app.emit(events::PR_CHANGED, PrChangedEvent { pr: stored, changes });
         }
     }
