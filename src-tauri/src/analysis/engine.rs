@@ -27,6 +27,8 @@ Priorities, strictly in this order:
 2. SERVICE boundaries: effects that cross containers/services within the system — API shape changes, new dependencies between services, shared datastore access.
 3. INTERNAL structure: module responsibilities, dependency direction, pattern consistency with the rest of the repo. Mention only when material.
 
+Writing style: the summary is a TLDR — two short sentences maximum, no mechanism walkthrough. Everything else goes in the detail field. A reviewer should absorb the summary in three seconds.
+
 Also evaluate the change against the AWS Well-Architected pillars (operational excellence, security, reliability, performance efficiency, cost optimization, sustainability). Report only MATERIAL findings — a missing retry on a new external call matters; a variable name does not.
 
 Method: explore the repository first (README/docs, tree, targeted file reads and searches) until you understand the architecture well enough to place this change in it. Be economical — fetch what you need, not everything.
@@ -86,7 +88,8 @@ fn submit_schema() -> Value {
             "assessment": {
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string"},
+                    "summary": {"type": "string", "description": "TLDR: at most TWO short sentences (under 40 words total). What the change is and the single most important thing about it. No mechanism detail here."},
+                    "detail": {"type": "string", "description": "The fuller explanation: mechanism, how it flows through the system, why it's safe or risky. 1-2 paragraphs."},
                     "fit": {"type": "string", "enum": ["fits", "tension", "misfit"]},
                     "fitRationale": {"type": "string"},
                     "boundaryImpacts": {"type": "array", "items": {"type": "object", "properties": {
@@ -103,7 +106,7 @@ fn submit_schema() -> Value {
                     }, "required": ["pillar", "severity", "finding", "recommendation"]}},
                     "contextNotes": {"type": "array", "items": {"type": "string"}}
                 },
-                "required": ["summary", "fit", "fitRationale", "boundaryImpacts", "wellArchitected", "contextNotes"]
+                "required": ["summary", "detail", "fit", "fitRationale", "boundaryImpacts", "wellArchitected", "contextNotes"]
             }
         },
         "required": ["graph", "assessment"]
