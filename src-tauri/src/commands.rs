@@ -267,6 +267,26 @@ async fn execute_analysis(
     Ok(result)
 }
 
+/// Raw unified diff for the Diff tab.
+#[tauri::command]
+pub async fn get_pr_diff(app: AppHandle, pr_id: String) -> AppResult<String> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let tools = crate::analysis::tools::RepoTools::new(
+        &settings.github_graphql_url,
+        &pr.info.repo,
+        pr.info.number,
+        &pr.info.head_sha,
+        &token,
+    )?;
+    tools.pr_diff_full().await
+}
+
 // -- developer mode ---------------------------------------------------------------
 
 #[tauri::command]

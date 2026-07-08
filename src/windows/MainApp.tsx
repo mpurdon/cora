@@ -9,6 +9,7 @@ import { ActivityDrawer, formatTokens } from "../components/analysis/ActivityDra
 import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
+import { DiffView } from "../components/analysis/DiffView";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { ipc, onFocusPr } from "../lib/ipc";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
@@ -189,10 +190,23 @@ function AnalysisPanel({
     void init().then(() => ensure(pr.id, frame.level, frame.focus, stack.length > 1));
   }, [pr.id, pr.headSha, frame.level, frame.focus, stack.length, init, ensure]);
 
+  const [pendingDrill, setPendingDrill] = useState<C4Node | null>(null);
+
+  const pushDrill = (node: C4Node, next: AnalysisLevel) => {
+    setPendingDrill(null);
+    setStack((s) => [...s, { level: next, focus: node.id, label: node.name }]);
+  };
+
   const drillInto = (node: C4Node) => {
     const next = nextDrillLevel(node.kind, frame.level);
     if (!next) return;
-    setStack((s) => [...s, { level: next, focus: node.id, label: node.name }]);
+    // Analyses are about the diff — drilling into an untouched node costs a
+    // full agentic run for context only, so make that deliberate.
+    if (node.change === "unchanged") {
+      setPendingDrill(node);
+      return;
+    }
+    pushDrill(node, next);
   };
 
   const crumbs = stack.length > 1 && (
@@ -353,13 +367,43 @@ function AnalysisPanel({
       ) : (
         <>
           {frame.level !== "code" && (
-            <div className="drill-hint eyebrow">double-click a node to drill in</div>
+            <div className="drill-hint eyebrow">double-click a changed node to drill in</div>
           )}
           <C4Canvas
             graph={result.graph}
             highlightIds={highlight}
             onNodeDoubleClick={drillInto}
           />
+          {pendingDrill && (
+            <div className="drill-confirm">
+              <p>
+                <span className="mono">{pendingDrill.name}</span> isn't modified by this PR —
+                analyses focus on the diff. Drill in anyway for context? (full agentic run)
+              </p>
+              <div className="row">
+                <button
+                  className="action-btn"
+                  onClick={() => {
+                    const next = nextDrillLevel(pendingDrill.kind, frame.level);
+                    if (next) pushDrill(pendingDrill, next);
+                  }}
+                >
+                  Analyze anyway
+                </button>
+                <a
+                  className="action-btn"
+                  href={`${pr.url.split("/pull/")[0]}/tree/${pr.headSha}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Browse source ↗
+                </a>
+                <button className="action-btn" onClick={() => setPendingDrill(null)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </>
       )}
       {drawer}
@@ -457,11 +501,7 @@ function Detail({
       {(tab === "assessment" || tab === "c4") && (
         <AnalysisPanel pr={pr} tab={tab} highlight={highlight} onFocusNodes={focusNodes} />
       )}
-      {tab === "diff" && (
-        <div className="placeholder">
-          File-level diff view is coming. For now, use “Open on GitHub”.
-        </div>
-      )}
+      {tab === "diff" && <DiffView prId={pr.id} headSha={pr.headSha} />}
     </div>
   );
 }

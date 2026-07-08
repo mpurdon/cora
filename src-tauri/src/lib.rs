@@ -73,6 +73,7 @@ pub fn run() {
             commands::track_pr_url,
             commands::get_analysis,
             commands::run_analysis,
+            commands::get_pr_diff,
             commands::aws_sso_login,
             commands::check_aws,
             commands::get_dev_logs,

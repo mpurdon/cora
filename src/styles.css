@@ -1222,6 +1222,125 @@ input:focus-visible {
   text-align: right;
 }
 
+.drill-confirm {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ink-1);
+  padding: 14px 16px;
+  max-width: 560px;
+}
+
+.drill-confirm p {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.drill-confirm .mono {
+  color: var(--text);
+}
+
+/* ---------- diff view ---------- */
+
+.diff-view {
+  max-width: 100%;
+}
+
+.diff-summary {
+  margin-bottom: 12px;
+}
+
+.diff-file {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.diff-file-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--ink-1);
+  text-align: left;
+}
+
+.diff-file-header:hover {
+  background: var(--ink-2);
+}
+
+.diff-file-header .chevron {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.diff-path {
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-file-header .spacer {
+  flex: 1;
+}
+
+.diff-body {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-x: auto;
+  user-select: text;
+  background: var(--ink-0);
+}
+
+.diff-line {
+  display: flex;
+  white-space: pre;
+  padding-right: 12px;
+}
+
+.diff-gutter {
+  flex: none;
+  width: 26px;
+  text-align: center;
+  color: var(--idle);
+  user-select: none;
+}
+
+.diff-line.add {
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+
+.diff-line.add .diff-gutter {
+  color: var(--ok);
+}
+
+.diff-line.del {
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+}
+
+.diff-line.del .diff-gutter {
+  color: var(--bad);
+}
+
+.diff-line.hunk {
+  color: var(--chat);
+  background: var(--ink-1);
+  padding: 2px 0 2px 26px;
+  margin: 2px 0;
+  font-size: 10px;
+}
+
+.diff-line.ctx {
+  color: var(--muted);
+}
+
 .drawer-backdrop {
   position: fixed;
   inset: 0;
