@@ -86,6 +86,7 @@ pub fn run() {
             commands::get_app_internals,
             commands::poll_now,
             commands::show_main_window,
+            commands::show_main_filtered,
             commands::toggle_callout,
         ])
         .run(tauri::generate_context!())

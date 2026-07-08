@@ -1,73 +1,65 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { TrackedPr } from "../bindings/TrackedPr";
-import { UnreadMarker } from "../components/StatusStrip";
+import {
+  ACTION_META,
+  ACTION_ORDER,
+  bucketReason,
+  inBucket,
+  type ActionKind,
+} from "../lib/actions";
 import { ipc } from "../lib/ipc";
-import { ciTone, mergeTone, parseTitle, timeAgo, usePrStore } from "../state/prStore";
+import { parseTitle, timeAgo, usePrStore } from "../state/prStore";
 
-/** What the user should DO about a PR — the callout's organizing principle. */
-type ActionKind = "fix" | "address" | "merge" | "review" | "updates";
+const ROW_HEIGHT = 44;
+const LIST_CHROME = 30; // bucket label row
 
-interface ActionItem {
-  pr: TrackedPr;
+function Tile({
+  kind,
+  count,
+  selected,
+  pulsing,
+  onSelect,
+}: {
   kind: ActionKind;
-  reason: string;
-}
-
-const BUCKETS: { kind: ActionKind; label: string; verb: string }[] = [
-  { kind: "fix", label: "Fix — your PR is blocked", verb: "fix" },
-  { kind: "address", label: "Address review feedback", verb: "address" },
-  { kind: "merge", label: "Ready to merge", verb: "merge" },
-  { kind: "review", label: "Waiting on your review", verb: "review" },
-  { kind: "updates", label: "New activity", verb: "look" },
-];
-
-/** First matching rule wins — ordered by how urgently it needs the user. */
-function classify(pr: TrackedPr): ActionItem | null {
-  if (pr.muted || pr.state !== "OPEN") return null;
-  const authored = pr.sources.includes("authored");
-  const reviewRequested = pr.sources.includes("review-requested");
-
-  if (authored) {
-    if (ciTone(pr) === "bad") {
-      return { pr, kind: "fix", reason: "CI failing" };
-    }
-    if (mergeTone(pr) === "bad") {
-      return { pr, kind: "fix", reason: "merge conflicts" };
-    }
-    if (pr.reviewDecision === "CHANGES_REQUESTED") {
-      return { pr, kind: "address", reason: "changes requested" };
-    }
-    if (pr.reviewDecision === "APPROVED" && ciTone(pr) !== "warn" && !pr.isDraft) {
-      return { pr, kind: "merge", reason: "approved · checks green" };
-    }
-  }
-
-  if (reviewRequested && !pr.isDraft && pr.reviewDecision !== "APPROVED") {
-    const gates: string[] = [];
-    if (ciTone(pr) === "warn") gates.push("CI running");
-    if (ciTone(pr) === "bad") gates.push("CI red");
-    if (mergeTone(pr) === "bad") gates.push("conflicts");
-    return {
-      pr,
-      kind: "review",
-      reason: gates.length > 0 ? gates.join(" · ") : "ready for review",
-    };
-  }
-
-  if (pr.unread.length > 0) {
-    const kinds = [...new Set(pr.unread)].map((k) => k.replace(/-/g, " "));
-    return { pr, kind: "updates", reason: kinds.join(", ") };
-  }
-
-  return null;
-}
-
-function Row({ item, verb }: { item: ActionItem; verb: string }) {
-  const { pr } = item;
+  count: number;
+  selected: boolean;
+  pulsing: boolean;
+  onSelect: () => void;
+}) {
   return (
     <button
-      className={`action-row kind-${item.kind}`}
+      className={[
+        "stat-tile",
+        `tile-${kind}`,
+        selected ? "selected" : "",
+        count === 0 ? "zero" : "",
+        pulsing ? "tile-pulse" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      onClick={(e) => {
+        // Single click filters the list; double click jumps to the main
+        // window pre-filtered on this bucket.
+        if (e.detail === 2) {
+          void invoke("show_main_filtered", { bucket: kind });
+        } else {
+          onSelect();
+        }
+      }}
+      title={`${ACTION_META[kind].label} — double-click to open in CORA`}
+    >
+      <span className="tile-count">{count}</span>
+      <span className="tile-label">{ACTION_META[kind].short}</span>
+    </button>
+  );
+}
+
+function FocusRow({ pr, kind }: { pr: TrackedPr; kind: ActionKind }) {
+  return (
+    <button
+      className="action-row"
       onClick={() => void ipc.showMainWindow(pr.id)}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -75,44 +67,72 @@ function Row({ item, verb }: { item: ActionItem; verb: string }) {
       }}
       title={`${pr.repo}#${pr.number} — click to open, right-click to mute`}
     >
-      <span className={`verb-chip ${item.kind}`}>{verb}</span>
       <span className="body">
         <span className="pr-title">{parseTitle(pr.title).clean}</span>
         <span className="action-reason">
-          <span className="repo">{pr.repo.split("/")[1] ?? pr.repo}#{pr.number}</span>
+          <span className="repo">
+            {pr.repo.split("/")[1] ?? pr.repo}#{pr.number}
+          </span>
           {" · "}
-          {item.reason}
-          {pr.sources.includes("chat") && <span className="badge-chat">chat</span>}
+          {bucketReason(pr, kind)}
         </span>
       </span>
-      <span className="right">
-        <span className="ago">{timeAgo(pr.lastChangeAt)}</span>
-        <UnreadMarker pr={pr} />
-      </span>
+      <span className="ago">{timeAgo(pr.lastChangeAt)}</span>
     </button>
   );
 }
 
 export function CalloutApp() {
   const { prs, pollStatus, recentlyChanged, init } = usePrStore();
+  const [selected, setSelected] = useState<ActionKind | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [maxRows, setMaxRows] = useState(5);
 
   useEffect(() => {
     document.body.classList.add("callout");
     void init();
   }, [init]);
 
+  // The focus list never scrolls — fit rows to the space we actually have.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      setMaxRows(Math.max(1, Math.floor((el.clientHeight - LIST_CHROME) / ROW_HEIGHT) - 1));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   const buckets = useMemo(() => {
-    const items = prs
-      .map(classify)
-      .filter((i): i is ActionItem => i !== null)
-      .sort((a, b) => b.pr.lastChangeAt.localeCompare(a.pr.lastChangeAt));
-    return BUCKETS.map((bucket) => ({
-      ...bucket,
-      items: items.filter((i) => i.kind === bucket.kind),
-    })).filter((bucket) => bucket.items.length > 0);
+    const counts = new Map<ActionKind, TrackedPr[]>();
+    for (const kind of ACTION_ORDER) {
+      counts.set(
+        kind,
+        prs
+          .filter((pr) => inBucket(pr, kind))
+          .sort((a, b) => b.lastChangeAt.localeCompare(a.lastChangeAt)),
+      );
+    }
+    return counts;
   }, [prs]);
 
-  const total = buckets.reduce((n, b) => n + b.items.length, 0);
+  // Default focus: the most urgent non-empty bucket.
+  const active: ActionKind | null =
+    selected && (buckets.get(selected)?.length ?? 0) > 0
+      ? selected
+      : (ACTION_ORDER.find((k) => (buckets.get(k)?.length ?? 0) > 0) ?? null);
+
+  const activeItems = active ? (buckets.get(active) ?? []) : [];
+  const shown = activeItems.slice(0, maxRows);
+  const overflow = activeItems.length - shown.length;
+
+  const attention = new Set(
+    ACTION_ORDER.filter((k) => k !== "new" && k !== "comments").flatMap((k) =>
+      (buckets.get(k) ?? []).map((p) => p.id),
+    ),
+  ).size;
+
   const noToken = pollStatus?.ok === false && pollStatus.message?.includes("no GitHub token");
   const syncClass = pollStatus == null ? "" : pollStatus.ok ? "live" : "err";
 
@@ -124,7 +144,7 @@ export function CalloutApp() {
           CORA
         </span>
         <span className="eyebrow" data-tauri-drag-region>
-          {total === 0 ? "all clear" : `${total} need${total === 1 ? "s" : ""} you`}
+          {attention === 0 ? "all clear" : `${attention} need${attention === 1 ? "s" : ""} you`}
         </span>
         <span className="spacer" data-tauri-drag-region />
         <button className="icon-btn" title="Refresh now" onClick={() => void ipc.pollNow()}>
@@ -149,29 +169,44 @@ export function CalloutApp() {
             Open settings
           </button>
         </div>
-      ) : total === 0 ? (
-        <div className="callout-empty">
-          <span>Nothing needs you right now.</span>
-        </div>
       ) : (
-        <div className="callout-list">
-          {buckets.map((bucket) => (
-            <section key={bucket.kind} className="action-bucket">
-              <div className="bucket-label eyebrow">
-                {bucket.label}
-                <span className="bucket-count">{bucket.items.length}</span>
+        <>
+          <div className="stat-grid">
+            {ACTION_ORDER.map((kind) => (
+              <Tile
+                key={kind}
+                kind={kind}
+                count={buckets.get(kind)?.length ?? 0}
+                selected={active === kind}
+                pulsing={(buckets.get(kind) ?? []).some((p) => recentlyChanged.has(p.id))}
+                onSelect={() => setSelected(kind)}
+              />
+            ))}
+          </div>
+
+          <div className="focus-list" ref={listRef}>
+            {active == null ? (
+              <div className="callout-empty">
+                <span>Nothing needs you right now.</span>
               </div>
-              {bucket.items.map((item) => (
-                <div
-                  key={item.pr.id}
-                  className={recentlyChanged.has(item.pr.id) ? "row-pulse" : undefined}
-                >
-                  <Row item={item} verb={bucket.verb} />
-                </div>
-              ))}
-            </section>
-          ))}
-        </div>
+            ) : (
+              <>
+                <div className="bucket-label eyebrow">{ACTION_META[active].label}</div>
+                {shown.map((pr) => (
+                  <FocusRow key={pr.id} pr={pr} kind={active} />
+                ))}
+                {overflow > 0 && (
+                  <button
+                    className="more-link"
+                    onClick={() => void invoke("show_main_filtered", { bucket: active })}
+                  >
+                    + {overflow} more in CORA ↗
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

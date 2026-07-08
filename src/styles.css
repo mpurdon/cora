@@ -321,6 +321,101 @@ input:focus-visible {
   color: var(--muted);
 }
 
+/* stat-tile console */
+
+.stat-grid {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 8px;
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 4px 7px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--ink-1);
+}
+
+.stat-tile:hover {
+  background: var(--ink-2);
+}
+
+.stat-tile.selected {
+  border-color: color-mix(in srgb, var(--tile, var(--text)) 65%, transparent);
+  background: color-mix(in srgb, var(--tile, var(--text)) 8%, var(--ink-1));
+}
+
+.stat-tile.zero {
+  opacity: 0.4;
+}
+
+.tile-count {
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--tile, var(--text));
+}
+
+.tile-label {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tile-fix {
+  --tile: var(--bad);
+}
+.tile-address {
+  --tile: var(--warn);
+}
+.tile-merge {
+  --tile: var(--ok);
+}
+.tile-review {
+  --tile: var(--chat);
+}
+.tile-new {
+  --tile: var(--text);
+}
+.tile-comments {
+  --tile: #6fb3d2;
+}
+
+.tile-pulse .tile-count {
+  animation: breathe 1.1s ease-in-out 2;
+}
+
+.focus-list {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 6px 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+.more-link {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--chat);
+  padding: 6px 8px;
+  text-align: left;
+  border-radius: 6px;
+}
+
+.more-link:hover {
+  background: var(--ink-2);
+}
+
 /* action-console rows */
 
 .action-bucket {
@@ -718,6 +813,18 @@ input:focus-visible {
 
 .rail-header .spacer {
   flex: 1;
+}
+
+.bucket-filter-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--chat) 50%, transparent);
+  background: color-mix(in srgb, var(--chat) 8%, transparent);
+  border-radius: 8px;
+  justify-content: space-between;
 }
 
 .track-inline {

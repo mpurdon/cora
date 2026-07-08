@@ -3,4 +3,4 @@
 /**
  * What changed between two observations of the same PR.
  */
-export type ChangeKind = "new" | "ci-changed" | "review-changed" | "new-commits" | "title-changed" | "merged" | "closed" | "reopened" | "draft-changed";
+export type ChangeKind = "new" | "ci-changed" | "review-changed" | "new-commits" | "new-comments" | "title-changed" | "merged" | "closed" | "reopened" | "draft-changed";

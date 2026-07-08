@@ -7,7 +7,11 @@ export type Assessment = {
 /**
  * What this change *is*, in system terms — 2-4 sentences.
  */
-summary: string, fit: FitVerdict, fitRationale: string, 
+summary: string, fit: FitVerdict, 
+/**
+ * Defaults tolerate models that omit "empty" fields despite the schema.
+ */
+fitRationale: string, 
 /**
  * Ordered most-important-first; external impacts always lead.
  */

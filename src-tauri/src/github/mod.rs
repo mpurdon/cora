@@ -40,6 +40,7 @@ pub fn parse_pr(v: &Value) -> Option<PrInfo> {
         additions: v.get("additions").and_then(Value::as_i64).unwrap_or(0),
         deletions: v.get("deletions").and_then(Value::as_i64).unwrap_or(0),
         changed_files: v.get("changedFiles").and_then(Value::as_i64).unwrap_or(0),
+        total_comments: v.get("totalCommentsCount").and_then(Value::as_i64).unwrap_or(0),
         head_sha: last_commit
             .and_then(|c| c.get("oid"))
             .and_then(Value::as_str)

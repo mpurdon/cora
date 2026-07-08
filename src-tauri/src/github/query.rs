@@ -12,6 +12,7 @@ fragment PrFields on PullRequest {
   reviewDecision
   mergeable
   additions deletions changedFiles
+  totalCommentsCount
   labels(first: 10) { nodes { name color } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
 }

@@ -536,6 +536,18 @@ pub fn show_main_window(app: AppHandle, pr_id: Option<String>) -> AppResult<()> 
     Ok(())
 }
 
+/// Double-clicking a callout stat tile lands the main window on that bucket.
+#[tauri::command]
+pub fn show_main_filtered(app: AppHandle, bucket: String) -> AppResult<()> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+        let _ = app.emit_to("main", "focus:bucket", bucket);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn toggle_callout(app: AppHandle) -> AppResult<()> {
     if let Some(callout) = app.get_webview_window("callout") {
