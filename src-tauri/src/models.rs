@@ -236,6 +236,25 @@ impl Default for Settings {
     }
 }
 
+/// One user-taken action, recorded for the History view. `old_value` is what
+/// undo restores.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditEntry {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub at: String,
+    /// muted | unmuted | untracked | tracked | pr-priority | repo-priority
+    pub action: String,
+    pub subject_id: String,
+    /// Human-readable subject ("owner/repo#123 — title" or "owner/repo").
+    pub subject_label: String,
+    pub old_value: String,
+    pub new_value: String,
+    pub undone: bool,
+}
+
 /// Emitted after every poll cycle so the UI can show connection health.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
