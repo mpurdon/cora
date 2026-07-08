@@ -35,6 +35,7 @@ type GroupMode = "org" | "repo" | "reason" | "type";
 type SortMode = "activity" | "attention" | "repo";
 
 const PRIORITY_WEIGHT: Record<RepoPriority, number> = { high: 0, normal: 1, low: 2, ignored: 3 };
+const PR_PRIORITY_WEIGHT: Record<PrPriority, number> = { high: 0, normal: 1, low: 2 };
 const PRIORITY_CYCLE: RepoPriority[] = ["normal", "high", "low", "ignored"];
 
 /** "Ready for my review" requirements, one per lamp. */
@@ -653,6 +654,7 @@ export function MainApp() {
     const sorted = [...visible].sort(
       (a, b) =>
         PRIORITY_WEIGHT[prioOf(a.repo)] - PRIORITY_WEIGHT[prioOf(b.repo)] ||
+        PR_PRIORITY_WEIGHT[a.priority] - PR_PRIORITY_WEIGHT[b.priority] ||
         SORTERS[sortMode](a, b),
     );
 
