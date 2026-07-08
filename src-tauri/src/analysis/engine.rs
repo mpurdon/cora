@@ -43,11 +43,11 @@ fn level_instructions(level: AnalysisLevel, focus: Option<&str>) -> String {
     match level {
         AnalysisLevel::Context => "Requested C4 level: CONTEXT + CONTAINER. Show the system in its environment (people, external systems) and the affected containers. This is the default view — keep it at architecture altitude.".into(),
         AnalysisLevel::Component => format!(
-            "Requested C4 level: COMPONENT. The user drilled into node '{}'. Show the components inside it, responsibility shifts, dependency-direction violations, and pattern consistency with the rest of the repo.",
+            "Requested C4 level: COMPONENT. The user drilled into node '{}'. Anchor everything in the PR diff: deep-dive the components the diff touches, their responsibility shifts, dependency-direction violations, and pattern consistency. Include untouched components only as thin context (mark them unchanged), never as the subject.",
             focus.unwrap_or("(unspecified)")
         ),
         AnalysisLevel::Code => format!(
-            "Requested C4 level: CODE. The user drilled into component '{}'. Show the classes/modules inside it and how the PR changes them — coupling, interface changes, cohesion. Still architectural framing; no style nits.",
+            "Requested C4 level: CODE. The user drilled into component '{}'. Show the classes/modules the diff changes and what those changes do to coupling, interfaces, and cohesion. Untouched classes appear only when needed to explain an affected relationship. Still architectural framing; no style nits.",
             focus.unwrap_or("(unspecified)")
         ),
     }
