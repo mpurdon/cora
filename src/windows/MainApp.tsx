@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PrSource } from "../bindings/PrSource";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { TrackedPr } from "../bindings/TrackedPr";
+import { ActivityDrawer, formatTokens } from "../components/analysis/ActivityDrawer";
 import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
@@ -152,10 +153,26 @@ function AnalysisPanel({
 }) {
   const { runs, init, ensure, start } = useAnalysisStore();
   const run = runs[analysisKey(pr.id, "context")];
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     void init().then(() => ensure(pr.id, "context"));
   }, [pr.id, pr.headSha, init, ensure]);
+
+  const liveSteps = (run?.progress ?? []).map((p) => ({
+    at: p.at,
+    kind: "status",
+    message: p.message,
+  }));
+  const drawer = (
+    <ActivityDrawer
+      open={drawerOpen}
+      onClose={() => setDrawerOpen(false)}
+      steps={run?.status === "done" ? (run.result?.trace ?? []) : liveSteps}
+      usage={run?.status === "done" ? run.result?.usage : undefined}
+      live={run?.status === "running"}
+    />
+  );
 
   if (!run || run.status === "idle") {
     return (
@@ -172,17 +189,27 @@ function AnalysisPanel({
   }
 
   if (run.status === "running") {
+    const recent = run.progress.slice(-8);
     return (
-      <div className="placeholder analysis-running">
-        <span className="sync-dot live" />
-        <div className="progress-ticker">
-          {run.progress.slice(-8).map((message, i) => (
-            <div key={i} className={i === run.progress.slice(-8).length - 1 ? "current" : ""}>
-              {message}
-            </div>
-          ))}
+      <>
+        <div className="panel-meta">
+          <span className="spacer" />
+          <button className="action-btn" onClick={() => setDrawerOpen(true)}>
+            Activity ›
+          </button>
         </div>
-      </div>
+        <div className="placeholder analysis-running">
+          <span className="sync-dot live" />
+          <div className="progress-ticker">
+            {recent.map((p, i) => (
+              <div key={i} className={i === recent.length - 1 ? "current" : ""}>
+                {p.message}
+              </div>
+            ))}
+          </div>
+        </div>
+        {drawer}
+      </>
     );
   }
 
@@ -243,10 +270,38 @@ function AnalysisPanel({
     );
   }
 
-  return tab === "assessment" ? (
-    <AssessmentView assessment={result.assessment} onFocusNodes={onFocusNodes} />
-  ) : (
-    <C4Canvas graph={result.graph} highlightIds={highlight} />
+  return (
+    <>
+      <div className="panel-meta">
+        <span className="mono panel-usage">
+          analyzed {timeAgo(result.createdAt)} ago
+          {result.usage.turns > 0 && (
+            <>
+              {" "}
+              · {result.usage.turns} turns · {formatTokens(result.usage.inputTokens)} in /{" "}
+              {formatTokens(result.usage.outputTokens)} out
+            </>
+          )}
+        </span>
+        <span className="spacer" />
+        <button className="action-btn" onClick={() => setDrawerOpen(true)}>
+          Activity ›
+        </button>
+        <button
+          className="action-btn"
+          title="Discard and analyze again"
+          onClick={() => void start(pr.id, "context")}
+        >
+          Re-run
+        </button>
+      </div>
+      {tab === "assessment" ? (
+        <AssessmentView assessment={result.assessment} onFocusNodes={onFocusNodes} />
+      ) : (
+        <C4Canvas graph={result.graph} highlightIds={highlight} />
+      )}
+      {drawer}
+    </>
   );
 }
 

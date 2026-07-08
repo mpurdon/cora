@@ -167,6 +167,30 @@ pub struct Assessment {
     pub context_notes: Vec<String>,
 }
 
+/// One step of the agent's exploration, kept for the activity drawer.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceStep {
+    pub at: String,
+    /// "tool" (fetched something) | "thought" (model narration) | "status"
+    pub kind: String,
+    pub message: String,
+}
+
+/// Token cost of one analysis run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisUsage {
+    #[ts(type = "number")]
+    pub input_tokens: i64,
+    #[ts(type = "number")]
+    pub output_tokens: i64,
+    #[ts(type = "number")]
+    pub turns: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -180,6 +204,11 @@ pub struct AnalysisResult {
     pub graph: C4Graph,
     pub assessment: Assessment,
     pub created_at: String,
+    /// The agent's exploration steps, for re-reading after the fact.
+    #[serde(default)]
+    pub trace: Vec<TraceStep>,
+    #[serde(default)]
+    pub usage: AnalysisUsage,
 }
 
 /// Streaming progress for the UI ("reading src/payments/…").
