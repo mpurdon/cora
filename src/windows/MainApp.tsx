@@ -11,6 +11,11 @@ import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
 import { DiffView } from "../components/analysis/DiffView";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { PrPriority } from "../bindings/PrPriority";
+import { CommentsView } from "../components/analysis/CommentsView";
+import { ContextMenu } from "../components/ContextMenu";
 import { ipc, onFocusPr } from "../lib/ipc";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { ciTone, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
@@ -141,7 +146,13 @@ function TrackPrInput({ onDone }: { onDone: () => void }) {
   );
 }
 
-type Tab = "assessment" | "c4" | "diff";
+type Tab = "assessment" | "c4" | "diff" | "comments";
+const TAB_ORDER: [Tab, string][] = [
+  ["assessment", "Assessment"],
+  ["c4", "Architecture"],
+  ["diff", "Diff"],
+  ["comments", "Comments"],
+];
 
 /** C4 drill state: which level we're viewing and the path down to it. */
 interface DrillFrame {
@@ -415,10 +426,14 @@ function Detail({
   pr,
   repoPriority,
   onRepoPriority,
+  pendingComment,
+  onPendingCommentHandled,
 }: {
   pr: TrackedPr;
   repoPriority: RepoPriority;
   onRepoPriority: (p: RepoPriority) => Promise<void>;
+  pendingComment: string | null;
+  onPendingCommentHandled: () => void;
 }) {
   const [tab, setTab] = useState<Tab>("assessment");
   const [highlight, setHighlight] = useState<string[]>([]);
@@ -427,6 +442,19 @@ function Detail({
     setHighlight(ids);
     if (ids.length > 0) setTab("c4");
   };
+
+  // Reply-notification deep link: jump to the Comments tab, then the
+  // CommentsView scrolls to the anchored comment.
+  useEffect(() => {
+    if (pendingComment) setTab("comments");
+  }, [pendingComment]);
+
+  // Number-key tab switching, dispatched from the window-level hotkeys.
+  useEffect(() => {
+    const onTabHotkey = (e: Event) => setTab((e as CustomEvent<Tab>).detail);
+    window.addEventListener("cora:set-tab", onTabHotkey);
+    return () => window.removeEventListener("cora:set-tab", onTabHotkey);
+  }, []);
   return (
     <div className="detail">
       <div className="crumbs">
@@ -479,18 +507,13 @@ function Detail({
       </div>
 
       <div className="tabs" role="tablist">
-        {(
-          [
-            ["assessment", "Assessment"],
-            ["c4", "Architecture"],
-            ["diff", "Diff"],
-          ] as [Tab, string][]
-        ).map(([key, label]) => (
+        {TAB_ORDER.map(([key, label], i) => (
           <button
             key={key}
             role="tab"
             aria-selected={tab === key}
             className={`tab${tab === key ? " active" : ""}`}
+            title={`Hotkey: ${i + 1}`}
             onClick={() => setTab(key)}
           >
             {label}
@@ -502,6 +525,13 @@ function Detail({
         <AnalysisPanel pr={pr} tab={tab} highlight={highlight} onFocusNodes={focusNodes} />
       )}
       {tab === "diff" && <DiffView prId={pr.id} headSha={pr.headSha} />}
+      {tab === "comments" && (
+        <CommentsView
+          prId={pr.id}
+          focusCommentId={pendingComment}
+          onFocusHandled={onPendingCommentHandled}
+        />
+      )}
     </div>
   );
 }
@@ -554,6 +584,10 @@ export function MainApp() {
     Math.min(520, Math.max(220, Number(localStorage.getItem("cora.railWidth")) || 300)),
   );
   const dragging = useRef(false);
+  const filterRef = useRef<HTMLInputElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; pr: TrackedPr } | null>(null);
+  const [showHotkeys, setShowHotkeys] = useState(false);
+  const [pendingComment, setPendingComment] = useState<string | null>(null);
 
   useEffect(() => {
     void init();
@@ -562,8 +596,19 @@ export function MainApp() {
       setSelectedId(id);
       void ipc.markPrRead(id);
     });
+    // Future reply notifications deep-link straight to a comment.
+    const unlistenComment = listen<{ prId: string; commentId: string }>(
+      "focus:comment",
+      (e) => {
+        setShowSettings(false);
+        setSelectedId(e.payload.prId);
+        setPendingComment(e.payload.commentId);
+        void ipc.markPrRead(e.payload.prId);
+      },
+    );
     return () => {
       void unlisten.then((fn) => fn());
+      void unlistenComment.then((fn) => fn());
     };
   }, [init]);
 
@@ -655,6 +700,63 @@ export function MainApp() {
     void ipc.markPrRead(id);
   };
 
+  // Visible PRs in display order, for j/k navigation.
+  const flatVisible = useMemo(
+    () =>
+      grouped.flatMap((g) =>
+        collapsed.has(`${groupMode}:${g.key}`) ? [] : g.prs,
+      ),
+    [grouped, collapsed, groupMode],
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const typing =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable;
+      if (e.key === "Escape") {
+        setShowHotkeys(false);
+        setMenu(null);
+        if (typing) (target as HTMLInputElement).blur();
+        return;
+      }
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === "?") {
+        setShowHotkeys((s) => !s);
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "/") {
+        filterRef.current?.focus();
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "j" || e.key === "k") {
+        if (flatVisible.length === 0) return;
+        const idx = flatVisible.findIndex((p) => p.id === selectedId);
+        const next =
+          e.key === "j"
+            ? Math.min(flatVisible.length - 1, idx + 1)
+            : Math.max(0, idx <= 0 ? 0 : idx - 1);
+        select(flatVisible[idx === -1 ? 0 : next].id);
+        e.preventDefault();
+        return;
+      }
+      const tabIndex = Number(e.key) - 1;
+      if (tabIndex >= 0 && tabIndex < TAB_ORDER.length && selected) {
+        window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: TAB_ORDER[tabIndex][0] }));
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flatVisible, selectedId, selected]);
+
   return (
     <div className="main-shell" onPointerMove={onResize} onPointerUp={endResize}>
       <nav className="rail" style={{ width: railWidth }}>
@@ -674,8 +776,9 @@ export function MainApp() {
 
         <div className="rail-controls">
           <input
+            ref={filterRef}
             className="filter-input"
-            placeholder="Filter repo, title, author…"
+            placeholder="Filter…  ( / )"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
@@ -784,6 +887,10 @@ export function MainApp() {
                       key={pr.id}
                       className={`rail-row${pr.id === selectedId ? " selected" : ""}`}
                       onClick={() => select(pr.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setMenu({ x: e.clientX, y: e.clientY, pr });
+                      }}
                       title={`${pr.repo}#${pr.number} — ${pr.title}`}
                     >
                       <UnreadMarker pr={pr} />
@@ -841,11 +948,92 @@ export function MainApp() {
             pr={selected}
             repoPriority={prioOf(selected.repo)}
             onRepoPriority={(p) => setRepoPriority(selected.repo, p)}
+            pendingComment={pendingComment}
+            onPendingCommentHandled={() => setPendingComment(null)}
           />
         ) : (
           <div className="empty-detail">Select a pull request — or ⚙ to connect GitHub.</div>
         )}
       </main>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          sections={[
+            {
+              title: `PR #${menu.pr.number} priority`,
+              items: (["high", "normal", "low"] as PrPriority[]).map((p) => ({
+                label: p,
+                checked: menu.pr.priority === p,
+                onClick: () => void ipc.setPrPriority(menu.pr.id, p),
+              })),
+            },
+            {
+              items: [
+                {
+                  label: menu.pr.muted ? "Unmute" : "Mute",
+                  onClick: () => void ipc.setPrMuted(menu.pr.id, !menu.pr.muted),
+                },
+                {
+                  label: "Mark read",
+                  onClick: () => void ipc.markPrRead(menu.pr.id),
+                },
+                {
+                  label: "Open on GitHub",
+                  onClick: () => void openUrl(menu.pr.url),
+                },
+                {
+                  label: "Untrack",
+                  danger: true,
+                  onClick: () => void ipc.untrackPr(menu.pr.id),
+                },
+              ],
+            },
+            {
+              title: `${menu.pr.repo} priority`,
+              items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
+                label: p,
+                checked: prioOf(menu.pr.repo) === p,
+                onClick: () => void setRepoPriority(menu.pr.repo, p),
+              })),
+            },
+          ]}
+        />
+      )}
+
+      {showHotkeys && <HotkeysHelp onClose={() => setShowHotkeys(false)} />}
     </div>
+  );
+}
+
+function HotkeysHelp({ onClose }: { onClose: () => void }) {
+  const KEYS: [string, string][] = [
+    ["j / k", "next / previous pull request"],
+    ["1 – 4", "Assessment · Architecture · Diff · Comments"],
+    ["/", "focus the filter"],
+    ["esc", "close menus, drawers, this help"],
+    ["?", "toggle this help"],
+    ["right-click a PR", "priority, mute, untrack, repo priority"],
+    ["double-click a node", "drill into the architecture"],
+  ];
+  return (
+    <>
+      <div className="drawer-backdrop" onClick={onClose} />
+      <div className="hotkeys-help">
+        <div className="drawer-title">Keyboard shortcuts</div>
+        <table>
+          <tbody>
+            {KEYS.map(([key, what]) => (
+              <tr key={key}>
+                <td className="mono hotkey-key">{key}</td>
+                <td>{what}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }

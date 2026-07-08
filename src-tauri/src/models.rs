@@ -80,10 +80,77 @@ pub struct TrackedPr {
     pub info: PrInfo,
     pub sources: Vec<PrSource>,
     pub muted: bool,
+    #[serde(default = "default_pr_priority")]
+    pub priority: PrPriority,
     /// Unacknowledged changes, newest last.
     pub unread: Vec<ChangeKind>,
     pub first_seen: String,
     pub last_change_at: String,
+}
+
+/// Per-PR attention weighting, set from the PR tree's context menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum PrPriority {
+    High,
+    Normal,
+    Low,
+}
+
+impl PrPriority {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PrPriority::High => "high",
+            PrPriority::Normal => "normal",
+            PrPriority::Low => "low",
+        }
+    }
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "high" => PrPriority::High,
+            "low" => PrPriority::Low,
+            _ => PrPriority::Normal,
+        }
+    }
+}
+
+/// A single comment on a PR (conversation or review thread).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PrComment {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+/// A review thread anchored to code.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewThread {
+    pub id: String,
+    pub path: Option<String>,
+    #[ts(type = "number | null")]
+    pub line: Option<i64>,
+    #[ts(type = "number | null")]
+    pub start_line: Option<i64>,
+    pub resolved: bool,
+    pub outdated: bool,
+    pub comments: Vec<PrComment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PrConversation {
+    /// Top-level conversation comments, oldest first.
+    pub comments: Vec<PrComment>,
+    /// Code-anchored review threads.
+    pub threads: Vec<ReviewThread>,
 }
 
 /// Per-repo attention weighting. Ignored repos are never tracked.
@@ -132,6 +199,10 @@ fn default_aws_region() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_pr_priority() -> PrPriority {
+    PrPriority::Normal
 }
 
 impl Default for Settings {
