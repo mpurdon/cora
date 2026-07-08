@@ -45,6 +45,11 @@ export const ipc = {
   setPrPriority: (id: string, priority: PrPriority) =>
     invoke<void>("set_pr_priority", { id, priority }),
   getPrComments: (prId: string) => invoke<PrConversation>("get_pr_comments", { prId }),
+  refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),
+  addPrComment: (prId: string, body: string) =>
+    invoke<void>("add_pr_comment", { prId, body }),
+  replyToThread: (threadId: string, body: string) =>
+    invoke<void>("reply_to_thread", { threadId, body }),
   getFileAtHead: (prId: string, path: string) =>
     invoke<string>("get_file_at_head", { prId, path }),
   awsSsoLogin: (profile: string) => invoke<void>("aws_sso_login", { profile }),
