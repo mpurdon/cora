@@ -36,6 +36,7 @@ export const ipc = {
     invoke<AnalysisResult | null>("get_analysis", { prId, level, focus: focus ?? null }),
   runAnalysis: (prId: string, level: AnalysisLevel, focus?: string, force?: boolean) =>
     invoke<void>("run_analysis", { prId, level, focus: focus ?? null, force: force ?? false }),
+  getPrDiff: (prId: string) => invoke<string>("get_pr_diff", { prId }),
   awsSsoLogin: (profile: string) => invoke<void>("aws_sso_login", { profile }),
   checkAws: (profile: string, region: string) =>
     invoke<string>("check_aws", { profile, region }),

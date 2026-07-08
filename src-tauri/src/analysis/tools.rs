@@ -127,18 +127,23 @@ impl RepoTools {
     }
 
     async fn pr_diff(&self) -> AppResult<String> {
+        let mut text = self.pr_diff_full().await?;
+        if text.len() > MAX_DIFF_CHARS {
+            text.truncate(MAX_DIFF_CHARS);
+            text.push_str("\n\n[diff truncated — use get_file for specific files]");
+        }
+        Ok(text)
+    }
+
+    /// Untruncated diff, for the human-facing Diff tab.
+    pub async fn pr_diff_full(&self) -> AppResult<String> {
         let resp = self
             .get(
                 &format!("repos/{}/pulls/{}", self.repo, self.number),
                 "application/vnd.github.v3.diff",
             )
             .await?;
-        let mut text = resp.text().await?;
-        if text.len() > MAX_DIFF_CHARS {
-            text.truncate(MAX_DIFF_CHARS);
-            text.push_str("\n\n[diff truncated — use get_file for specific files]");
-        }
-        Ok(text)
+        Ok(resp.text().await?)
     }
 
     async fn file(&self, path: &str, r#ref: Option<&str>) -> AppResult<String> {
