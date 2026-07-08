@@ -784,6 +784,36 @@ pub fn log_frontend_error(app: AppHandle, message: String) {
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewedFile {
+    pub path: String,
+    pub digest: String,
+}
+
+#[tauri::command]
+pub fn get_viewed_files(
+    store: State<'_, Arc<Store>>,
+    pr_id: String,
+) -> AppResult<Vec<ViewedFile>> {
+    Ok(store
+        .viewed_files(&pr_id)?
+        .into_iter()
+        .map(|(path, digest)| ViewedFile { path, digest })
+        .collect())
+}
+
+#[tauri::command]
+pub fn set_file_viewed(
+    store: State<'_, Arc<Store>>,
+    pr_id: String,
+    path: String,
+    digest: String,
+    viewed: bool,
+) -> AppResult<()> {
+    store.set_file_viewed(&pr_id, &path, &digest, viewed)
+}
+
 /// Jump to macOS System Settings → Notifications.
 #[tauri::command]
 pub fn open_notification_settings() -> AppResult<()> {
