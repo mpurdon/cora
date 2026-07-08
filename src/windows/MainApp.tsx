@@ -13,6 +13,7 @@ import { DiffView } from "../components/analysis/DiffView";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
 import type { PrPriority } from "../bindings/PrPriority";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
@@ -593,6 +594,7 @@ export function MainApp() {
   >(null);
   const [showHotkeys, setShowHotkeys] = useState(false);
   const [pendingComment, setPendingComment] = useState<string | null>(null);
+  const [bucketFilter, setBucketFilter] = useState<ActionKind | null>(null);
 
   useEffect(() => {
     void init();
@@ -611,9 +613,15 @@ export function MainApp() {
         void ipc.markPrRead(e.payload.prId);
       },
     );
+    // Callout tile double-click: land here filtered to that bucket.
+    const unlistenBucket = listen<ActionKind>("focus:bucket", (e) => {
+      setShowSettings(false);
+      setBucketFilter(e.payload);
+    });
     return () => {
       void unlisten.then((fn) => fn());
       void unlistenComment.then((fn) => fn());
+      void unlistenBucket.then((fn) => fn());
     };
   }, [init]);
 
@@ -653,7 +661,10 @@ export function MainApp() {
         String(pr.number).includes(q),
     );
     const unignored = textMatched.filter((pr) => prioOf(pr.repo) !== "ignored");
-    const visible = unignored.filter((pr) => passesReady(pr, ready));
+    const bucketMatched = bucketFilter
+      ? unignored.filter((pr) => inBucket(pr, bucketFilter))
+      : unignored;
+    const visible = bucketMatched.filter((pr) => passesReady(pr, ready));
     const hiddenByReady = unignored.length - visible.length;
     const sorted = [...visible].sort(
       (a, b) =>
@@ -696,7 +707,7 @@ export function MainApp() {
       entries.sort((a, b) => groupWeight(a) - groupWeight(b) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
-  }, [prs, filter, sortMode, groupMode, ready, prioOf]);
+  }, [prs, filter, sortMode, groupMode, ready, prioOf, bucketFilter]);
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
@@ -833,6 +844,15 @@ export function MainApp() {
           </button>
           {hiddenByReady > 0 && <span className="hidden-note">−{hiddenByReady}</span>}
         </div>
+
+        {bucketFilter && (
+          <div className="bucket-filter-chip">
+            <span className="eyebrow">{ACTION_META[bucketFilter].label}</span>
+            <button className="icon-btn" title="Clear filter" onClick={() => setBucketFilter(null)}>
+              ✕
+            </button>
+          </div>
+        )}
 
         <Legend />
 

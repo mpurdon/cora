@@ -35,4 +35,8 @@ ciStatus: string | null,
 /**
  * MERGEABLE | CONFLICTING | UNKNOWN
  */
-mergeable: string, additions: number, deletions: number, changedFiles: number, headSha: string, updatedAt: string, labels: Array<Label>, };
+mergeable: string, additions: number, deletions: number, changedFiles: number, 
+/**
+ * Issue + review comments; drives the "new comments" attention signal.
+ */
+totalComments: number, headSha: string, updatedAt: string, labels: Array<Label>, };
