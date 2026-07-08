@@ -11,8 +11,71 @@ import { timeAgo } from "../../state/prStore";
 /** Comment id → DOM anchor, so reply notifications can deep-link here. */
 export const commentAnchor = (commentId: string) => `comment-${commentId}`;
 
+const REACTION_EMOJI: Record<string, string> = {
+  THUMBS_UP: "👍",
+  THUMBS_DOWN: "👎",
+  LAUGH: "😄",
+  HOORAY: "🎉",
+  CONFUSED: "😕",
+  HEART: "❤️",
+  ROCKET: "🚀",
+  EYES: "👀",
+};
+
+/** Existing reactions as toggleable chips + a picker for new ones. */
+export function ReactionBar({
+  comment,
+  onChanged,
+}: {
+  comment: PrComment;
+  onChanged: () => void;
+}) {
+  const [picker, setPicker] = useState(false);
+  const toggle = async (content: string, has: boolean) => {
+    setPicker(false);
+    try {
+      await ipc.toggleReaction(comment.id, content, has);
+      onChanged();
+    } catch {
+      // reaction failures are non-critical; the reload will show truth
+      onChanged();
+    }
+  };
+  const reacted = new Map(comment.reactions.map((r) => [r.content, r]));
+  return (
+    <div className="reaction-bar">
+      {comment.reactions.map((r) => (
+        <button
+          key={r.content}
+          className={`reaction-chip${r.viewerHasReacted ? " mine" : ""}`}
+          title={r.content.toLowerCase().replace(/_/g, " ")}
+          onClick={() => void toggle(r.content, r.viewerHasReacted)}
+        >
+          {REACTION_EMOJI[r.content] ?? r.content} {r.count}
+        </button>
+      ))}
+      <button className="reaction-add" title="Add reaction" onClick={() => setPicker((p) => !p)}>
+        ☺+
+      </button>
+      {picker && (
+        <div className="reaction-picker">
+          {Object.entries(REACTION_EMOJI).map(([content, emoji]) => (
+            <button
+              key={content}
+              className="reaction-option"
+              onClick={() => void toggle(content, reacted.get(content)?.viewerHasReacted ?? false)}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** GitHub-flavored markdown, with links opening in the system browser. */
-function CommentBody({ body }: { body: string }) {
+export function CommentBody({ body }: { body: string }) {
   return (
     <div className="comment-body markdown">
       <Markdown
@@ -41,7 +104,17 @@ function CommentBody({ body }: { body: string }) {
   );
 }
 
-function Comment({ comment, isReply }: { comment: PrComment; isReply: boolean }) {
+function Comment({
+  comment,
+  isReply,
+  onChanged,
+  onQuoteReply,
+}: {
+  comment: PrComment;
+  isReply: boolean;
+  onChanged: () => void;
+  onQuoteReply?: (comment: PrComment) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   // Bot comments clamp aggressively — visible, but never dominant.
   const long = comment.body.length > (comment.isBot ? 400 : 1500);
@@ -51,6 +124,15 @@ function Comment({ comment, isReply }: { comment: PrComment; isReply: boolean })
         <span className="comment-author">{comment.author}</span>
         {comment.isBot && <span className="thread-tag">bot</span>}
         <span className="comment-when">{timeAgo(comment.createdAt)} ago</span>
+        {onQuoteReply && (
+          <button
+            className="comment-action"
+            title="Quote this comment in a reply"
+            onClick={() => onQuoteReply(comment)}
+          >
+            Reply
+          </button>
+        )}
         <a className="comment-link" href={comment.url} target="_blank" rel="noreferrer" title="Open on GitHub">
           ↗
         </a>
@@ -63,23 +145,29 @@ function Comment({ comment, isReply }: { comment: PrComment; isReply: boolean })
           {expanded ? "show less" : "show more"}
         </button>
       )}
+      <ReactionBar comment={comment} onChanged={onChanged} />
     </div>
   );
 }
 
-/** Textarea + submit, shared by the conversation composer and thread replies. */
-function Composer({
+/** Textarea + submit, shared by the conversation composer, thread replies,
+ *  and the diff view's inline composers. */
+export function Composer({
   placeholder,
   submitLabel,
   onSubmit,
   onCancel,
+  initialBody = "",
+  autoFocus = false,
 }: {
   placeholder: string;
   submitLabel: string;
   onSubmit: (body: string) => Promise<void>;
   onCancel?: () => void;
+  initialBody?: string;
+  autoFocus?: boolean;
 }) {
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(initialBody);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,6 +191,7 @@ function Composer({
         placeholder={placeholder}
         value={body}
         disabled={busy}
+        autoFocus={autoFocus}
         onChange={(e) => setBody(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && body.trim()) void submit();
@@ -159,9 +248,9 @@ function Thread({
           </button>
         )}
       </div>
-      <Comment comment={root} isReply={false} />
+      <Comment comment={root} isReply={false} onChanged={onReplied} />
       {replies.map((c) => (
-        <Comment key={c.id} comment={c} isReply />
+        <Comment key={c.id} comment={c} isReply onChanged={onReplied} />
       ))}
       {replying && (
         <Composer
@@ -266,6 +355,17 @@ export function CommentsView({
   const [conversation, setConversation] = useState<PrConversation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [codeThread, setCodeThread] = useState<ReviewThread | null>(null);
+  const [prefill, setPrefill] = useState("");
+
+  const quoteReply = (comment: PrComment) => {
+    const quoted = comment.body
+      .split("\n")
+      .slice(0, 6)
+      .map((l) => `> ${l}`)
+      .join("\n");
+    setPrefill(`${quoted}\n\n@${comment.author} `);
+    document.getElementById("conversation-composer")?.scrollIntoView({ block: "center" });
+  };
 
   const load = () => {
     setError(null);
@@ -329,16 +429,28 @@ export function CommentsView({
       <section>
         <span className="eyebrow">Conversation</span>
         {conversation.comments.map((c) => (
-          <Comment key={c.id} comment={c} isReply={false} />
+          <Comment
+            key={c.id}
+            comment={c}
+            isReply={false}
+            onChanged={load}
+            onQuoteReply={quoteReply}
+          />
         ))}
-        <Composer
-          placeholder="Comment on this pull request…"
-          submitLabel="Comment"
-          onSubmit={async (body) => {
-            await ipc.addPrComment(prId, body);
-            load();
-          }}
-        />
+        <div id="conversation-composer">
+          <Composer
+            key={prefill} // remount to adopt a new quote prefill
+            initialBody={prefill}
+            autoFocus={prefill.length > 0}
+            placeholder="Comment on this pull request…"
+            submitLabel="Comment"
+            onSubmit={async (body) => {
+              await ipc.addPrComment(prId, body);
+              setPrefill("");
+              load();
+            }}
+          />
+        </div>
       </section>
 
       {resolved.length > 0 && (
