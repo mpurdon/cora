@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS prs (
   tracked        INTEGER NOT NULL DEFAULT 1,
   unread         TEXT NOT NULL DEFAULT '[]',
   first_seen     TEXT NOT NULL,
-  last_change_at TEXT NOT NULL
+  last_change_at TEXT NOT NULL,
+  priority       TEXT NOT NULL DEFAULT 'normal'
 );
 CREATE TABLE IF NOT EXISTS analyses (
   pr_id      TEXT NOT NULL,
@@ -42,6 +43,8 @@ impl Store {
     pub fn open(path: &Path) -> AppResult<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        // Additive migration; harmless error when the column already exists.
+        let _ = conn.execute("ALTER TABLE prs ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'", []);
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -94,7 +97,7 @@ impl Store {
     pub fn list_prs(&self) -> AppResult<Vec<TrackedPr>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT data, sources, muted, unread, first_seen, last_change_at
+            "SELECT data, sources, muted, unread, first_seen, last_change_at, priority
              FROM prs WHERE tracked = 1 ORDER BY last_change_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -104,11 +107,12 @@ impl Store {
             let unread: String = row.get(3)?;
             let first_seen: String = row.get(4)?;
             let last_change_at: String = row.get(5)?;
-            Ok((data, sources, muted, unread, first_seen, last_change_at))
+            let priority: String = row.get(6)?;
+            Ok((data, sources, muted, unread, first_seen, last_change_at, priority))
         })?;
         let mut prs = Vec::new();
         for row in rows {
-            let (data, sources, muted, unread, first_seen, last_change_at) = row?;
+            let (data, sources, muted, unread, first_seen, last_change_at, priority) = row?;
             let info: PrInfo = match serde_json::from_str(&data) {
                 Ok(i) => i,
                 Err(_) => continue, // schema drift: skip rather than poison the list
@@ -117,12 +121,22 @@ impl Store {
                 info,
                 sources: serde_json::from_str(&sources).unwrap_or_default(),
                 muted,
+                priority: crate::models::PrPriority::parse(&priority),
                 unread: serde_json::from_str(&unread).unwrap_or_default(),
                 first_seen,
                 last_change_at,
             });
         }
         Ok(prs)
+    }
+
+    pub fn set_pr_priority(&self, id: &str, priority: crate::models::PrPriority) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE prs SET priority = ?2 WHERE id = ?1",
+            params![id, priority.as_str()],
+        )?;
+        Ok(())
     }
 
     pub fn get_pr(&self, id: &str) -> AppResult<Option<TrackedPr>> {
@@ -138,10 +152,18 @@ impl Store {
         now: &str,
     ) -> AppResult<TrackedPr> {
         let existing = self.get_pr(&info.id)?;
-        let (first_seen, muted, mut unread, mut merged_sources, last_change_at) = match existing {
-            Some(p) => (p.first_seen, p.muted, p.unread, p.sources, p.last_change_at),
-            None => (now.to_string(), false, Vec::new(), Vec::new(), now.to_string()),
-        };
+        let (first_seen, muted, priority, mut unread, mut merged_sources, last_change_at) =
+            match existing {
+                Some(p) => (p.first_seen, p.muted, p.priority, p.unread, p.sources, p.last_change_at),
+                None => (
+                    now.to_string(),
+                    false,
+                    crate::models::PrPriority::Normal,
+                    Vec::new(),
+                    Vec::new(),
+                    now.to_string(),
+                ),
+            };
         for s in sources {
             if !merged_sources.contains(s) {
                 merged_sources.push(s.clone());
@@ -171,6 +193,7 @@ impl Store {
             info: info.clone(),
             sources: merged_sources,
             muted,
+            priority,
             unread,
             first_seen,
             last_change_at,

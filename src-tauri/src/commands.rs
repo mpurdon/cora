@@ -8,7 +8,9 @@ use crate::error::{AppError, AppResult};
 use crate::github::poller::PollTrigger;
 use crate::github::query::{GraphQlClient, PR_FRAGMENT};
 use crate::github::{parse_pr, parse_pr_url};
-use crate::models::{events, ChangeKind, PrSource, Settings, TrackedPr};
+use crate::models::{
+    events, ChangeKind, PrComment, PrConversation, PrSource, ReviewThread, Settings, TrackedPr,
+};
 use crate::secrets;
 use crate::store::Store;
 
@@ -265,6 +267,120 @@ async fn execute_analysis(
         &result.created_at,
     )?;
     Ok(result)
+}
+
+#[tauri::command]
+pub fn set_pr_priority(
+    app: AppHandle,
+    store: State<'_, Arc<Store>>,
+    id: String,
+    priority: crate::models::PrPriority,
+) -> AppResult<()> {
+    store.set_pr_priority(&id, priority)?;
+    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    Ok(())
+}
+
+/// Conversation + review threads for the Comments tab.
+#[tauri::command]
+pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConversation> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let (owner, name) = pr.info.repo.split_once('/').unwrap();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+
+    let doc = "query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          comments(first: 100) {
+            nodes { id author { login } body createdAt url }
+          }
+          reviewThreads(first: 100) {
+            nodes {
+              id isResolved isOutdated path line startLine
+              comments(first: 100) { nodes { id author { login } body createdAt url } }
+            }
+          }
+        }
+      }
+    }";
+    let data = client
+        .run(doc, &serde_json::json!({ "owner": owner, "name": name, "number": pr.info.number }))
+        .await?;
+
+    let parse_comment = |v: &serde_json::Value| -> Option<PrComment> {
+        Some(PrComment {
+            id: v.get("id")?.as_str()?.to_string(),
+            author: v
+                .pointer("/author/login")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("ghost")
+                .to_string(),
+            body: v.get("body")?.as_str()?.to_string(),
+            created_at: v.get("createdAt")?.as_str()?.to_string(),
+            url: v.get("url")?.as_str()?.to_string(),
+        })
+    };
+
+    let comments = data
+        .pointer("/repository/pullRequest/comments/nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes| nodes.iter().filter_map(parse_comment).collect())
+        .unwrap_or_default();
+
+    let threads = data
+        .pointer("/repository/pullRequest/reviewThreads/nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|t| {
+                    Some(ReviewThread {
+                        id: t.get("id")?.as_str()?.to_string(),
+                        path: t.get("path").and_then(serde_json::Value::as_str).map(String::from),
+                        line: t.get("line").and_then(serde_json::Value::as_i64),
+                        start_line: t.get("startLine").and_then(serde_json::Value::as_i64),
+                        resolved: t.get("isResolved").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                        outdated: t.get("isOutdated").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                        comments: t
+                            .pointer("/comments/nodes")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|nodes| nodes.iter().filter_map(parse_comment).collect())
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(PrConversation { comments, threads })
+}
+
+/// Full file contents at the PR head, for the comment code drawer.
+#[tauri::command]
+pub async fn get_file_at_head(app: AppHandle, pr_id: String, path: String) -> AppResult<String> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let tools = crate::analysis::tools::RepoTools::new(
+        &settings.github_graphql_url,
+        &pr.info.repo,
+        pr.info.number,
+        &pr.info.head_sha,
+        &token,
+    )?;
+    tools
+        .execute("get_file", &serde_json::json!({ "path": path }))
+        .await
 }
 
 /// Raw unified diff for the Diff tab.

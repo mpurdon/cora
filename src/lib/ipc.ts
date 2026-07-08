@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AnalysisError } from "../bindings/AnalysisError";
 import type { LogEntry } from "../bindings/LogEntry";
+import type { PrConversation } from "../bindings/PrConversation";
+import type { PrPriority } from "../bindings/PrPriority";
 import type { AnalysisLevel } from "../bindings/AnalysisLevel";
 import type { AnalysisProgress } from "../bindings/AnalysisProgress";
 import type { AnalysisResult } from "../bindings/AnalysisResult";
@@ -37,6 +39,11 @@ export const ipc = {
   runAnalysis: (prId: string, level: AnalysisLevel, focus?: string, force?: boolean) =>
     invoke<void>("run_analysis", { prId, level, focus: focus ?? null, force: force ?? false }),
   getPrDiff: (prId: string) => invoke<string>("get_pr_diff", { prId }),
+  setPrPriority: (id: string, priority: PrPriority) =>
+    invoke<void>("set_pr_priority", { id, priority }),
+  getPrComments: (prId: string) => invoke<PrConversation>("get_pr_comments", { prId }),
+  getFileAtHead: (prId: string, path: string) =>
+    invoke<string>("get_file_at_head", { prId, path }),
   awsSsoLogin: (profile: string) => invoke<void>("aws_sso_login", { profile }),
   checkAws: (profile: string, region: string) =>
     invoke<string>("check_aws", { profile, region }),
