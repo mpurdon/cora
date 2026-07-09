@@ -2331,6 +2331,42 @@ button.diff-file-header:hover {
   opacity: 0.55;
 }
 
+.skipped-section {
+  margin-top: 18px;
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
+}
+
+.skipped-toggle {
+  display: block;
+  padding: 6px 4px;
+  border-radius: 6px;
+}
+
+.skipped-toggle:hover {
+  color: var(--text);
+  background: var(--ink-1);
+}
+
+.skipped-file {
+  opacity: 0.65;
+}
+
+.globs-editor {
+  width: 100%;
+  min-height: 130px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+  padding: 9px 11px;
+  resize: vertical;
+  user-select: text;
+}
+
 .diff-file.viewed .diff-path {
   text-decoration: line-through;
   text-decoration-color: var(--idle);
