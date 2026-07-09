@@ -56,6 +56,8 @@ export const ipc = {
   getPrReviews: (prId: string) => invoke<PrReviews>("get_pr_reviews", { prId }),
   mergePr: (prId: string, method: "squash" | "merge" | "rebase") =>
     invoke<void>("merge_pr", { prId, method }),
+  submitReview: (prId: string, event: "approve" | "request-changes" | "comment", body: string) =>
+    invoke<void>("submit_review", { prId, event, body }),
   closePr: (prId: string) => invoke<void>("close_pr", { prId }),
   reopenPr: (prId: string) => invoke<void>("reopen_pr", { prId }),
   addPrComment: (prId: string, body: string) =>
