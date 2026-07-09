@@ -82,6 +82,23 @@ export function CommentBody({ body }: { body: string }) {
       <Markdown
         remarkPlugins={[remarkGfm]}
         components={{
+          code: ({ className, children }) => {
+            // ```suggestion fences render as an applyable change, like GitHub.
+            if (/language-suggestion/.test(className ?? "")) {
+              const text = String(children).replace(/\n$/, "");
+              return (
+                <span className="suggestion-block">
+                  <span className="suggestion-head">suggested change</span>
+                  {text.split("\n").map((l, i) => (
+                    <span key={i} className="suggestion-line">
+                      {l || " "}
+                    </span>
+                  ))}
+                </span>
+              );
+            }
+            return <code className={className}>{children}</code>;
+          },
           a: ({ href, children }) => (
             <a
               href={href}
@@ -160,6 +177,7 @@ export function Composer({
   onCancel,
   initialBody = "",
   autoFocus = false,
+  suggestionSeed,
 }: {
   placeholder: string;
   submitLabel: string;
@@ -167,10 +185,20 @@ export function Composer({
   onCancel?: () => void;
   initialBody?: string;
   autoFocus?: boolean;
+  /** Current content of the anchored line — enables the ± suggestion button. */
+  suggestionSeed?: string;
 }) {
   const [body, setBody] = useState(initialBody);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // GitHub accepts one suggestion block per comment; grey the button out
+  // once a fence is present.
+  const hasSuggestion = body.includes("```suggestion");
+  const insertSuggestion = () => {
+    const block = `\`\`\`suggestion\n${suggestionSeed ?? ""}\n\`\`\`\n`;
+    setBody((b) => (b.trim() ? `${b.replace(/\s+$/, "")}\n\n${block}` : block));
+  };
 
   const submit = async () => {
     setBusy(true);
@@ -200,6 +228,16 @@ export function Composer({
       />
       {error && <div className="settings-error">{error}</div>}
       <div className="row composer-actions">
+        {suggestionSeed != null && (
+          <button
+            className="composer-tool"
+            title="Insert a suggestion the author can apply directly on GitHub"
+            disabled={busy || hasSuggestion}
+            onClick={insertSuggestion}
+          >
+            ± suggest
+          </button>
+        )}
         <span className="composer-hint mono">markdown · ⌘↩ to send</span>
         <span className="spacer" />
         {onCancel && (

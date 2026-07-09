@@ -96,9 +96,12 @@ export function parseDiff(raw: string): DiffFile[] {
 function InlineThread({
   thread,
   onChanged,
+  lineText,
 }: {
   thread: ReviewThread;
   onChanged: () => void;
+  /** Current content of the thread's anchor line, for ± suggestions. */
+  lineText?: string;
 }) {
   const [replying, setReplying] = useState(false);
   return (
@@ -119,6 +122,7 @@ function InlineThread({
           placeholder="Reply…"
           submitLabel="Reply"
           autoFocus
+          suggestionSeed={lineText}
           onCancel={() => setReplying(false)}
           onSubmit={async (body) => {
             await ipc.replyToThread(thread.id, body);
@@ -230,7 +234,7 @@ function FileDiff({
                   {l.text}
                 </div>
                 {threads?.map((t) => (
-                  <InlineThread key={t.id} thread={t} onChanged={onChanged} />
+                  <InlineThread key={t.id} thread={t} onChanged={onChanged} lineText={l.text} />
                 ))}
                 {composeLine != null && composeLine === l.newLine && (
                   <div className="inline-thread">
@@ -238,6 +242,7 @@ function FileDiff({
                       placeholder={`Comment on ${file.path}:${l.newLine}…`}
                       submitLabel="Comment"
                       autoFocus
+                      suggestionSeed={l.text}
                       onCancel={() => setComposeLine(null)}
                       onSubmit={async (body) => {
                         await ipc.addDiffComment(prId, file.path, composeLine, body);
