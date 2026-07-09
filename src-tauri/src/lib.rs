@@ -91,6 +91,7 @@ pub fn run() {
             commands::refresh_pr,
             commands::get_pr_reviews,
             commands::submit_review,
+            commands::resolve_thread,
             commands::merge_pr,
             commands::close_pr,
             commands::reopen_pr,

@@ -289,6 +289,15 @@ pub struct PrReviews {
     pub requested: Vec<String>,
     /// Latest review per reviewer.
     pub reviews: Vec<ReviewSummary>,
+    /// The PAT owner's login — identifies "my" review.
+    #[serde(default)]
+    pub viewer_login: String,
+    /// When the head commit landed; newer than my review = re-enable actions.
+    #[serde(default)]
+    pub last_commit_at: Option<String>,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub open_threads: i64,
 }
 
 /// One user-taken action, recorded for the History view. `old_value` is what
