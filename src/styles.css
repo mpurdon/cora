@@ -1988,6 +1988,46 @@ input:focus-visible {
   padding: 0;
 }
 
+/* ```suggestion fences render as an applyable change, GitHub-style. The
+   suggestion block replaces the pre's own chrome. */
+.markdown pre:has(.suggestion-block) {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.suggestion-block {
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.suggestion-head {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  padding: 4px 10px;
+  background: var(--ink-1);
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.suggestion-line {
+  display: block;
+  padding: 1px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  background: color-mix(in srgb, var(--ok) 11%, transparent);
+}
+
+.suggestion-line::before {
+  content: "+ ";
+  color: var(--ok);
+}
+
 .markdown blockquote {
   border-left: 3px solid var(--line);
   padding-left: 10px;
@@ -2199,6 +2239,25 @@ input:focus-visible {
 .composer-hint {
   font-size: 9.5px;
   color: var(--idle);
+}
+
+/* The ± suggestion inserter in line-anchored composers. */
+.composer-tool {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent);
+  border-radius: 5px;
+  padding: 2px 9px;
+  margin-right: 8px;
+}
+
+.composer-tool:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.composer-tool:disabled {
+  opacity: 0.45;
 }
 
 .thread-reply-btn {
