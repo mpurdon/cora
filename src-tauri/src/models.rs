@@ -229,6 +229,34 @@ pub struct Settings {
     /// Overrides the analysis system prompt when non-empty.
     #[serde(default)]
     pub custom_system_prompt: String,
+    /// Glob patterns for insignificant files — auto-skipped in diff review.
+    #[serde(default = "default_ignore_globs")]
+    pub review_ignore_globs: Vec<String>,
+}
+
+fn default_ignore_globs() -> Vec<String> {
+    [
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "Cargo.lock",
+        "go.sum",
+        "poetry.lock",
+        "Gemfile.lock",
+        "composer.lock",
+        "*.snap",
+        "**/__snapshots__/**",
+        "**/generated/**",
+        "*.generated.*",
+        "**/dist/**",
+        "**/build/**",
+        "*.min.js",
+        "*.map",
+        "**/vendor/**",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 fn default_aws_region() -> String {
@@ -266,6 +294,7 @@ impl Default for Settings {
             bedrock_drill_model_id: default_drill_model(),
             developer_mode: false,
             custom_system_prompt: String::new(),
+            review_ignore_globs: default_ignore_globs(),
         }
     }
 }
