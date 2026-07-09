@@ -122,12 +122,12 @@ function Legend() {
 }
 
 /** Requested reviewers + latest review states — visible before analyzing. */
-function ReviewStrip({ prId }: { prId: string }) {
+function ReviewStrip({ prId, refreshKey }: { prId: string; refreshKey: number }) {
   const [reviews, setReviews] = useState<PrReviews | null>(null);
   useEffect(() => {
     setReviews(null);
     void ipc.getPrReviews(prId).then(setReviews).catch(() => setReviews(null));
-  }, [prId]);
+  }, [prId, refreshKey]);
 
   if (!reviews) return null;
   if (reviews.requested.length === 0 && reviews.reviews.length === 0) return null;
@@ -152,6 +152,74 @@ function ReviewStrip({ prId }: { prId: string }) {
         </span>
       ))}
     </div>
+  );
+}
+
+/** Approve / request changes, with the review comment GitHub expects. */
+function ReviewActions({ pr, onDone }: { pr: TrackedPr; onDone: () => void }) {
+  const [mode, setMode] = useState<"approve" | "request-changes" | null>(null);
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (pr.state !== "OPEN") return null;
+
+  const submit = async () => {
+    if (!mode) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await ipc.submitReview(pr.id, mode, body);
+      setMode(null);
+      setBody("");
+      onDone();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (mode) {
+    return (
+      <div className="review-composer">
+        <textarea
+          autoFocus
+          placeholder={
+            mode === "approve"
+              ? "Optional approval comment…"
+              : "What needs to change? (required)"
+          }
+          value={body}
+          disabled={busy}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        {error && <div className="settings-error">{error}</div>}
+        <div className="row">
+          <button
+            className={`action-btn ${mode === "approve" ? "merge-btn" : "confirm-danger"}`}
+            disabled={busy || (mode === "request-changes" && !body.trim())}
+            onClick={() => void submit()}
+          >
+            {busy ? "Submitting…" : mode === "approve" ? "Submit approval" : "Submit request"}
+          </button>
+          <button className="action-btn" disabled={busy} onClick={() => setMode(null)}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <button className="action-btn approve-btn" onClick={() => setMode("approve")}>
+        ✓ Approve
+      </button>
+      <button className="action-btn danger" onClick={() => setMode("request-changes")}>
+        ± Request changes
+      </button>
+    </>
   );
 }
 
@@ -610,6 +678,7 @@ function Detail({
 }) {
   const [tab, setTab] = useState<Tab>("assessment");
   const [highlight, setHighlight] = useState<string[]>([]);
+  const [reviewBump, setReviewBump] = useState(0);
   const { type, clean } = parseTitle(pr.title);
   const focusNodes = (ids: string[]) => {
     setHighlight(ids);
@@ -677,9 +746,10 @@ function Detail({
           Untrack
         </button>
         <span className="spacer" />
+        <ReviewActions pr={pr} onDone={() => setReviewBump((n) => n + 1)} />
         <PrControls pr={pr} />
       </div>
-      <ReviewStrip prId={pr.id} />
+      <ReviewStrip prId={pr.id} refreshKey={reviewBump} />
 
       <div className="tabs" role="tablist">
         {TAB_ORDER.map(([key, label], i) => (

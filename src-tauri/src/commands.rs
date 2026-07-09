@@ -620,6 +620,48 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
     Ok(crate::models::PrReviews { requested, reviews })
 }
 
+/// Submit a review: approve / request-changes / comment.
+#[tauri::command]
+pub async fn submit_review(
+    app: AppHandle,
+    pr_id: String,
+    event: String,
+    body: String,
+) -> AppResult<()> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let gh_event = match event.as_str() {
+        "approve" => "APPROVE",
+        "request-changes" => "REQUEST_CHANGES",
+        _ => "COMMENT",
+    };
+    if gh_event == "REQUEST_CHANGES" && body.trim().is_empty() {
+        return Err(AppError::Other("requesting changes needs a comment".into()));
+    }
+    let doc = format!(
+        "mutation($prId: ID!, $body: String) {{
+           addPullRequestReview(input: {{ pullRequestId: $prId, event: {gh_event}, body: $body }}) {{
+             clientMutationId
+           }}
+         }}"
+    );
+    client
+        .run(&doc, &serde_json::json!({ "prId": pr_id, "body": body }))
+        .await?;
+    let label = pr_label(&store, &pr_id);
+    let action = match gh_event {
+        "APPROVE" => "approved",
+        "REQUEST_CHANGES" => "changes-requested",
+        _ => "review-commented",
+    };
+    store.add_audit(action, &pr_id, &label, "", gh_event)?;
+    refresh_pr_inner(&app, &pr_id).await?;
+    Ok(())
+}
+
 /// Merge / close / reopen — the PR lifecycle controls. All audited.
 #[tauri::command]
 pub async fn merge_pr(app: AppHandle, pr_id: String, method: String) -> AppResult<()> {
