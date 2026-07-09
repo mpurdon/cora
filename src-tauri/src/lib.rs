@@ -90,6 +90,7 @@ pub fn run() {
             commands::get_file_at_head,
             commands::refresh_pr,
             commands::get_pr_reviews,
+            commands::submit_review,
             commands::merge_pr,
             commands::close_pr,
             commands::reopen_pr,

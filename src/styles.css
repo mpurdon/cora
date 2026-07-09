@@ -1084,6 +1084,35 @@ input:focus-visible {
   background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
+.approve-btn {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+}
+
+.approve-btn:hover {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.review-composer {
+  flex-basis: 100%;
+  margin-top: 8px;
+}
+
+.review-composer textarea {
+  width: 100%;
+  min-height: 64px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  padding: 8px 10px;
+  resize: vertical;
+  user-select: text;
+  margin-bottom: 6px;
+}
+
 /* review strip */
 
 .review-strip {
