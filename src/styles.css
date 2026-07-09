@@ -2230,6 +2230,15 @@ input:focus-visible {
   background: color-mix(in srgb, var(--chat) 14%, transparent);
 }
 
+.diff-line.referenced-line {
+  background: color-mix(in srgb, var(--chat) 16%, transparent) !important;
+  box-shadow: inset 2px 0 0 var(--chat);
+}
+
+.diff-line .code-lineno {
+  width: 44px;
+}
+
 .code-line.referenced .code-lineno {
   color: var(--chat);
 }
