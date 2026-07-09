@@ -513,7 +513,15 @@ pub async fn run(
             }
         }
 
-        if let Some((submit_id, payload)) = submitted {
+        if let Some((submit_id, mut payload)) = submitted {
+            let coerced = sanitize_payload(&mut payload);
+            if !coerced.is_empty() {
+                devlog::debug(
+                    app,
+                    "analysis",
+                    format!("submission coerced into schema shape: {}", coerced.join(", ")),
+                );
+            }
             match parse_payload(&payload) {
                 Ok((graph, assessment)) => {
                     devlog::info(
@@ -537,7 +545,14 @@ pub async fn run(
                     // bounce the validation error back and let it fix itself.
                     resubmits += 1;
                     devlog::warn(app, "analysis", format!("invalid submission ({e}) — asking model to resubmit"));
-                    note(app, &mut trace, &pr_id, level, "status", "submission incomplete — retrying");
+                    note(
+                        app,
+                        &mut trace,
+                        &pr_id,
+                        level,
+                        "status",
+                        format!("submission incomplete ({e}) — retrying"),
+                    );
                     tool_results.push(ContentBlock::ToolResult(
                         ToolResultBlock::builder()
                             .tool_use_id(submit_id)
@@ -591,6 +606,298 @@ pub async fn run(
     )))
 }
 
+/// Bedrock doesn't validate tool input against the schema, so submissions
+/// drift: snake_case keys, camelCase or Title Case enum values, severities
+/// like "critical" that aren't in our enum, a missing `change` on unchanged
+/// nodes. Each strict-parse failure costs a full model turn to retry, so
+/// coerce the recoverable drift into shape first and keep the retry loop for
+/// genuinely broken payloads. Returns a description of each coercion applied.
+fn sanitize_payload(payload: &mut Value) -> Vec<String> {
+    let mut notes = Vec::new();
+    camelize_keys(payload);
+
+    const NODE_KIND: &[(&str, &str)] = &[
+        ("external", "external-system"),
+        ("external-service", "external-system"),
+        ("external-api", "external-system"),
+        ("third-party", "external-system"),
+        ("database", "data-store"),
+        ("datastore", "data-store"),
+        ("db", "data-store"),
+        ("storage", "data-store"),
+        ("bucket", "data-store"),
+        ("table", "data-store"),
+        ("cache", "data-store"),
+        ("message-queue", "queue"),
+        ("topic", "queue"),
+        ("event-bus", "queue"),
+        ("stream", "queue"),
+        ("service", "container"),
+        ("microservice", "container"),
+        ("application", "container"),
+        ("app", "container"),
+        ("module", "component"),
+        ("class", "code"),
+        ("function", "code"),
+        ("user", "person"),
+        ("actor", "person"),
+    ];
+    const NODE_KINDS_VALID: &[&str] = &[
+        "person", "external-system", "system", "container", "component", "code", "data-store",
+        "queue",
+    ];
+    const CHANGE: &[(&str, &str)] = &[
+        ("new", "added"),
+        ("created", "added"),
+        ("add", "added"),
+        ("updated", "modified"),
+        ("changed", "modified"),
+        ("update", "modified"),
+        ("modify", "modified"),
+        ("deleted", "removed"),
+        ("delete", "removed"),
+        ("remove", "removed"),
+        ("impacted", "affected"),
+        ("indirect", "affected"),
+        ("unchanged-neighbor", "unchanged"),
+        ("neighbor", "unchanged"),
+        ("none", "unchanged"),
+        ("existing", "unchanged"),
+        ("no-change", "unchanged"),
+    ];
+    const CHANGES_VALID: &[&str] = &["added", "modified", "removed", "affected", "unchanged"];
+    const FIT: &[(&str, &str)] = &[
+        ("fit", "fits"),
+        ("good-fit", "fits"),
+        ("aligned", "fits"),
+        ("aligns", "fits"),
+        ("mismatch", "misfit"),
+        ("misaligned", "misfit"),
+        ("poor-fit", "misfit"),
+        ("does-not-fit", "misfit"),
+        ("conflict", "misfit"),
+        ("tensions", "tension"),
+        ("minor-tension", "tension"),
+        ("some-tension", "tension"),
+    ];
+    const IMPACT_KIND: &[(&str, &str)] = &[
+        ("external-system", "external"),
+        ("external-boundary", "external"),
+        ("third-party", "external"),
+        ("cross-service", "service"),
+        ("service-boundary", "service"),
+        ("container", "service"),
+        ("internal-module", "internal"),
+        ("module", "internal"),
+    ];
+    const PILLAR: &[(&str, &str)] = &[
+        ("performance", "performance-efficiency"),
+        ("cost", "cost-optimization"),
+        ("costs", "cost-optimization"),
+        ("operations", "operational-excellence"),
+        ("operational", "operational-excellence"),
+        ("ops", "operational-excellence"),
+    ];
+    const SEVERITY: &[(&str, &str)] = &[
+        ("critical", "high"),
+        ("blocker", "high"),
+        ("severe", "high"),
+        ("warning", "medium"),
+        ("moderate", "medium"),
+        ("minor", "low"),
+        ("informational", "info"),
+        ("note", "info"),
+    ];
+    const SIGNIFICANCE: &[(&str, &str)] = &[
+        ("high", "critical"),
+        ("major", "critical"),
+        ("medium", "important"),
+        ("moderate", "important"),
+        ("notable", "important"),
+        ("low", "mechanical"),
+        ("minor", "mechanical"),
+        ("trivial", "mechanical"),
+        ("noise", "mechanical"),
+    ];
+
+    if let Some(nodes) = payload.pointer_mut("/graph/nodes").and_then(Value::as_array_mut) {
+        for n in nodes {
+            normalize_enum(n, "kind", NODE_KIND, &mut notes);
+            // An off-schema kind renders as a slightly-wrong card; a rejected
+            // submission costs a whole turn. Coerce and note it.
+            coerce_unknown(n, "kind", NODE_KINDS_VALID, "component", &mut notes);
+            fill_missing(n, "change", "unchanged", &mut notes);
+            normalize_enum(n, "change", CHANGE, &mut notes);
+            coerce_unknown(n, "change", CHANGES_VALID, "unchanged", &mut notes);
+            if str_field(n, "id").is_none() {
+                if let Some(name) = str_field(n, "name") {
+                    let slug = format!("node:{}", kebab(&name));
+                    notes.push(format!("synthesized node id {slug}"));
+                    n["id"] = json!(slug);
+                }
+            }
+        }
+    }
+    if let Some(edges) = payload.pointer_mut("/graph/edges").and_then(Value::as_array_mut) {
+        for e in edges {
+            fill_missing(e, "change", "unchanged", &mut notes);
+            normalize_enum(e, "change", CHANGE, &mut notes);
+            coerce_unknown(e, "change", CHANGES_VALID, "unchanged", &mut notes);
+            if str_field(e, "id").is_none() {
+                let s = str_field(e, "source").unwrap_or_else(|| "?".into());
+                let t = str_field(e, "target").unwrap_or_else(|| "?".into());
+                notes.push(format!("synthesized edge id {s}->{t}"));
+                e["id"] = json!(format!("{s}->{t}"));
+            }
+        }
+    }
+    if let Some(a) = payload.get_mut("assessment") {
+        normalize_enum(a, "fit", FIT, &mut notes);
+        // A missing TLDR shouldn't sink an otherwise-good submission.
+        if str_field(a, "summary").is_none() {
+            if let Some(detail) = str_field(a, "detail") {
+                let cut: String = detail.chars().take(160).collect();
+                notes.push("summary derived from detail".into());
+                a["summary"] = json!(cut);
+            }
+        }
+        if let Some(impacts) = a.get_mut("boundaryImpacts").and_then(Value::as_array_mut) {
+            for i in impacts {
+                normalize_enum(i, "kind", IMPACT_KIND, &mut notes);
+            }
+        }
+        if let Some(findings) = a.get_mut("wellArchitected").and_then(Value::as_array_mut) {
+            for f in findings {
+                normalize_enum(f, "pillar", PILLAR, &mut notes);
+                normalize_enum(f, "severity", SEVERITY, &mut notes);
+                coerce_unknown(
+                    f,
+                    "severity",
+                    &["info", "low", "medium", "high"],
+                    "medium",
+                    &mut notes,
+                );
+            }
+        }
+        if let Some(plan) = a.get_mut("reviewPlan").and_then(Value::as_array_mut) {
+            for p in plan {
+                normalize_enum(p, "significance", SIGNIFICANCE, &mut notes);
+            }
+        }
+    }
+    notes
+}
+
+/// "externalSystem" / "External System" / "external_system" → "external-system".
+fn kebab(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut prev_alnum = false;
+    for c in s.trim().chars() {
+        if c == '_' || c == ' ' || c == '-' || c == '/' {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push('-');
+            }
+            prev_alnum = false;
+        } else if c.is_uppercase() {
+            if prev_alnum && !out.ends_with('-') {
+                out.push('-');
+            }
+            out.extend(c.to_lowercase());
+            prev_alnum = false;
+        } else {
+            out.push(c);
+            prev_alnum = c.is_alphanumeric();
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn str_field(obj: &Value, key: &str) -> Option<String> {
+    obj.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Kebab-normalize a string field, then map known synonyms onto schema values.
+fn normalize_enum(obj: &mut Value, key: &str, synonyms: &[(&str, &str)], notes: &mut Vec<String>) {
+    let Some(raw) = str_field(obj, key) else { return };
+    let mut v = kebab(&raw);
+    if let Some((_, mapped)) = synonyms.iter().find(|(from, _)| *from == v) {
+        v = (*mapped).to_string();
+    }
+    if v != raw {
+        notes.push(format!("{key} \"{raw}\" → \"{v}\""));
+        obj[key] = json!(v);
+    }
+}
+
+/// Last resort for values still outside the schema after normalization.
+fn coerce_unknown(
+    obj: &mut Value,
+    key: &str,
+    valid: &[&str],
+    fallback: &str,
+    notes: &mut Vec<String>,
+) {
+    let Some(v) = str_field(obj, key) else { return };
+    if !valid.contains(&v.as_str()) {
+        notes.push(format!("unknown {key} \"{v}\" → \"{fallback}\""));
+        obj[key] = json!(fallback);
+    }
+}
+
+fn fill_missing(obj: &mut Value, key: &str, default: &str, notes: &mut Vec<String>) {
+    if str_field(obj, key).is_none() {
+        notes.push(format!("missing {key} → \"{default}\""));
+        obj[key] = json!(default);
+    }
+}
+
+/// Convert snake_case object keys to camelCase, recursively — models slip
+/// into Rust-style field names ("fit_rationale", "crosses_boundary").
+fn camelize_keys(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            let snake: Vec<String> = map
+                .keys()
+                .filter(|k| k.contains('_'))
+                .cloned()
+                .collect();
+            for key in snake {
+                let camel: String = {
+                    let mut out = String::with_capacity(key.len());
+                    let mut upper_next = false;
+                    for c in key.chars() {
+                        if c == '_' {
+                            upper_next = true;
+                        } else if upper_next {
+                            out.extend(c.to_uppercase());
+                            upper_next = false;
+                        } else {
+                            out.push(c);
+                        }
+                    }
+                    out
+                };
+                if let Some(val) = map.remove(&key) {
+                    map.entry(camel).or_insert(val);
+                }
+            }
+            for val in map.values_mut() {
+                camelize_keys(val);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                camelize_keys(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn parse_payload(payload: &Value) -> AppResult<(C4Graph, Assessment)> {
     let graph: C4Graph = serde_json::from_value(
         payload
@@ -638,5 +945,83 @@ fn build_result(
         created_at: Utc::now().to_rfc3339(),
         trace,
         usage,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kebab_normalizes_model_drift() {
+        assert_eq!(kebab("externalSystem"), "external-system");
+        assert_eq!(kebab("External System"), "external-system");
+        assert_eq!(kebab("external_system"), "external-system");
+        assert_eq!(kebab("data-store"), "data-store");
+        assert_eq!(kebab("Fits"), "fits");
+    }
+
+    #[test]
+    fn sanitize_rescues_typical_drift() {
+        let mut payload = json!({
+            "graph": {
+                "nodes": [
+                    {"id": "s:api", "name": "API", "kind": "Service", "change": "Updated"},
+                    {"name": "Postgres", "kind": "database"}
+                ],
+                "edges": [
+                    {"source": "s:api", "target": "node:postgres", "label": "reads", "crosses_boundary": true, "change": "unchanged-neighbor"}
+                ]
+            },
+            "assessment": {
+                "detail": "A longer explanation of the change and its mechanics.",
+                "fit": "Fits",
+                "fit_rationale": "matches the existing pattern",
+                "boundaryImpacts": [{"kind": "external-system", "description": "calls a partner API"}],
+                "wellArchitected": [{"pillar": "Performance", "severity": "critical", "finding": "f", "recommendation": "r"}],
+                "reviewPlan": [{"path": "src/a.ts", "significance": "High", "reason": "core"}]
+            }
+        });
+        let notes = sanitize_payload(&mut payload);
+        assert!(!notes.is_empty());
+        let (graph, assessment) = parse_payload(&payload).expect("sanitized payload parses");
+
+        assert_eq!(graph.nodes[0].kind, crate::analysis::types::C4NodeKind::Container);
+        assert_eq!(graph.nodes[0].change, crate::analysis::types::ChangeStatus::Modified);
+        assert_eq!(graph.nodes[1].kind, crate::analysis::types::C4NodeKind::DataStore);
+        assert_eq!(graph.nodes[1].change, crate::analysis::types::ChangeStatus::Unchanged);
+        assert_eq!(graph.nodes[1].id, "node:postgres");
+        assert_eq!(graph.edges[0].change, crate::analysis::types::ChangeStatus::Unchanged);
+        assert!(graph.edges[0].crosses_boundary, "snake_case key camelized");
+        assert!(!graph.edges[0].id.is_empty(), "edge id synthesized");
+
+        assert_eq!(assessment.fit, crate::analysis::types::FitVerdict::Fits);
+        assert!(!assessment.summary.is_empty(), "summary derived from detail");
+        assert_eq!(assessment.fit_rationale, "matches the existing pattern");
+        assert_eq!(
+            assessment.boundary_impacts[0].kind,
+            crate::analysis::types::ImpactKind::External
+        );
+        let finding = &assessment.well_architected[0];
+        assert_eq!(finding.pillar, crate::analysis::types::Pillar::PerformanceEfficiency);
+        assert_eq!(finding.severity, crate::analysis::types::Severity::High);
+        assert_eq!(assessment.review_plan[0].significance, "critical");
+    }
+
+    #[test]
+    fn sanitize_leaves_valid_payloads_alone() {
+        let mut payload = json!({
+            "graph": {
+                "nodes": [{"id": "c:api", "name": "API", "kind": "container", "change": "modified"}],
+                "edges": []
+            },
+            "assessment": {
+                "summary": "s", "detail": "d", "fit": "fits", "fitRationale": "r",
+                "boundaryImpacts": [], "wellArchitected": [], "contextNotes": [], "reviewPlan": []
+            }
+        });
+        let notes = sanitize_payload(&mut payload);
+        assert!(notes.is_empty(), "no coercions expected, got: {notes:?}");
+        parse_payload(&payload).expect("valid payload parses");
     }
 }
