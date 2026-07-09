@@ -29,4 +29,8 @@ developerMode: boolean,
 /**
  * Overrides the analysis system prompt when non-empty.
  */
-customSystemPrompt: string, };
+customSystemPrompt: string, 
+/**
+ * Glob patterns for insignificant files — auto-skipped in diff review.
+ */
+reviewIgnoreGlobs: Array<string>, };

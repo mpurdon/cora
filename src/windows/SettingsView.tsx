@@ -149,6 +149,25 @@ function GeneralPane({ settings, save }: PaneProps) {
       </Field>
 
       <Field
+        label="Review noise filters"
+        hint="Glob patterns (one per line) for files auto-skipped in diff review — lockfiles, generated code, snapshots. * matches within a folder, ** across folders."
+      >
+        <textarea
+          className="globs-editor"
+          spellCheck={false}
+          defaultValue={settings.reviewIgnoreGlobs.join("\n")}
+          onBlur={(e) =>
+            void save({
+              reviewIgnoreGlobs: e.target.value
+                .split("\n")
+                .map((l) => l.trim())
+                .filter(Boolean),
+            })
+          }
+        />
+      </Field>
+
+      <Field
         label="Notifications"
         hint="Note: in dev builds macOS attributes notifications to the terminal that launched CORA; packaged builds notify as CORA."
       >

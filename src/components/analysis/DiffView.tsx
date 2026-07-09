@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PrConversation } from "../../bindings/PrConversation";
 import type { ReviewThread } from "../../bindings/ReviewThread";
+import { matchesAny, reviewOrderScore } from "../../lib/globs";
 import { ipc } from "../../lib/ipc";
 import { timeAgo } from "../../state/prStore";
 import { CommentBody, Composer, ReactionBar } from "./CommentsView";
@@ -243,6 +244,8 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   const [conversation, setConversation] = useState<PrConversation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewedMap, setViewedMap] = useState<Map<string, string>>(new Map());
+  const [ignoreGlobs, setIgnoreGlobs] = useState<string[]>([]);
+  const [showSkipped, setShowSkipped] = useState(false);
 
   const loadComments = () =>
     void ipc
@@ -261,10 +264,29 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     void ipc
       .getViewedFiles(prId)
       .then((rows) => setViewedMap(new Map(rows.map((r) => [r.path, r.digest]))));
+    void ipc.getSettings().then((s) => setIgnoreGlobs(s.reviewIgnoreGlobs));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prId, headSha]);
 
-  const files = useMemo(() => (raw ? parseDiff(raw) : []), [raw]);
+  const allFiles = useMemo(() => (raw ? parseDiff(raw) : []), [raw]);
+
+  // Insignificant files (lockfiles, generated, snapshots) are skipped:
+  // parked in their own collapsed section and excluded from progress.
+  const { files, skipped } = useMemo(() => {
+    const significant: DiffFile[] = [];
+    const insignificant: DiffFile[] = [];
+    for (const f of allFiles) {
+      (matchesAny(f.path, ignoreGlobs) ? insignificant : significant).push(f);
+    }
+    // Reading order: interfaces/source → styles → config → docs → tests,
+    // bigger churn first within each band.
+    significant.sort(
+      (a, b) =>
+        reviewOrderScore(a.path) - reviewOrderScore(b.path) ||
+        b.additions + b.deletions - (a.additions + a.deletions),
+    );
+    return { files: significant, skipped: insignificant };
+  }, [allFiles, ignoreGlobs]);
 
   // A file counts as viewed only while its patch digest still matches —
   // an update after viewing clears it automatically.
@@ -299,7 +321,7 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   if (raw === null) {
     return <div className="canvas-loading">fetching diff…</div>;
   }
-  if (files.length === 0) {
+  if (allFiles.length === 0) {
     return <div className="placeholder">Empty diff.</div>;
   }
   const viewedCount = files.filter(isViewed).length;
@@ -327,6 +349,28 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
           onViewedChange={(v) => setViewed(f, v)}
         />
       ))}
+
+      {skipped.length > 0 && (
+        <div className="skipped-section">
+          <button className="skipped-toggle eyebrow" onClick={() => setShowSkipped((s) => !s)}>
+            {showSkipped ? "▾" : "▸"} {skipped.length} insignificant file
+            {skipped.length === 1 ? "" : "s"} skipped (lockfiles, generated, snapshots)
+          </button>
+          {showSkipped &&
+            skipped.map((f) => (
+              <div key={f.path} className="skipped-file">
+                <FileDiff
+                  file={f}
+                  prId={prId}
+                  threadsByLine={threadsByFile.get(f.path) ?? new Map()}
+                  onChanged={loadComments}
+                  viewed={isViewed(f)}
+                  onViewedChange={(v) => setViewed(f, v)}
+                />
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 }
