@@ -29,7 +29,7 @@ Priorities, strictly in this order:
 
 Writing style: the summary is a TLDR — two short sentences maximum, no mechanism walkthrough. Everything else goes in the detail field. A reviewer should absorb the summary in three seconds.
 
-Review plan: classify EVERY file in the diff for the reviewer — critical (contract/boundary/core-logic changes that must be read carefully), important (real logic worth reading), or mechanical (renames, imports, fallout from the real change, config echoes). Order most-important-first. This drives the reviewer's reading order, so be honest about what's mechanical.
+Review plan: classify EVERY file in the diff for the reviewer — critical (contract/boundary/core-logic changes that must be read carefully), important (real logic worth reading), or mechanical (renames, imports, fallout from the real change, config echoes). Order most-important-first. This drives the reviewer's reading order, so be honest about what's mechanical. Reserve critical for changes to contracts, boundaries, data shapes, or core algorithms — repetitive pattern-following additions (wiring, node/edge registrations, simple predicate helpers) are important at most, even when behavior-adjacent. When computed per-file diff metrics are provided, calibrate against them: a file with few added branch points and no new definitions is not critical unless it changes an interface others depend on.
 
 Also evaluate the change against the AWS Well-Architected pillars (operational excellence, security, reliability, performance efficiency, cost optimization, sustainability). Report only MATERIAL findings — a missing retry on a new external call matters; a variable name does not.
 
@@ -336,6 +336,35 @@ pub async fn run(
         token,
     )?;
 
+    // Objective per-file signals: ground the model's review-plan calls in
+    // measured complexity, and backstop them after submission. Context level
+    // only — drills don't own the review plan.
+    let file_metrics = if level == AnalysisLevel::Context {
+        match tools.pr_diff_full().await {
+            Ok(d) => crate::analysis::metrics::diff_metrics(&d),
+            Err(e) => {
+                devlog::warn(app, "analysis", format!("diff metrics unavailable: {e}"));
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let metrics_section = if file_metrics.is_empty() {
+        String::new()
+    } else {
+        let mut s = String::from(
+            "\n\nComputed per-file diff metrics — calibrate the review plan against these. Files with no added branches or definitions are wiring/data, not critical, unless they change a contract:\n",
+        );
+        for (path, m) in file_metrics.iter().take(80) {
+            s.push_str(&format!("- {path}: {}\n", m.summary()));
+        }
+        if file_metrics.len() > 80 {
+            s.push_str(&format!("… and {} more files\n", file_metrics.len() - 80));
+        }
+        s
+    };
+
     // Drilled runs inherit the higher-level result so the model doesn't
     // re-derive (and re-fetch) the system map it already built.
     let parent_section = match &parent_context {
@@ -346,7 +375,7 @@ pub async fn run(
     };
 
     let kickoff = format!(
-        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}\n\n{}{}\n\nStart by getting the diff and whatever repository context you need.",
+        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}\n\n{}{}{}\n\nStart by getting the diff and whatever repository context you need.",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -357,6 +386,7 @@ pub async fn run(
         pr.info.changed_files,
         pr.info.url,
         level_instructions(level, focus_node_id.as_deref()),
+        metrics_section,
         parent_section,
     );
 
@@ -523,7 +553,15 @@ pub async fn run(
                 );
             }
             match parse_payload(&payload) {
-                Ok((graph, assessment)) => {
+                Ok((graph, mut assessment)) => {
+                    let grounded = ground_review_plan(&mut assessment, &file_metrics);
+                    if !grounded.is_empty() {
+                        devlog::info(
+                            app,
+                            "analysis",
+                            format!("review plan grounded by metrics: {}", grounded.join(", ")),
+                        );
+                    }
                     devlog::info(
                         app,
                         "analysis",
@@ -896,6 +934,57 @@ fn camelize_keys(v: &mut Value) {
         }
         _ => {}
     }
+}
+
+/// Reconcile the model's review plan with computed diff metrics: attach the
+/// metrics for UI transparency, downgrade "critical" tags on files whose
+/// additions contain no actual logic, and give files the model skipped a
+/// metric-derived default. Returns a description of each adjustment.
+fn ground_review_plan(
+    assessment: &mut Assessment,
+    metrics: &[(String, crate::analysis::metrics::FileMetrics)],
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    if metrics.is_empty() {
+        return notes;
+    }
+    let by_path: std::collections::HashMap<&str, &crate::analysis::metrics::FileMetrics> =
+        metrics.iter().map(|(p, m)| (p.as_str(), m)).collect();
+
+    for entry in &mut assessment.review_plan {
+        let Some(m) = by_path.get(entry.path.as_str()) else { continue };
+        entry.metrics = Some((*m).clone());
+        if entry.significance == "critical" && m.is_logicless() {
+            entry.significance = "important".into();
+            if !entry.reason.is_empty() {
+                entry.reason.push_str(" · ");
+            }
+            entry.reason.push_str("downgraded: no added logic (0 branches, 0 new defs)");
+            notes.push(format!("{} critical→important (logicless)", entry.path));
+        }
+    }
+
+    // Files present in the diff but absent from the plan get a floor entry so
+    // the reading order covers everything.
+    let planned: std::collections::HashSet<String> =
+        assessment.review_plan.iter().map(|e| e.path.clone()).collect();
+    for (path, m) in metrics {
+        if planned.contains(path) {
+            continue;
+        }
+        let mechanical = m.is_logicless() || m.import_share >= 0.75;
+        notes.push(format!(
+            "{path} unclassified → {}",
+            if mechanical { "mechanical" } else { "important" }
+        ));
+        assessment.review_plan.push(crate::analysis::types::ReviewPlanEntry {
+            path: path.clone(),
+            significance: if mechanical { "mechanical" } else { "important" }.into(),
+            reason: "not classified by the analysis — defaulted from diff metrics".into(),
+            metrics: Some(m.clone()),
+        });
+    }
+    notes
 }
 
 fn parse_payload(payload: &Value) -> AppResult<(C4Graph, Assessment)> {
