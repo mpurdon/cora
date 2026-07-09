@@ -559,6 +559,7 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
     let data = client
         .run(
             "query($owner: String!, $name: String!, $number: Int!) {
+              viewer { login }
               repository(owner: $owner, name: $name) {
                 pullRequest(number: $number) {
                   reviewRequests(first: 20) {
@@ -570,6 +571,8 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
                   latestReviews(first: 30) {
                     nodes { author { login } state submittedAt }
                   }
+                  commits(last: 1) { nodes { commit { committedDate } } }
+                  reviewThreads(first: 100) { nodes { isResolved } }
                 }
               }
             }",
@@ -617,7 +620,54 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
         })
         .unwrap_or_default();
 
-    Ok(crate::models::PrReviews { requested, reviews })
+    let viewer_login = data
+        .pointer("/viewer/login")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let last_commit_at = data
+        .pointer("/repository/pullRequest/commits/nodes/0/commit/committedDate")
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
+    let open_threads = data
+        .pointer("/repository/pullRequest/reviewThreads/nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter(|n| !n.get("isResolved").and_then(serde_json::Value::as_bool).unwrap_or(false))
+                .count() as i64
+        })
+        .unwrap_or(0);
+
+    Ok(crate::models::PrReviews {
+        requested,
+        reviews,
+        viewer_login,
+        last_commit_at,
+        open_threads,
+    })
+}
+
+/// Resolve or unresolve a review thread.
+#[tauri::command]
+pub async fn resolve_thread(app: AppHandle, thread_id: String, resolve: bool) -> AppResult<()> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let doc = if resolve {
+        "mutation($threadId: ID!) {
+           resolveReviewThread(input: { threadId: $threadId }) { clientMutationId }
+         }"
+    } else {
+        "mutation($threadId: ID!) {
+           unresolveReviewThread(input: { threadId: $threadId }) { clientMutationId }
+         }"
+    };
+    client.run(doc, &serde_json::json!({ "threadId": thread_id })).await?;
+    Ok(())
 }
 
 /// Submit a review: approve / request-changes / comment.

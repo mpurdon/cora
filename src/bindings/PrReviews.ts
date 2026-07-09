@@ -9,4 +9,12 @@ requested: Array<string>,
 /**
  * Latest review per reviewer.
  */
-reviews: Array<ReviewSummary>, };
+reviews: Array<ReviewSummary>, 
+/**
+ * The PAT owner's login — identifies "my" review.
+ */
+viewerLogin: string, 
+/**
+ * When the head commit landed; newer than my review = re-enable actions.
+ */
+lastCommitAt: string | null, openThreads: number, };

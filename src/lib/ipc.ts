@@ -58,6 +58,8 @@ export const ipc = {
     invoke<void>("merge_pr", { prId, method }),
   submitReview: (prId: string, event: "approve" | "request-changes" | "comment", body: string) =>
     invoke<void>("submit_review", { prId, event, body }),
+  resolveThread: (threadId: string, resolve: boolean) =>
+    invoke<void>("resolve_thread", { threadId, resolve }),
   closePr: (prId: string) => invoke<void>("close_pr", { prId }),
   reopenPr: (prId: string) => invoke<void>("reopen_pr", { prId }),
   addPrComment: (prId: string, body: string) =>

@@ -122,13 +122,7 @@ function Legend() {
 }
 
 /** Requested reviewers + latest review states — visible before analyzing. */
-function ReviewStrip({ prId, refreshKey }: { prId: string; refreshKey: number }) {
-  const [reviews, setReviews] = useState<PrReviews | null>(null);
-  useEffect(() => {
-    setReviews(null);
-    void ipc.getPrReviews(prId).then(setReviews).catch(() => setReviews(null));
-  }, [prId, refreshKey]);
-
+function ReviewStrip({ reviews }: { reviews: PrReviews | null }) {
   if (!reviews) return null;
   if (reviews.requested.length === 0 && reviews.reviews.length === 0) return null;
 
@@ -155,14 +149,51 @@ function ReviewStrip({ prId, refreshKey }: { prId: string; refreshKey: number })
   );
 }
 
-/** Approve / request changes, with the review comment GitHub expects. */
-function ReviewActions({ pr, onDone }: { pr: TrackedPr; onDone: () => void }) {
+/** Approve / request changes, with the review comment GitHub expects.
+ *  Locks after you've reviewed, until the PR moves: new commits, your review
+ *  re-requested, or (for changes-requested) all threads resolved. */
+function ReviewActions({
+  pr,
+  reviews,
+  onDone,
+}: {
+  pr: TrackedPr;
+  reviews: PrReviews | null;
+  onDone: () => void;
+}) {
   const [mode, setMode] = useState<"approve" | "request-changes" | null>(null);
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (pr.state !== "OPEN") return null;
+
+  const mine = reviews?.reviews.find((r) => r.author === reviews.viewerLogin);
+  const reRequested = reviews?.requested.includes(reviews.viewerLogin) ?? false;
+  const commitsAfterReview =
+    mine?.submittedAt != null &&
+    reviews?.lastCommitAt != null &&
+    reviews.lastCommitAt > mine.submittedAt;
+  const threadsCleared = mine?.state === "CHANGES_REQUESTED" && reviews?.openThreads === 0;
+  const locked =
+    !!mine &&
+    (mine.state === "APPROVED" || mine.state === "CHANGES_REQUESTED") &&
+    !reRequested &&
+    !commitsAfterReview &&
+    !threadsCleared;
+
+  if (locked) {
+    const verb = mine.state === "APPROVED" ? "approved" : "requested changes";
+    return (
+      <span
+        className={`review-chip state-${mine.state.toLowerCase()}`}
+        title="Re-enabled on new commits, resolved threads, or a re-requested review"
+      >
+        <span className="review-glyph">{mine.state === "APPROVED" ? "✓" : "±"}</span>
+        you {verb}
+      </span>
+    );
+  }
 
   const submit = async () => {
     if (!mode) return;
@@ -679,7 +710,13 @@ function Detail({
   const [tab, setTab] = useState<Tab>("assessment");
   const [highlight, setHighlight] = useState<string[]>([]);
   const [reviewBump, setReviewBump] = useState(0);
+  const [reviews, setReviews] = useState<PrReviews | null>(null);
   const { type, clean } = parseTitle(pr.title);
+
+  useEffect(() => {
+    setReviews(null);
+    void ipc.getPrReviews(pr.id).then(setReviews).catch(() => setReviews(null));
+  }, [pr.id, pr.headSha, reviewBump]);
   const focusNodes = (ids: string[]) => {
     setHighlight(ids);
     if (ids.length > 0) setTab("c4");
@@ -746,10 +783,10 @@ function Detail({
           Untrack
         </button>
         <span className="spacer" />
-        <ReviewActions pr={pr} onDone={() => setReviewBump((n) => n + 1)} />
+        <ReviewActions pr={pr} reviews={reviews} onDone={() => setReviewBump((n) => n + 1)} />
         <PrControls pr={pr} />
       </div>
-      <ReviewStrip prId={pr.id} refreshKey={reviewBump} />
+      <ReviewStrip reviews={reviews} />
 
       <div className="tabs" role="tablist">
         {TAB_ORDER.map(([key, label], i) => (
