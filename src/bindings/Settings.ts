@@ -33,4 +33,12 @@ customSystemPrompt: string,
 /**
  * Glob patterns for insignificant files — auto-skipped in diff review.
  */
-reviewIgnoreGlobs: Array<string>, };
+reviewIgnoreGlobs: Array<string>, 
+/**
+ * Pre-warm: auto-run L1 analysis when a PR enters the review queue.
+ */
+autoAnalyzeReviewRequests: boolean, 
+/**
+ * Spend guard for pre-warming.
+ */
+autoAnalyzeDailyCap: number, };

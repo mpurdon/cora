@@ -166,6 +166,17 @@ impl RepoTools {
         &self.repo
     }
 
+    /// Diff of a commit range (base…head) — "changes since my last look".
+    pub async fn compare_diff(&self, base: &str) -> AppResult<String> {
+        let resp = self
+            .get(
+                &format!("repos/{}/compare/{}...{}", self.repo, base, self.head_ref),
+                "application/vnd.github.v3.diff",
+            )
+            .await?;
+        Ok(resp.text().await?)
+    }
+
     /// Untruncated diff, for the human-facing Diff tab.
     pub async fn pr_diff_full(&self) -> AppResult<String> {
         let resp = self

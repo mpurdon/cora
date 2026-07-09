@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS analyses (
   created_at TEXT NOT NULL,
   PRIMARY KEY (pr_id, level, focus)
 );
+CREATE TABLE IF NOT EXISTS review_marks (
+  pr_id    TEXT PRIMARY KEY,
+  head_sha TEXT NOT NULL,
+  at       TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS viewed_files (
   pr_id     TEXT NOT NULL,
   path      TEXT NOT NULL,
@@ -303,6 +308,54 @@ impl Store {
     pub fn invalidate_analyses(&self, pr_id: &str) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM analyses WHERE pr_id = ?1", params![pr_id])?;
+        Ok(())
+    }
+
+    // -- review marks ("changes since my last look") ---------------------------
+
+    pub fn review_mark(&self, pr_id: &str) -> AppResult<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT head_sha, at FROM review_marks WHERE pr_id = ?1",
+            params![pr_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e.into()),
+        })
+    }
+
+    pub fn set_review_mark(&self, pr_id: &str, head_sha: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO review_marks (pr_id, head_sha, at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(pr_id) DO UPDATE SET head_sha = ?2, at = ?3",
+            params![pr_id, head_sha, chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    // -- generic kv (counters etc.) --------------------------------------------
+
+    pub fn kv_get(&self, key: &str) -> AppResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| r.get(0))
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e.into()),
+            })
+    }
+
+    pub fn kv_set(&self, key: &str, value: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![key, value],
+        )?;
         Ok(())
     }
 

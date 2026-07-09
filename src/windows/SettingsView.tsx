@@ -149,6 +149,34 @@ function GeneralPane({ settings, save }: PaneProps) {
       </Field>
 
       <Field
+        label="Pre-warm analysis"
+        hint="Start the architecture analysis in the background as soon as a PR asks for your review, so results are ready when you open it. Capped per day to keep Bedrock costs bounded."
+      >
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={settings.autoAnalyzeReviewRequests}
+            onChange={(e) => void save({ autoAnalyzeReviewRequests: e.target.checked })}
+          />
+          Auto-analyze new review requests
+        </label>
+        {settings.autoAnalyzeReviewRequests && (
+          <label className="check-row">
+            <input
+              type="number"
+              min={1}
+              className="input-narrow"
+              value={settings.autoAnalyzeDailyCap}
+              onChange={(e) =>
+                void save({ autoAnalyzeDailyCap: Math.max(1, Number(e.target.value) || 15) })
+              }
+            />
+            analyses per day, max
+          </label>
+        )}
+      </Field>
+
+      <Field
         label="Review noise filters"
         hint="Glob patterns (one per line) for files auto-skipped in diff review — lockfiles, generated code, snapshots. * matches within a folder, ** across folders."
       >

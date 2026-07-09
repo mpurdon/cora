@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PrConversation } from "../../bindings/PrConversation";
+import type { ReviewMark } from "../../bindings/ReviewMark";
+import type { ReviewPlanEntry } from "../../bindings/ReviewPlanEntry";
 import type { ReviewThread } from "../../bindings/ReviewThread";
 import { matchesAny, reviewOrderScore } from "../../lib/globs";
 import { ipc } from "../../lib/ipc";
+import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
 import { timeAgo } from "../../state/prStore";
 import { CommentBody, Composer, ReactionBar } from "./CommentsView";
 
@@ -146,6 +149,7 @@ function FileDiff({
   onChanged,
   viewed,
   onViewedChange,
+  plan,
 }: {
   file: DiffFile;
   prId: string;
@@ -153,13 +157,18 @@ function FileDiff({
   onChanged: () => void;
   viewed: boolean;
   onViewedChange: (viewed: boolean) => void;
+  plan?: ReviewPlanEntry;
 }) {
   const hasThreads = threadsByLine.size > 0;
-  const [open, setOpen] = useState(!viewed && (file.lines.length <= 400 || hasThreads));
+  // Mechanical files (per the review plan) start collapsed — expand on demand.
+  const mechanical = plan?.significance === "mechanical";
+  const [open, setOpen] = useState(
+    !viewed && !mechanical && (file.lines.length <= 400 || hasThreads),
+  );
 
   // Marking viewed collapses the file (and vice versa), like GitHub.
   useEffect(() => {
-    setOpen(!viewed && (file.lines.length <= 400 || hasThreads));
+    setOpen(!viewed && !mechanical && (file.lines.length <= 400 || hasThreads));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewed]);
 
@@ -174,6 +183,14 @@ function FileDiff({
             {file.oldPath ? `${file.oldPath} → ` : ""}
             {file.path}
           </span>
+          {plan && (
+            <span
+              className={`plan-chip ${plan.significance}`}
+              title={plan.reason || undefined}
+            >
+              {plan.significance}
+            </span>
+          )}
           {hasThreads && <span className="thread-tag">{threadsByLine.size} threads</span>}
           <span className="spacer" />
           <span className="diffstat mono">
@@ -246,6 +263,14 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   const [viewedMap, setViewedMap] = useState<Map<string, string>>(new Map());
   const [ignoreGlobs, setIgnoreGlobs] = useState<string[]>([]);
   const [showSkipped, setShowSkipped] = useState(false);
+  const [mark, setMark] = useState<ReviewMark | null>(null);
+  const [sinceMode, setSinceMode] = useState(false);
+  const [sinceRaw, setSinceRaw] = useState<string | null>(null);
+
+  // Per-file significance from the L1 analysis, when one exists for this head.
+  const ensureAnalysis = useAnalysisStore((s) => s.ensure);
+  const l1 = useAnalysisStore((s) => s.runs[analysisKey(prId, "context")]);
+  const reviewPlan = l1?.result?.headSha === headSha ? l1.result.assessment.reviewPlan : [];
 
   const loadComments = () =>
     void ipc
@@ -256,6 +281,8 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   useEffect(() => {
     setRaw(null);
     setError(null);
+    setSinceMode(false);
+    setSinceRaw(null);
     void ipc
       .getPrDiff(prId)
       .then(setRaw)
@@ -265,28 +292,77 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
       .getViewedFiles(prId)
       .then((rows) => setViewedMap(new Map(rows.map((r) => [r.path, r.digest]))));
     void ipc.getSettings().then((s) => setIgnoreGlobs(s.reviewIgnoreGlobs));
+    void ensureAnalysis(prId, "context", undefined, false).catch(() => {});
+    // First look at a PR silently plants the mark; later heads show the
+    // "changed since your last look" banner against it.
+    void ipc.getReviewMark(prId).then((m) => {
+      if (m) {
+        setMark(m);
+      } else {
+        void ipc.setReviewMark(prId).catch(() => {});
+        setMark({ headSha, at: new Date().toISOString() });
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prId, headSha]);
 
-  const allFiles = useMemo(() => (raw ? parseDiff(raw) : []), [raw]);
+  const stale = mark != null && mark.headSha !== headSha;
+
+  const toggleSince = () => {
+    if (sinceMode) {
+      setSinceMode(false);
+      return;
+    }
+    setSinceMode(true);
+    if (sinceRaw === null) {
+      void ipc
+        .getDiffSince(prId)
+        .then(setSinceRaw)
+        .catch(() => {
+          // Force-pushes can orphan the marked SHA; fall back to the full diff.
+          setSinceMode(false);
+          setSinceRaw("");
+        });
+    }
+  };
+
+  const caughtUp = () => {
+    void ipc.setReviewMark(prId).catch(() => {});
+    setMark({ headSha, at: new Date().toISOString() });
+    setSinceMode(false);
+    setSinceRaw(null);
+  };
+
+  const activeRaw = sinceMode && sinceRaw ? sinceRaw : raw;
+  const allFiles = useMemo(() => (activeRaw ? parseDiff(activeRaw) : []), [activeRaw]);
 
   // Insignificant files (lockfiles, generated, snapshots) are skipped:
   // parked in their own collapsed section and excluded from progress.
+  const planByPath = useMemo(
+    () => new Map(reviewPlan.map((p) => [p.path, p])),
+    [reviewPlan],
+  );
   const { files, skipped } = useMemo(() => {
     const significant: DiffFile[] = [];
     const insignificant: DiffFile[] = [];
     for (const f of allFiles) {
       (matchesAny(f.path, ignoreGlobs) ? insignificant : significant).push(f);
     }
-    // Reading order: interfaces/source → styles → config → docs → tests,
-    // bigger churn first within each band.
+    // Reading order: the model's review plan when we have it (critical →
+    // important → mechanical), falling back to the path heuristic; bigger
+    // churn first within each band.
+    const planRank = (p: string) => {
+      const sig = planByPath.get(p)?.significance;
+      return sig === "critical" ? 0 : sig === "important" ? 1 : sig === "mechanical" ? 2 : 1.5;
+    };
     significant.sort(
       (a, b) =>
+        planRank(a.path) - planRank(b.path) ||
         reviewOrderScore(a.path) - reviewOrderScore(b.path) ||
         b.additions + b.deletions - (a.additions + a.deletions),
     );
     return { files: significant, skipped: insignificant };
-  }, [allFiles, ignoreGlobs]);
+  }, [allFiles, ignoreGlobs, planByPath]);
 
   // A file counts as viewed only while its patch digest still matches —
   // an update after viewing clears it automatically.
@@ -328,7 +404,22 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
 
   return (
     <div className="diff-view">
+      {stale && (
+        <div className="since-banner">
+          <span>
+            This PR changed since your last look ({timeAgo(mark.at)} ago).
+          </span>
+          <span className="spacer" />
+          <button className={`since-toggle${sinceMode ? " active" : ""}`} onClick={toggleSince}>
+            {sinceMode ? "Show full diff" : "Show only new changes"}
+          </button>
+          <button className="since-toggle" onClick={caughtUp}>
+            I'm caught up
+          </button>
+        </div>
+      )}
       <div className="eyebrow diff-summary">
+        {sinceMode && sinceRaw ? "since your last look · " : ""}
         {files.length} files ·{" "}
         <span className="add">+{files.reduce((n, f) => n + f.additions, 0)}</span>{" "}
         <span className="del">−{files.reduce((n, f) => n + f.deletions, 0)}</span>
@@ -347,6 +438,7 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
           onChanged={loadComments}
           viewed={isViewed(f)}
           onViewedChange={(v) => setViewed(f, v)}
+          plan={planByPath.get(f.path)}
         />
       ))}
 
