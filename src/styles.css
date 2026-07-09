@@ -2352,6 +2352,63 @@ button.diff-file-header:hover {
   opacity: 0.65;
 }
 
+/* Model-assigned per-file significance from the L1 review plan. */
+.plan-chip {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.plan-chip.critical {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+}
+
+.plan-chip.important {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
+/* "Changed since your last look" banner with the delta-diff toggle. */
+.since-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border-radius: 9px;
+  font-size: 12px;
+}
+
+.since-toggle {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.since-toggle:hover {
+  background: var(--ink-2);
+}
+
+.since-toggle.active {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 .globs-editor {
   width: 100%;
   min-height: 130px;

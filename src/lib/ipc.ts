@@ -13,6 +13,7 @@ import type { AnalysisProgress } from "../bindings/AnalysisProgress";
 import type { AnalysisResult } from "../bindings/AnalysisResult";
 import type { PollStatus } from "../bindings/PollStatus";
 import type { PrChangedEvent } from "../bindings/PrChangedEvent";
+import type { ReviewMark } from "../bindings/ReviewMark";
 import type { Settings } from "../bindings/Settings";
 import type { TrackedPr } from "../bindings/TrackedPr";
 
@@ -45,6 +46,9 @@ export const ipc = {
   runAnalysis: (prId: string, level: AnalysisLevel, focus?: string, force?: boolean) =>
     invoke<void>("run_analysis", { prId, level, focus: focus ?? null, force: force ?? false }),
   getPrDiff: (prId: string) => invoke<string>("get_pr_diff", { prId }),
+  getReviewMark: (prId: string) => invoke<ReviewMark | null>("get_review_mark", { prId }),
+  setReviewMark: (prId: string) => invoke<void>("set_review_mark", { prId }),
+  getDiffSince: (prId: string) => invoke<string>("get_diff_since", { prId }),
   setPrPriority: (id: string, priority: PrPriority) =>
     invoke<void>("set_pr_priority", { id, priority }),
   setRepoPriority: (repo: string, priority: RepoPriority) =>

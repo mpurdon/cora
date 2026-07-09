@@ -9,7 +9,8 @@ use crate::github::poller::PollTrigger;
 use crate::github::query::{GraphQlClient, PR_FRAGMENT};
 use crate::github::{parse_pr, parse_pr_url};
 use crate::models::{
-    events, ChangeKind, PrComment, PrConversation, PrSource, ReviewThread, Settings, TrackedPr,
+    events, ChangeKind, PrComment, PrConversation, PrSource, ReviewMark, ReviewThread, Settings,
+    TrackedPr,
 };
 use crate::secrets;
 use crate::store::Store;
@@ -309,22 +310,32 @@ pub fn get_analysis(
 pub fn run_analysis(
     app: AppHandle,
     window: WebviewWindow,
-    runs: State<'_, AnalysisRuns>,
     pr_id: String,
     level: AnalysisLevel,
     focus: Option<String>,
     force: Option<bool>,
 ) -> AppResult<()> {
     require_main(&window)?;
+    spawn_analysis_task(app, pr_id, level, focus, force.unwrap_or(false));
+    Ok(())
+}
+
+/// Shared by the Analyze button and the poller's pre-warm path.
+pub fn spawn_analysis_task(
+    app: AppHandle,
+    pr_id: String,
+    level: AnalysisLevel,
+    focus: Option<String>,
+    force: bool,
+) {
     let key = analysis_key(&pr_id, level, &focus);
     {
+        let runs = app.state::<AnalysisRuns>();
         let mut running = runs.0.lock().unwrap();
         if !running.insert(key.clone()) {
-            return Ok(()); // already running
+            return; // already running
         }
     }
-    let force = force.unwrap_or(false);
-
     tauri::async_runtime::spawn(async move {
         let outcome = execute_analysis(&app, &pr_id, level, focus.clone(), force).await;
         {
@@ -376,7 +387,6 @@ pub fn run_analysis(
             }
         }
     });
-    Ok(())
 }
 
 async fn execute_analysis(
@@ -1008,6 +1018,48 @@ pub async fn get_pr_diff(app: AppHandle, pr_id: String) -> AppResult<String> {
         &token,
     )?;
     tools.pr_diff_full().await
+}
+
+// -- review marks ("changes since my last look") ---------------------------------
+
+/// Where the reviewer left off: the head SHA at their last look.
+#[tauri::command]
+pub fn get_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult<Option<ReviewMark>> {
+    Ok(store
+        .review_mark(&pr_id)?
+        .map(|(head_sha, at)| ReviewMark { head_sha, at }))
+}
+
+/// Record "I'm caught up here" at the PR's current head.
+#[tauri::command]
+pub fn set_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult<()> {
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    store.set_review_mark(&pr_id, &pr.info.head_sha)
+}
+
+/// Diff of only the commits pushed since the review mark.
+#[tauri::command]
+pub async fn get_diff_since(app: AppHandle, pr_id: String) -> AppResult<String> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let (base, _) = store
+        .review_mark(&pr_id)?
+        .ok_or_else(|| AppError::Other("no review mark for this PR".into()))?;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let tools = crate::analysis::tools::RepoTools::new(
+        &settings.github_graphql_url,
+        &pr.info.repo,
+        pr.info.number,
+        &pr.info.head_sha,
+        &token,
+    )?;
+    tools.compare_diff(&base).await
 }
 
 /// Frontend crash reporter: devlog + a file we can read even when the UI is

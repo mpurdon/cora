@@ -74,6 +74,15 @@ pub struct RecentComment {
     pub snippet: String,
 }
 
+/// Where the reviewer left off on a PR — the head SHA at their last look.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewMark {
+    pub head_sha: String,
+    pub at: String,
+}
+
 /// What changed between two observations of the same PR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -232,6 +241,17 @@ pub struct Settings {
     /// Glob patterns for insignificant files — auto-skipped in diff review.
     #[serde(default = "default_ignore_globs")]
     pub review_ignore_globs: Vec<String>,
+    /// Pre-warm: auto-run L1 analysis when a PR enters the review queue.
+    #[serde(default = "default_true")]
+    pub auto_analyze_review_requests: bool,
+    /// Spend guard for pre-warming.
+    #[serde(default = "default_auto_analyze_cap")]
+    #[ts(type = "number")]
+    pub auto_analyze_daily_cap: u64,
+}
+
+fn default_auto_analyze_cap() -> u64 {
+    15
 }
 
 fn default_ignore_globs() -> Vec<String> {
@@ -295,6 +315,8 @@ impl Default for Settings {
             developer_mode: false,
             custom_system_prompt: String::new(),
             review_ignore_globs: default_ignore_globs(),
+            auto_analyze_review_requests: true,
+            auto_analyze_daily_cap: default_auto_analyze_cap(),
         }
     }
 }
