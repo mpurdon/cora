@@ -7,6 +7,7 @@ import type { PrConversation } from "../../bindings/PrConversation";
 import type { ReviewThread } from "../../bindings/ReviewThread";
 import { ipc } from "../../lib/ipc";
 import { timeAgo } from "../../state/prStore";
+import { parseDiff, type DiffFile } from "./DiffView";
 
 /** Comment id → DOM anchor, so reply notifications can deep-link here. */
 export const commentAnchor = (commentId: string) => `comment-${commentId}`;
@@ -267,7 +268,9 @@ function Thread({
   );
 }
 
-/** Slide-over showing the whole file, scrolled to the referenced lines. */
+/** Slide-over showing the DIFF of the referenced file, scrolled to the
+ *  commented lines. Falls back to the full file when the thread's file isn't
+ *  in the current diff (outdated threads). */
 function CodeDrawer({
   prId,
   thread,
@@ -277,31 +280,44 @@ function CodeDrawer({
   thread: ReviewThread;
   onClose: () => void;
 }) {
-  const [content, setContent] = useState<string | null>(null);
+  const [diffFile, setDiffFile] = useState<DiffFile | null | undefined>(undefined);
+  const [fileContent, setFileContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const targetRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setContent(null);
+    setDiffFile(undefined);
+    setFileContent(null);
     setError(null);
     if (!thread.path) return;
     void ipc
-      .getFileAtHead(prId, thread.path)
-      .then(setContent)
+      .getPrDiff(prId)
+      .then((raw) => {
+        const match = parseDiff(raw).find((f) => f.path === thread.path) ?? null;
+        setDiffFile(match);
+        if (!match) {
+          // Not in the diff (outdated anchor) — show the file instead.
+          void ipc
+            .getFileAtHead(prId, thread.path!)
+            .then(setFileContent)
+            .catch((e) => setError(String(e)));
+        }
+      })
       .catch((e) => setError(String(e)));
   }, [prId, thread]);
 
   useEffect(() => {
-    if (content != null) {
+    if (diffFile != null || fileContent != null) {
       // Let the lines render, then center the referenced range.
       requestAnimationFrame(() =>
         targetRef.current?.scrollIntoView({ block: "center", behavior: "instant" as ScrollBehavior }),
       );
     }
-  }, [content]);
+  }, [diffFile, fileContent]);
 
   const from = thread.startLine ?? thread.line ?? 0;
   const to = thread.line ?? from;
+  const inRange = (n: number | null) => n != null && n >= from && n <= to && from > 0;
 
   return (
     <>
@@ -311,6 +327,13 @@ function CodeDrawer({
           <span className="drawer-title mono code-drawer-path">
             {thread.path}
             {thread.line != null && `:${to}`}
+            {diffFile && (
+              <span className="diffstat mono">
+                {" "}
+                <span className="add">+{diffFile.additions}</span>{" "}
+                <span className="del">−{diffFile.deletions}</span>
+              </span>
+            )}
           </span>
           <button className="icon-btn" title="Close" onClick={onClose}>
             ✕
@@ -318,10 +341,34 @@ function CodeDrawer({
         </header>
         <div className="drawer-body code-drawer-body">
           {error && <div className="analysis-error">{error}</div>}
-          {content == null && !error && <div className="drawer-empty">fetching file…</div>}
-          {content != null && (
+          {diffFile === undefined && !error && <div className="drawer-empty">fetching diff…</div>}
+
+          {diffFile != null && (
+            <pre className="diff-body">
+              {diffFile.lines.map((l, i) => {
+                const referenced = l.kind !== "del" && inRange(l.newLine);
+                return (
+                  <div
+                    key={i}
+                    ref={
+                      referenced && (l.newLine === from || from === 0) ? targetRef : undefined
+                    }
+                    className={`diff-line ${l.kind}${referenced ? " referenced-line" : ""}`}
+                  >
+                    <span className="code-lineno">{l.newLine ?? ""}</span>
+                    <span className="diff-gutter">
+                      {l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}
+                    </span>
+                    {l.text}
+                  </div>
+                );
+              })}
+            </pre>
+          )}
+
+          {diffFile === null && fileContent != null && (
             <pre className="code-file">
-              {content.split("\n").map((line, i) => {
+              {fileContent.split("\n").map((line, i) => {
                 const n = i + 1;
                 const referenced = n >= from && n <= to && from > 0;
                 return (
