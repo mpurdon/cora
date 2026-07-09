@@ -122,9 +122,17 @@ function InlineThread({
           }}
         />
       ) : (
-        <button className="thread-reply-btn" onClick={() => setReplying(true)}>
-          Reply
-        </button>
+        <div className="row">
+          <button className="thread-reply-btn" onClick={() => setReplying(true)}>
+            Reply
+          </button>
+          <button
+            className="thread-reply-btn"
+            onClick={() => void ipc.resolveThread(thread.id, true).then(onChanged)}
+          >
+            Resolve
+          </button>
+        </div>
       )}
     </div>
   );

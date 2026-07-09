@@ -244,9 +244,19 @@ function Thread({
         {thread.outdated && <span className="thread-tag">outdated</span>}
         <span className="spacer" />
         {!replying && (
-          <button className="thread-reply-btn" onClick={() => setReplying(true)}>
-            Reply
-          </button>
+          <>
+            <button
+              className="thread-reply-btn"
+              onClick={() => void ipc.resolveThread(thread.id, !thread.resolved).then(onReplied)}
+            >
+              {thread.resolved ? "Unresolve" : "Resolve"}
+            </button>
+            {!thread.resolved && (
+              <button className="thread-reply-btn" onClick={() => setReplying(true)}>
+                Reply
+              </button>
+            )}
+          </>
         )}
       </div>
       <Comment comment={root} isReply={false} onChanged={onReplied} />
