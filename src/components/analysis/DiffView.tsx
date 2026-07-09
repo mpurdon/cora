@@ -92,6 +92,16 @@ export function parseDiff(raw: string): DiffFile[] {
   return files;
 }
 
+/** The model's reason plus the objective metrics that ground it. */
+function planTooltip(plan: ReviewPlanEntry): string | undefined {
+  const m = plan.metrics;
+  const metricsLine = m
+    ? `+${m.additions}/−${m.deletions} · ${m.addedBranches} branch pts · ${m.newDefs} new defs · ${Math.round(m.importShare * 100)}% imports · nesting ${m.maxNesting}`
+    : undefined;
+  const text = [plan.reason, metricsLine].filter(Boolean).join("\n");
+  return text || undefined;
+}
+
 /** Compact review thread rendered inline under its diff line. */
 function InlineThread({
   thread,
@@ -188,10 +198,7 @@ function FileDiff({
             {file.path}
           </span>
           {plan && (
-            <span
-              className={`plan-chip ${plan.significance}`}
-              title={plan.reason || undefined}
-            >
+            <span className={`plan-chip ${plan.significance}`} title={planTooltip(plan)}>
               {plan.significance}
             </span>
           )}
