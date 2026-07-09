@@ -116,6 +116,61 @@ fn notify_for_changes(app: &AppHandle, pr: &crate::models::TrackedPr, changes: &
     }
 }
 
+/// Kick off a background L1 analysis for a PR that just entered the review
+/// queue (or got new commits while in it), so results are warm before the
+/// reviewer opens it. Bounded by a daily cap to keep Bedrock costs sane.
+fn maybe_prewarm(
+    app: &AppHandle,
+    store: &Arc<Store>,
+    settings: &crate::models::Settings,
+    info: &PrInfo,
+) {
+    if !settings.auto_analyze_review_requests {
+        return;
+    }
+    // Already have a fresh L1 for this head? Nothing to do.
+    match store.get_analysis(&info.id, "context", "", &info.head_sha) {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(_) => return,
+    }
+    // Daily cap, tracked in kv as `auto_analyze:YYYY-MM-DD`.
+    let key = format!("auto_analyze:{}", Utc::now().format("%Y-%m-%d"));
+    let used: u64 = store
+        .kv_get(&key)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if used >= settings.auto_analyze_daily_cap {
+        crate::devlog::debug(
+            app,
+            "poller",
+            format!("pre-warm skipped for {}: daily cap {} reached", info.id, used),
+        );
+        return;
+    }
+    let _ = store.kv_set(&key, &(used + 1).to_string());
+    crate::devlog::info(
+        app,
+        "poller",
+        format!(
+            "pre-warming L1 analysis for {}#{} ({}/{} today)",
+            info.repo,
+            info.number,
+            used + 1,
+            settings.auto_analyze_daily_cap
+        ),
+    );
+    crate::commands::spawn_analysis_task(
+        app.clone(),
+        info.id.clone(),
+        crate::analysis::types::AnalysisLevel::Context,
+        None,
+        false,
+    );
+}
+
 /// One poll cycle. Returns remaining rate limit on success.
 async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
     let Some(token) = secrets::github_pat()? else {
@@ -179,6 +234,21 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
         if stored.info.state != "OPEN" && stored.unread.is_empty() {
             store.untrack(id)?;
             continue;
+        }
+        // Pre-warm: the L1 analysis is the slowest part of a review, so start
+        // it the moment a PR enters the review-requested bucket.
+        let newly_requested = stored.sources.contains(&PrSource::ReviewRequested)
+            && !existing
+                .get(id)
+                .map(|p| p.sources.contains(&PrSource::ReviewRequested))
+                .unwrap_or(false);
+        let head_moved = changes.contains(&ChangeKind::NewCommits);
+        if (newly_requested || (head_moved && stored.sources.contains(&PrSource::ReviewRequested)))
+            && !stored.muted
+            && !stored.info.is_draft
+            && stored.info.state == "OPEN"
+        {
+            maybe_prewarm(app, &store, &settings, &stored.info);
         }
         if !changes.is_empty() && !stored.muted {
             notify_for_changes(app, &stored, &changes);

@@ -154,6 +154,18 @@ pub enum FitVerdict {
     Misfit,
 }
 
+/// Model-assigned per-file review guidance: where to spend attention.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewPlanEntry {
+    pub path: String,
+    /// critical | important | mechanical
+    pub significance: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -175,6 +187,9 @@ pub struct Assessment {
     /// What a reviewer without full context needs to know.
     #[serde(default)]
     pub context_notes: Vec<String>,
+    /// Per-changed-file attention guidance, most important first.
+    #[serde(default)]
+    pub review_plan: Vec<ReviewPlanEntry>,
 }
 
 /// One step of the agent's exploration, kept for the activity drawer.
