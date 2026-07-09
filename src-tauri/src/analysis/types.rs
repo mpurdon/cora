@@ -164,6 +164,10 @@ pub struct ReviewPlanEntry {
     pub significance: String,
     #[serde(default)]
     pub reason: String,
+    /// Computed diff metrics, attached post-hoc (never emitted by the model).
+    #[serde(default)]
+    #[ts(optional)]
+    pub metrics: Option<crate::analysis::metrics::FileMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
