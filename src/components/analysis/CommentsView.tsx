@@ -84,7 +84,7 @@ export function CommentBody({ body }: { body: string }) {
         components={{
           code: ({ className, children }) => {
             // ```suggestion fences render as an applyable change, like GitHub.
-            if (/language-suggestion/.test(className ?? "")) {
+            if ((className ?? "").includes("language-suggestion")) {
               const text = String(children).replace(/\n$/, "");
               return (
                 <span className="suggestion-block">

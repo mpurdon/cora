@@ -124,48 +124,47 @@ fn maybe_prewarm(
     store: &Arc<Store>,
     settings: &crate::models::Settings,
     info: &PrInfo,
+    head_moved: bool,
 ) {
+    use crate::analysis::types::AnalysisLevel;
     if !settings.auto_analyze_review_requests {
         return;
     }
-    // Already have a fresh L1 for this head? Nothing to do.
-    match store.get_analysis(&info.id, "context", "", &info.head_sha) {
-        Ok(Some(_)) => return,
-        Ok(None) => {}
-        Err(_) => return,
-    }
-    // Daily cap, tracked in kv as `auto_analyze:YYYY-MM-DD`.
-    let key = format!("auto_analyze:{}", Utc::now().format("%Y-%m-%d"));
-    let used: u64 = store
-        .kv_get(&key)
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if used >= settings.auto_analyze_daily_cap {
-        crate::devlog::debug(
-            app,
-            "poller",
-            format!("pre-warm skipped for {}: daily cap {} reached", info.id, used),
-        );
+    // Already have a fresh L1 for this head? Nothing to do. (When the head
+    // just moved, the poll cycle invalidated the cache — skip the lookup.)
+    if !head_moved
+        && store
+            .has_analysis(&info.id, AnalysisLevel::Context.as_str(), "", &info.head_sha)
+            .unwrap_or(false)
+    {
         return;
     }
-    let _ = store.kv_set(&key, &(used + 1).to_string());
-    crate::devlog::info(
-        app,
-        "poller",
-        format!(
-            "pre-warming L1 analysis for {}#{} ({}/{} today)",
-            info.repo,
-            info.number,
-            used + 1,
-            settings.auto_analyze_daily_cap
+    match store.try_consume_daily_budget("auto_analyze", settings.auto_analyze_daily_cap) {
+        Ok(Some(used)) => crate::devlog::info(
+            app,
+            "poller",
+            format!(
+                "pre-warming L1 analysis for {}#{} ({used}/{} today)",
+                info.repo, info.number, settings.auto_analyze_daily_cap
+            ),
         ),
-    );
+        Ok(None) => {
+            crate::devlog::debug(
+                app,
+                "poller",
+                format!(
+                    "pre-warm skipped for {}: daily cap {} reached",
+                    info.id, settings.auto_analyze_daily_cap
+                ),
+            );
+            return;
+        }
+        Err(_) => return,
+    }
     crate::commands::spawn_analysis_task(
         app.clone(),
         info.id.clone(),
-        crate::analysis::types::AnalysisLevel::Context,
+        AnalysisLevel::Context,
         None,
         false,
     );
@@ -236,19 +235,20 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
             continue;
         }
         // Pre-warm: the L1 analysis is the slowest part of a review, so start
-        // it the moment a PR enters the review-requested bucket.
-        let newly_requested = stored.sources.contains(&PrSource::ReviewRequested)
-            && !existing
-                .get(id)
-                .map(|p| p.sources.contains(&PrSource::ReviewRequested))
-                .unwrap_or(false);
+        // it when a PR enters the review-requested bucket or its head moves
+        // while there.
+        let requested = stored.sources.contains(&PrSource::ReviewRequested);
+        let was_requested = existing
+            .get(id)
+            .is_some_and(|p| p.sources.contains(&PrSource::ReviewRequested));
         let head_moved = changes.contains(&ChangeKind::NewCommits);
-        if (newly_requested || (head_moved && stored.sources.contains(&PrSource::ReviewRequested)))
+        if requested
+            && (!was_requested || head_moved)
             && !stored.muted
             && !stored.info.is_draft
             && stored.info.state == "OPEN"
         {
-            maybe_prewarm(app, &store, &settings, &stored.info);
+            maybe_prewarm(app, &store, &settings, &stored.info, head_moved);
         }
         if !changes.is_empty() && !stored.muted {
             notify_for_changes(app, &stored, &changes);
