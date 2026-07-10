@@ -791,6 +791,29 @@ pub async fn reopen_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
     Ok(())
 }
 
+/// The store → PR → token → settings dance shared by every REST-backed
+/// per-PR command.
+fn repo_tools_for(
+    app: &AppHandle,
+    pr_id: &str,
+) -> AppResult<(crate::analysis::tools::RepoTools, TrackedPr)> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let tools = crate::analysis::tools::RepoTools::new(
+        &settings.github_graphql_url,
+        &pr.info.repo,
+        pr.info.number,
+        &pr.info.head_sha,
+        &token,
+    )?;
+    Ok((tools, pr))
+}
+
 /// New line-anchored review comment from the diff view. Uses the REST
 /// endpoint because it creates a standalone comment without a pending review.
 #[tauri::command]
@@ -804,20 +827,7 @@ pub async fn add_diff_comment(
     if body.trim().is_empty() {
         return Err(AppError::Other("comment is empty".into()));
     }
-    let store = app.state::<Arc<Store>>().inner().clone();
-    let pr = store
-        .get_pr(&pr_id)?
-        .ok_or_else(|| AppError::Other("PR not found".into()))?;
-    let token = secrets::github_pat()?
-        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
-    let settings = store.settings()?;
-    let tools = crate::analysis::tools::RepoTools::new(
-        &settings.github_graphql_url,
-        &pr.info.repo,
-        pr.info.number,
-        &pr.info.head_sha,
-        &token,
-    )?;
+    let (tools, _) = repo_tools_for(&app, &pr_id)?;
     tools
         .post(
             &format!("repos/{}/pulls/{}/comments", tools.repo(), tools.pr_number()),
@@ -981,20 +991,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
 /// Full file contents at the PR head, for the comment code drawer.
 #[tauri::command]
 pub async fn get_file_at_head(app: AppHandle, pr_id: String, path: String) -> AppResult<String> {
-    let store = app.state::<Arc<Store>>().inner().clone();
-    let pr = store
-        .get_pr(&pr_id)?
-        .ok_or_else(|| AppError::Other("PR not found".into()))?;
-    let token = secrets::github_pat()?
-        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
-    let settings = store.settings()?;
-    let tools = crate::analysis::tools::RepoTools::new(
-        &settings.github_graphql_url,
-        &pr.info.repo,
-        pr.info.number,
-        &pr.info.head_sha,
-        &token,
-    )?;
+    let (tools, _) = repo_tools_for(&app, &pr_id)?;
     tools
         .execute("get_file", &serde_json::json!({ "path": path }))
         .await
@@ -1003,36 +1000,28 @@ pub async fn get_file_at_head(app: AppHandle, pr_id: String, path: String) -> Ap
 /// Raw unified diff for the Diff tab.
 #[tauri::command]
 pub async fn get_pr_diff(app: AppHandle, pr_id: String) -> AppResult<String> {
-    let store = app.state::<Arc<Store>>().inner().clone();
-    let pr = store
-        .get_pr(&pr_id)?
-        .ok_or_else(|| AppError::Other("PR not found".into()))?;
-    let token = secrets::github_pat()?
-        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
-    let settings = store.settings()?;
-    let tools = crate::analysis::tools::RepoTools::new(
-        &settings.github_graphql_url,
-        &pr.info.repo,
-        pr.info.number,
-        &pr.info.head_sha,
-        &token,
-    )?;
+    let (tools, _) = repo_tools_for(&app, &pr_id)?;
     tools.pr_diff_full().await
 }
 
 // -- review marks ("changes since my last look") ---------------------------------
 
-/// Where the reviewer left off: the head SHA at their last look.
+/// Where the reviewer left off — created at the current head on first ask, so
+/// every surface shares one planting rule and one stored timestamp.
 #[tauri::command]
-pub fn get_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult<Option<ReviewMark>> {
-    Ok(store
-        .review_mark(&pr_id)?
-        .map(|(head_sha, at)| ReviewMark { head_sha, at }))
+pub fn ensure_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult<ReviewMark> {
+    if let Some(mark) = store.review_mark(&pr_id)? {
+        return Ok(mark);
+    }
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    store.set_review_mark(&pr_id, &pr.info.head_sha)
 }
 
 /// Record "I'm caught up here" at the PR's current head.
 #[tauri::command]
-pub fn set_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult<()> {
+pub fn set_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult<ReviewMark> {
     let pr = store
         .get_pr(&pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -1043,23 +1032,11 @@ pub fn set_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult
 #[tauri::command]
 pub async fn get_diff_since(app: AppHandle, pr_id: String) -> AppResult<String> {
     let store = app.state::<Arc<Store>>().inner().clone();
-    let pr = store
-        .get_pr(&pr_id)?
-        .ok_or_else(|| AppError::Other("PR not found".into()))?;
-    let (base, _) = store
+    let mark = store
         .review_mark(&pr_id)?
         .ok_or_else(|| AppError::Other("no review mark for this PR".into()))?;
-    let token = secrets::github_pat()?
-        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
-    let settings = store.settings()?;
-    let tools = crate::analysis::tools::RepoTools::new(
-        &settings.github_graphql_url,
-        &pr.info.repo,
-        pr.info.number,
-        &pr.info.head_sha,
-        &token,
-    )?;
-    tools.compare_diff(&base).await
+    let (tools, _) = repo_tools_for(&app, &pr_id)?;
+    tools.compare_diff(&mark.head_sha).await
 }
 
 /// Frontend crash reporter: devlog + a file we can read even when the UI is

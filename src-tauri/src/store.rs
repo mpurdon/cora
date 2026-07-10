@@ -1,10 +1,10 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{AppError, AppResult};
-use crate::models::{ChangeKind, PrInfo, PrSource, Settings, TrackedPr};
+use crate::models::{ChangeKind, PrInfo, PrSource, ReviewMark, Settings, TrackedPr};
 
 /// SQLite-backed app state. Connection is behind a Mutex; all access is
 /// short-lived synchronous work so contention is negligible at our scale.
@@ -80,14 +80,7 @@ impl Store {
     // -- settings ---------------------------------------------------------
 
     pub fn settings(&self) -> AppResult<Settings> {
-        let conn = self.conn.lock().unwrap();
-        let json: Option<String> = conn
-            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |r| r.get(0))
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                e => Err(e),
-            })?;
+        let json = self.kv_get("settings")?;
         let mut settings: Settings = match json {
             Some(j) => serde_json::from_str(&j).unwrap_or_default(),
             None => Settings::default(),
@@ -105,13 +98,7 @@ impl Store {
 
     pub fn save_settings(&self, settings: &Settings) -> AppResult<()> {
         let json = serde_json::to_string(settings).map_err(|e| AppError::Other(e.to_string()))?;
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO kv (key, value) VALUES ('settings', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = ?1",
-            params![json],
-        )?;
-        Ok(())
+        self.kv_set("settings", &json)
     }
 
     // -- PRs ---------------------------------------------------------------
@@ -269,19 +256,34 @@ impl Store {
         head_sha: &str,
     ) -> AppResult<Option<String>> {
         let conn = self.conn.lock().unwrap();
-        let row: Option<String> = conn
+        Ok(conn
             .query_row(
                 "SELECT data FROM analyses
                  WHERE pr_id = ?1 AND level = ?2 AND focus = ?3 AND head_sha = ?4",
                 params![pr_id, level, focus, head_sha],
                 |r| r.get(0),
             )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                e => Err(e),
-            })?;
-        Ok(row)
+            .optional()?)
+    }
+
+    /// Existence check without loading the (large) analysis blob.
+    pub fn has_analysis(
+        &self,
+        pr_id: &str,
+        level: &str,
+        focus: &str,
+        head_sha: &str,
+    ) -> AppResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM analyses
+                 WHERE pr_id = ?1 AND level = ?2 AND focus = ?3 AND head_sha = ?4",
+                params![pr_id, level, focus, head_sha],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
     }
 
     pub fn put_analysis(
@@ -313,40 +315,43 @@ impl Store {
 
     // -- review marks ("changes since my last look") ---------------------------
 
-    pub fn review_mark(&self, pr_id: &str) -> AppResult<Option<(String, String)>> {
+    pub fn review_mark(&self, pr_id: &str) -> AppResult<Option<ReviewMark>> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT head_sha, at FROM review_marks WHERE pr_id = ?1",
-            params![pr_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            e => Err(e.into()),
-        })
+        Ok(conn
+            .query_row(
+                "SELECT head_sha, at FROM review_marks WHERE pr_id = ?1",
+                params![pr_id],
+                |r| {
+                    Ok(ReviewMark {
+                        head_sha: r.get(0)?,
+                        at: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
-    pub fn set_review_mark(&self, pr_id: &str, head_sha: &str) -> AppResult<()> {
+    pub fn set_review_mark(&self, pr_id: &str, head_sha: &str) -> AppResult<ReviewMark> {
+        let mark = ReviewMark {
+            head_sha: head_sha.to_string(),
+            at: chrono::Utc::now().to_rfc3339(),
+        };
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO review_marks (pr_id, head_sha, at) VALUES (?1, ?2, ?3)
              ON CONFLICT(pr_id) DO UPDATE SET head_sha = ?2, at = ?3",
-            params![pr_id, head_sha, chrono::Utc::now().to_rfc3339()],
+            params![pr_id, mark.head_sha, mark.at],
         )?;
-        Ok(())
+        Ok(mark)
     }
 
-    // -- generic kv (counters etc.) --------------------------------------------
+    // -- generic kv (settings, counters) ---------------------------------------
 
     pub fn kv_get(&self, key: &str) -> AppResult<Option<String>> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| r.get(0))
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                e => Err(e.into()),
-            })
+        Ok(conn
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()?)
     }
 
     pub fn kv_set(&self, key: &str, value: &str) -> AppResult<()> {
@@ -357,6 +362,21 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    /// Consume one unit of a per-day budget (kv key `<name>:<date>`). Returns
+    /// the count used today, or None when the cap is already exhausted.
+    pub fn try_consume_daily_budget(&self, name: &str, cap: u64) -> AppResult<Option<u64>> {
+        let key = format!("{name}:{}", chrono::Utc::now().format("%Y-%m-%d"));
+        let used: u64 = self
+            .kv_get(&key)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if used >= cap {
+            return Ok(None);
+        }
+        self.kv_set(&key, &(used + 1).to_string())?;
+        Ok(Some(used + 1))
     }
 
     // -- viewed files (diff review progress) ----------------------------------

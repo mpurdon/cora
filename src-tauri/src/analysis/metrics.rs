@@ -32,6 +32,12 @@ impl FileMetrics {
         self.added_branches == 0 && self.new_defs == 0
     }
 
+    /// Mechanical for review purposes: no logic, or additions dominated by
+    /// imports. The threshold lives here so every consumer agrees on it.
+    pub fn is_mechanical(&self) -> bool {
+        self.is_logicless() || self.import_share >= 0.75
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "+{}/−{}, branches +{}, new defs {}, imports {:.0}%, nesting {}",

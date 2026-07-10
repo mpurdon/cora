@@ -11,6 +11,9 @@ pub struct RepoTools {
     head_ref: String,
     number: i64,
     token: String,
+    /// The full diff is wanted by both the metrics pass and the model's
+    /// get_pr_diff tool in the same run — fetch it once per instance.
+    diff_cache: tokio::sync::OnceCell<String>,
 }
 
 const MAX_FILE_CHARS: usize = 40_000;
@@ -34,6 +37,7 @@ impl RepoTools {
             head_ref: head_ref.to_string(),
             number,
             token: token.to_string(),
+            diff_cache: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -177,15 +181,21 @@ impl RepoTools {
         Ok(resp.text().await?)
     }
 
-    /// Untruncated diff, for the human-facing Diff tab.
+    /// Untruncated diff, fetched once per instance (head-pinned, can't go stale).
     pub async fn pr_diff_full(&self) -> AppResult<String> {
-        let resp = self
-            .get(
-                &format!("repos/{}/pulls/{}", self.repo, self.number),
-                "application/vnd.github.v3.diff",
-            )
+        let diff = self
+            .diff_cache
+            .get_or_try_init(|| async {
+                let resp = self
+                    .get(
+                        &format!("repos/{}/pulls/{}", self.repo, self.number),
+                        "application/vnd.github.v3.diff",
+                    )
+                    .await?;
+                Ok::<_, crate::error::AppError>(resp.text().await?)
+            })
             .await?;
-        Ok(resp.text().await?)
+        Ok(diff.clone())
     }
 
     async fn file(&self, path: &str, r#ref: Option<&str>) -> AppResult<String> {

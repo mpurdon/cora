@@ -168,7 +168,12 @@ function GeneralPane({ settings, save }: PaneProps) {
               className="input-narrow"
               value={settings.autoAnalyzeDailyCap}
               onChange={(e) =>
-                void save({ autoAnalyzeDailyCap: Math.max(1, Number(e.target.value) || 15) })
+                void save({
+                  autoAnalyzeDailyCap: Math.max(
+                    1,
+                    Number(e.target.value) || settings.autoAnalyzeDailyCap,
+                  ),
+                })
               }
             />
             analyses per day, max
