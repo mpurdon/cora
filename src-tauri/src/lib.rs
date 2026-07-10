@@ -104,7 +104,7 @@ pub fn run() {
             commands::get_analysis,
             commands::run_analysis,
             commands::get_pr_diff,
-            commands::get_review_mark,
+            commands::ensure_review_mark,
             commands::set_review_mark,
             commands::get_diff_since,
             commands::aws_sso_login,

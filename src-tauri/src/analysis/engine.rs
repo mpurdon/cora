@@ -8,11 +8,12 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
+use crate::analysis::metrics::{diff_metrics, FileMetrics};
 use crate::analysis::tools::RepoTools;
 use crate::devlog;
 use crate::analysis::types::{
     events, AnalysisLevel, AnalysisProgress, AnalysisResult, AnalysisUsage, Assessment, C4Graph,
-    TraceStep,
+    C4NodeKind, ChangeStatus, ReviewPlanEntry, Severity, Significance, TraceStep,
 };
 use crate::error::{AppError, AppResult};
 use crate::models::{Settings, TrackedPr};
@@ -341,7 +342,7 @@ pub async fn run(
     // only — drills don't own the review plan.
     let file_metrics = if level == AnalysisLevel::Context {
         match tools.pr_diff_full().await {
-            Ok(d) => crate::analysis::metrics::diff_metrics(&d),
+            Ok(d) => diff_metrics(&d),
             Err(e) => {
                 devlog::warn(app, "analysis", format!("diff metrics unavailable: {e}"));
                 Vec::new()
@@ -680,10 +681,6 @@ fn sanitize_payload(payload: &mut Value) -> Vec<String> {
         ("user", "person"),
         ("actor", "person"),
     ];
-    const NODE_KINDS_VALID: &[&str] = &[
-        "person", "external-system", "system", "container", "component", "code", "data-store",
-        "queue",
-    ];
     const CHANGE: &[(&str, &str)] = &[
         ("new", "added"),
         ("created", "added"),
@@ -703,7 +700,6 @@ fn sanitize_payload(payload: &mut Value) -> Vec<String> {
         ("existing", "unchanged"),
         ("no-change", "unchanged"),
     ];
-    const CHANGES_VALID: &[&str] = &["added", "modified", "removed", "affected", "unchanged"];
     const FIT: &[(&str, &str)] = &[
         ("fit", "fits"),
         ("good-fit", "fits"),
@@ -763,10 +759,10 @@ fn sanitize_payload(payload: &mut Value) -> Vec<String> {
             normalize_enum(n, "kind", NODE_KIND, &mut notes);
             // An off-schema kind renders as a slightly-wrong card; a rejected
             // submission costs a whole turn. Coerce and note it.
-            coerce_unknown(n, "kind", NODE_KINDS_VALID, "component", &mut notes);
+            coerce_unknown::<C4NodeKind>(n, "kind", "component", &mut notes);
             fill_missing(n, "change", "unchanged", &mut notes);
             normalize_enum(n, "change", CHANGE, &mut notes);
-            coerce_unknown(n, "change", CHANGES_VALID, "unchanged", &mut notes);
+            coerce_unknown::<ChangeStatus>(n, "change", "unchanged", &mut notes);
             if str_field(n, "id").is_none() {
                 if let Some(name) = str_field(n, "name") {
                     let slug = format!("node:{}", kebab(&name));
@@ -780,7 +776,7 @@ fn sanitize_payload(payload: &mut Value) -> Vec<String> {
         for e in edges {
             fill_missing(e, "change", "unchanged", &mut notes);
             normalize_enum(e, "change", CHANGE, &mut notes);
-            coerce_unknown(e, "change", CHANGES_VALID, "unchanged", &mut notes);
+            coerce_unknown::<ChangeStatus>(e, "change", "unchanged", &mut notes);
             if str_field(e, "id").is_none() {
                 let s = str_field(e, "source").unwrap_or_else(|| "?".into());
                 let t = str_field(e, "target").unwrap_or_else(|| "?".into());
@@ -808,18 +804,13 @@ fn sanitize_payload(payload: &mut Value) -> Vec<String> {
             for f in findings {
                 normalize_enum(f, "pillar", PILLAR, &mut notes);
                 normalize_enum(f, "severity", SEVERITY, &mut notes);
-                coerce_unknown(
-                    f,
-                    "severity",
-                    &["info", "low", "medium", "high"],
-                    "medium",
-                    &mut notes,
-                );
+                coerce_unknown::<Severity>(f, "severity", "medium", &mut notes);
             }
         }
         if let Some(plan) = a.get_mut("reviewPlan").and_then(Value::as_array_mut) {
             for p in plan {
                 normalize_enum(p, "significance", SIGNIFICANCE, &mut notes);
+                coerce_unknown::<Significance>(p, "significance", "important", &mut notes);
             }
         }
     }
@@ -872,15 +863,16 @@ fn normalize_enum(obj: &mut Value, key: &str, synonyms: &[(&str, &str)], notes: 
 }
 
 /// Last resort for values still outside the schema after normalization.
-fn coerce_unknown(
+/// Validity is derived from the target enum's own serde form, so new
+/// variants added in types.rs are automatically accepted here.
+fn coerce_unknown<T: serde::de::DeserializeOwned>(
     obj: &mut Value,
     key: &str,
-    valid: &[&str],
     fallback: &str,
     notes: &mut Vec<String>,
 ) {
     let Some(v) = str_field(obj, key) else { return };
-    if !valid.contains(&v.as_str()) {
+    if serde_json::from_value::<T>(Value::String(v.clone())).is_err() {
         notes.push(format!("unknown {key} \"{v}\" → \"{fallback}\""));
         obj[key] = json!(fallback);
     }
@@ -942,20 +934,20 @@ fn camelize_keys(v: &mut Value) {
 /// metric-derived default. Returns a description of each adjustment.
 fn ground_review_plan(
     assessment: &mut Assessment,
-    metrics: &[(String, crate::analysis::metrics::FileMetrics)],
+    metrics: &[(String, FileMetrics)],
 ) -> Vec<String> {
     let mut notes = Vec::new();
     if metrics.is_empty() {
         return notes;
     }
-    let by_path: std::collections::HashMap<&str, &crate::analysis::metrics::FileMetrics> =
+    let by_path: std::collections::HashMap<&str, &FileMetrics> =
         metrics.iter().map(|(p, m)| (p.as_str(), m)).collect();
 
     for entry in &mut assessment.review_plan {
         let Some(m) = by_path.get(entry.path.as_str()) else { continue };
         entry.metrics = Some((*m).clone());
-        if entry.significance == "critical" && m.is_logicless() {
-            entry.significance = "important".into();
+        if entry.significance == Significance::Critical && m.is_logicless() {
+            entry.significance = Significance::Important;
             if !entry.reason.is_empty() {
                 entry.reason.push_str(" · ");
             }
@@ -966,24 +958,27 @@ fn ground_review_plan(
 
     // Files present in the diff but absent from the plan get a floor entry so
     // the reading order covers everything.
-    let planned: std::collections::HashSet<String> =
-        assessment.review_plan.iter().map(|e| e.path.clone()).collect();
-    for (path, m) in metrics {
-        if planned.contains(path) {
-            continue;
-        }
-        let mechanical = m.is_logicless() || m.import_share >= 0.75;
-        notes.push(format!(
-            "{path} unclassified → {}",
-            if mechanical { "mechanical" } else { "important" }
-        ));
-        assessment.review_plan.push(crate::analysis::types::ReviewPlanEntry {
-            path: path.clone(),
-            significance: if mechanical { "mechanical" } else { "important" }.into(),
-            reason: "not classified by the analysis — defaulted from diff metrics".into(),
-            metrics: Some(m.clone()),
-        });
-    }
+    let planned: std::collections::HashSet<&str> =
+        assessment.review_plan.iter().map(|e| e.path.as_str()).collect();
+    let additions: Vec<ReviewPlanEntry> = metrics
+        .iter()
+        .filter(|(path, _)| !planned.contains(path.as_str()))
+        .map(|(path, m)| {
+            let significance = if m.is_mechanical() {
+                Significance::Mechanical
+            } else {
+                Significance::Important
+            };
+            notes.push(format!("{path} unclassified → {}", significance.as_str()));
+            ReviewPlanEntry {
+                path: path.clone(),
+                significance,
+                reason: "not classified by the analysis — defaulted from diff metrics".into(),
+                metrics: Some(m.clone()),
+            }
+        })
+        .collect();
+    assessment.review_plan.extend(additions);
     notes
 }
 
@@ -1094,7 +1089,7 @@ mod tests {
         let finding = &assessment.well_architected[0];
         assert_eq!(finding.pillar, crate::analysis::types::Pillar::PerformanceEfficiency);
         assert_eq!(finding.severity, crate::analysis::types::Severity::High);
-        assert_eq!(assessment.review_plan[0].significance, "critical");
+        assert_eq!(assessment.review_plan[0].significance, Significance::Critical);
     }
 
     #[test]

@@ -154,14 +154,34 @@ pub enum FitVerdict {
     Misfit,
 }
 
+/// Per-file attention level, most demanding first — ordering is meaningful
+/// (reading order derives from the ordinal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum Significance {
+    Critical,
+    Important,
+    Mechanical,
+}
+
+impl Significance {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Significance::Critical => "critical",
+            Significance::Important => "important",
+            Significance::Mechanical => "mechanical",
+        }
+    }
+}
+
 /// Model-assigned per-file review guidance: where to spend attention.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewPlanEntry {
     pub path: String,
-    /// critical | important | mechanical
-    pub significance: String,
+    pub significance: Significance,
     #[serde(default)]
     pub reason: String,
     /// Computed diff metrics, attached post-hoc (never emitted by the model).

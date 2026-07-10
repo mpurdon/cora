@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { PrConversation } from "../../bindings/PrConversation";
 import type { ReviewMark } from "../../bindings/ReviewMark";
 import type { ReviewPlanEntry } from "../../bindings/ReviewPlanEntry";
+import type { Significance } from "../../bindings/Significance";
 import type { ReviewThread } from "../../bindings/ReviewThread";
 import { matchesAny, reviewOrderScore } from "../../lib/globs";
 import { ipc } from "../../lib/ipc";
@@ -176,13 +177,12 @@ function FileDiff({
   const hasThreads = threadsByLine.size > 0;
   // Mechanical files (per the review plan) start collapsed — expand on demand.
   const mechanical = plan?.significance === "mechanical";
-  const [open, setOpen] = useState(
-    !viewed && !mechanical && (file.lines.length <= 400 || hasThreads),
-  );
+  const defaultOpen = !viewed && !mechanical && (file.lines.length <= 400 || hasThreads);
+  const [open, setOpen] = useState(defaultOpen);
 
   // Marking viewed collapses the file (and vice versa), like GitHub.
   useEffect(() => {
-    setOpen(!viewed && !mechanical && (file.lines.length <= 400 || hasThreads));
+    setOpen(defaultOpen);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewed]);
 
@@ -268,6 +268,12 @@ function FileDiff({
   );
 }
 
+// Stable empty fallback — a fresh [] each render would invalidate the whole
+// planByPath → files memo chain on every analysis progress tick.
+const NO_PLAN: ReviewPlanEntry[] = [];
+
+const SIG_RANK: Record<Significance, number> = { critical: 0, important: 1, mechanical: 2 };
+
 export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   const [raw, setRaw] = useState<string | null>(null);
   const [conversation, setConversation] = useState<PrConversation | null>(null);
@@ -278,11 +284,14 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   const [mark, setMark] = useState<ReviewMark | null>(null);
   const [sinceMode, setSinceMode] = useState(false);
   const [sinceRaw, setSinceRaw] = useState<string | null>(null);
+  const [sinceFailed, setSinceFailed] = useState(false);
 
-  // Per-file significance from the L1 analysis, when one exists for this head.
+  // Per-file significance from the L1 analysis, when one exists for this
+  // head. Select only the result so progress ticks don't re-render the diff.
   const ensureAnalysis = useAnalysisStore((s) => s.ensure);
-  const l1 = useAnalysisStore((s) => s.runs[analysisKey(prId, "context")]);
-  const reviewPlan = l1?.result?.headSha === headSha ? l1.result.assessment.reviewPlan : [];
+  const l1Result = useAnalysisStore((s) => s.runs[analysisKey(prId, "context")]?.result);
+  const reviewPlan =
+    l1Result?.headSha === headSha ? l1Result.assessment.reviewPlan : NO_PLAN;
 
   const loadComments = () =>
     void ipc
@@ -295,6 +304,7 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     setError(null);
     setSinceMode(false);
     setSinceRaw(null);
+    setSinceFailed(false);
     void ipc
       .getPrDiff(prId)
       .then(setRaw)
@@ -305,16 +315,12 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
       .then((rows) => setViewedMap(new Map(rows.map((r) => [r.path, r.digest]))));
     void ipc.getSettings().then((s) => setIgnoreGlobs(s.reviewIgnoreGlobs));
     void ensureAnalysis(prId, "context", undefined, false).catch(() => {});
-    // First look at a PR silently plants the mark; later heads show the
+    // The backend plants the mark on first look; later heads show the
     // "changed since your last look" banner against it.
-    void ipc.getReviewMark(prId).then((m) => {
-      if (m) {
-        setMark(m);
-      } else {
-        void ipc.setReviewMark(prId).catch(() => {});
-        setMark({ headSha, at: new Date().toISOString() });
-      }
-    });
+    void ipc
+      .ensureReviewMark(prId)
+      .then(setMark)
+      .catch(() => setMark(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prId, headSha]);
 
@@ -326,26 +332,26 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
       return;
     }
     setSinceMode(true);
-    if (sinceRaw === null) {
+    if (sinceRaw === null && !sinceFailed) {
       void ipc
         .getDiffSince(prId)
         .then(setSinceRaw)
         .catch(() => {
           // Force-pushes can orphan the marked SHA; fall back to the full diff.
           setSinceMode(false);
-          setSinceRaw("");
+          setSinceFailed(true);
         });
     }
   };
 
   const caughtUp = () => {
-    void ipc.setReviewMark(prId).catch(() => {});
-    setMark({ headSha, at: new Date().toISOString() });
+    void ipc.setReviewMark(prId).then(setMark).catch(() => {});
     setSinceMode(false);
     setSinceRaw(null);
+    setSinceFailed(false);
   };
 
-  const activeRaw = sinceMode && sinceRaw ? sinceRaw : raw;
+  const activeRaw = sinceMode && sinceRaw !== null ? sinceRaw : raw;
   const allFiles = useMemo(() => (activeRaw ? parseDiff(activeRaw) : []), [activeRaw]);
 
   // Insignificant files (lockfiles, generated, snapshots) are skipped:
@@ -365,7 +371,7 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     // churn first within each band.
     const planRank = (p: string) => {
       const sig = planByPath.get(p)?.significance;
-      return sig === "critical" ? 0 : sig === "important" ? 1 : sig === "mechanical" ? 2 : 1.5;
+      return sig != null ? SIG_RANK[sig] : 1.5;
     };
     significant.sort(
       (a, b) =>
@@ -431,7 +437,7 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
         </div>
       )}
       <div className="eyebrow diff-summary">
-        {sinceMode && sinceRaw ? "since your last look · " : ""}
+        {sinceMode && sinceRaw !== null ? "since your last look · " : ""}
         {files.length} files ·{" "}
         <span className="add">+{files.reduce((n, f) => n + f.additions, 0)}</span>{" "}
         <span className="del">−{files.reduce((n, f) => n + f.deletions, 0)}</span>
