@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PrComment } from "../../bindings/PrComment";
@@ -81,6 +83,9 @@ export function CommentBody({ body }: { body: string }) {
     <div className="comment-body markdown">
       <Markdown
         remarkPlugins={[remarkGfm]}
+        // Bots (coverage reports, badges) write raw HTML in comment bodies;
+        // parse it, then strip anything outside GitHub's own allowlist.
+        rehypePlugins={[rehypeRaw, rehypeSanitize]}
         components={{
           code: ({ className, children }) => {
             // ```suggestion fences render as an applyable change, like GitHub.
