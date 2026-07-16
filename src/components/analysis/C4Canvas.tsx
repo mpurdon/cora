@@ -4,6 +4,7 @@ import {
   BackgroundVariant,
   Handle,
   MiniMap,
+  Panel,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -32,6 +33,22 @@ const KIND_LABEL: Record<string, string> = {
   "data-store": "data store",
   queue: "queue",
 };
+
+/** Edge stroke follows the same change palette as the node stripes. */
+const CHANGE_STROKE: Record<string, string> = {
+  added: "var(--ok)",
+  modified: "var(--warn)",
+  removed: "var(--bad)",
+  affected: "var(--text)",
+};
+
+/** Long labels turn the canvas into spaghetti — clamp, keep the protocol
+ *  only when there's room for it. Models are also prompted to stay terse;
+ *  this is the backstop for graphs generated before that rule. */
+function edgeLabel(label: string, protocol: string | null): string {
+  const base = label.length > 28 ? `${label.slice(0, 27).trimEnd()}…` : label;
+  return protocol && base.length + protocol.length <= 34 ? `${base} (${protocol})` : base;
+}
 
 type C4FlowNode = Node<{ c4: C4Node; highlighted: boolean; isGroup: boolean }>;
 
@@ -97,8 +114,8 @@ async function layout(graph: C4Graph, highlight: Set<string>): Promise<LaidOut> 
     layoutOptions: {
       "elk.algorithm": "layered",
       "elk.direction": "RIGHT",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "90",
-      "elk.spacing.nodeNode": "40",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "130",
+      "elk.spacing.nodeNode": "48",
       "elk.hierarchyHandling": "INCLUDE_CHILDREN",
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
     },
@@ -134,16 +151,19 @@ async function layout(graph: C4Graph, highlight: Set<string>): Promise<LaidOut> 
   walk(laid);
 
   const edges: Edge[] = graph.edges.map((e) => {
-    const emphatic = e.crossesBoundary;
+    const changed = e.change !== "unchanged";
     return {
       id: e.id,
       source: e.source,
       target: e.target,
-      label: e.label + (e.protocol ? ` (${e.protocol})` : ""),
-      animated: emphatic && e.change !== "unchanged",
+      label: edgeLabel(e.label, e.protocol),
+      // One encoding, stated in the legend: dashes (animated) = the
+      // interaction changed in this PR; width = crosses a boundary;
+      // color follows the same change palette as the node stripes.
+      animated: changed,
       className: [
         "c4-edge",
-        emphatic ? "crosses-boundary" : "",
+        e.crossesBoundary ? "crosses-boundary" : "",
         `change-${e.change}`,
         highlight.has(e.source) || highlight.has(e.target) ? "highlighted" : "",
       ]
@@ -152,8 +172,8 @@ async function layout(graph: C4Graph, highlight: Set<string>): Promise<LaidOut> 
       labelStyle: { fill: "var(--muted)", fontSize: 10, fontFamily: "var(--mono)" },
       labelBgStyle: { fill: "var(--ink-0)", fillOpacity: 0.9 },
       style: {
-        stroke: emphatic ? "var(--chat)" : "var(--line)",
-        strokeWidth: emphatic ? 2.25 : 1.25,
+        stroke: changed ? CHANGE_STROKE[e.change] ?? "var(--warn)" : "var(--line)",
+        strokeWidth: e.crossesBoundary ? 2.25 : 1.25,
       },
     };
   });
@@ -213,6 +233,17 @@ function Flow({
       colorMode="dark"
     >
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#2a3340" />
+      <Panel position="bottom-left" className="c4-legend">
+        <span>
+          <i className="lg-line" /> existing dependency
+        </span>
+        <span>
+          <i className="lg-line dashed" /> changed by this PR
+        </span>
+        <span>
+          <i className="lg-line thick" /> crosses a boundary
+        </span>
+      </Panel>
       <MiniMap
         pannable
         zoomable

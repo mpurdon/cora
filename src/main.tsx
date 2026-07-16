@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CalloutApp } from "./windows/CalloutApp";
 import { MainApp } from "./windows/MainApp";
+import { initTheme } from "./lib/theme";
+import { initZoom } from "./lib/zoom";
 import "./styles.css";
 
 function report(message: string) {
@@ -44,6 +46,8 @@ class ErrorBoundary extends React.Component<
 }
 
 const label = getCurrentWindow().label;
+initZoom(`cora.zoom.${label}`);
+initTheme();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

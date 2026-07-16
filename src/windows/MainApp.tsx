@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CodeFinding } from "../bindings/CodeFinding";
 import type { PrSource } from "../bindings/PrSource";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import type { AnalysisLevel } from "../bindings/AnalysisLevel";
 import type { C4Node } from "../bindings/C4Node";
 import type { C4NodeKind } from "../bindings/C4NodeKind";
-import { ActivityDrawer, formatTokens } from "../components/analysis/ActivityDrawer";
+import { AssistantPanel } from "../components/analysis/AssistantPanel";
+import { formatTokens } from "../components/analysis/TraceSteps";
 import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
-import { DiffPeek } from "../components/analysis/DiffPeek";
-import { DiffView } from "../components/analysis/DiffView";
+import { DiffPeek, resolveFindingFile } from "../components/analysis/DiffPeek";
+import { DiffView, fileDigest, parseDiffCached } from "../components/analysis/DiffView";
+import type { MarkViewedEvent } from "../bindings/MarkViewedEvent";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -21,10 +24,19 @@ import type { PrReviews } from "../bindings/PrReviews";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
+import {
+  IconChat,
+  IconClipboard,
+  IconEllipsis,
+  IconExternal,
+  IconRefresh,
+} from "../components/icons";
+import { PrFilesRail } from "../components/PrFilesRail";
 import { ipc, onFocusPr } from "../lib/ipc";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
+import { useDiffStore } from "../state/diffStore";
 import { ciTone, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
-import { SettingsView } from "./SettingsView";
+import { SettingsView, type SettingsPane } from "./SettingsView";
 
 /** Reason grouping: a PR appears once, under its most specific reason. */
 const REASONS: { key: PrSource; label: string }[] = [
@@ -64,9 +76,33 @@ function reasonOf(pr: TrackedPr): PrSource {
   return REASONS.find((g) => pr.sources.includes(g.key))?.key ?? "watched-repo";
 }
 
+/** You already reviewed (approved / requested changes) and nothing has
+ *  happened since — the ball is in someone else's court, hide by default. */
+function reviewedAndIdle(pr: TrackedPr): boolean {
+  if (pr.state !== "OPEN") return false;
+  if (pr.myReviewRerequested) return false;
+  if (!pr.myReviewState || !pr.myReviewedAt) return false;
+  if (pr.myReviewState !== "APPROVED" && pr.myReviewState !== "CHANGES_REQUESTED") return false;
+  // Gate on CORA's change detection (commits, comments, CI, review state),
+  // not GitHub's updatedAt — your own housekeeping (resolving threads,
+  // labels) bumps updatedAt but shouldn't resurface a reviewed PR. The
+  // review itself registers as a change — allow slack for that echo.
+  return Date.parse(pr.lastChangeAt) - Date.parse(pr.myReviewedAt) < 2 * 60_000;
+}
+
+/** Routine dependency/action/toolchain bumps — low-risk housekeeping that
+ *  shouldn't outrank real changes in the attention sort. */
+function isRoutineBump(pr: TrackedPr): boolean {
+  if (pr.author.endsWith("[bot]")) {
+    return /\b(bump|update|upgrade)\b/i.test(pr.title);
+  }
+  return /\b(bump|update|upgrade)s?\b.*\b(to|from)\s+v?\d+(\.\d+)*/i.test(pr.title);
+}
+
 /** Higher = needs the engineer sooner. */
 function attentionScore(pr: TrackedPr): number {
   let score = pr.unread.length * 10;
+  if (isRoutineBump(pr)) score -= 4;
   if (ciTone(pr) === "bad") score += 5;
   if (mergeTone(pr) === "bad") score += 3;
   if (reviewTone(pr) === "bad") score += 2;
@@ -90,6 +126,44 @@ function usePersisted<T extends string>(key: string, initial: T) {
     [key],
   );
   return [value, set] as const;
+}
+
+/** Pointer-driven panel width: clamped while dragging, persisted on release. */
+function useResizableWidth(
+  key: string,
+  min: number,
+  max: number,
+  fallback: number,
+  dir: 1 | -1, // +1: dragging right widens (left panel); -1: dragging left widens (right panel)
+) {
+  const clamp = (w: number) => Math.min(max, Math.max(min, w));
+  const [width, setWidth] = useState(() => clamp(Number(localStorage.getItem(key)) || fallback));
+  // Window-level listeners for the drag, and pure deltas in the pointer's own
+  // coordinate space. Under CSS zoom, clientX is in visual px while widths are
+  // layout px — measuring the resizer's own rect-vs-offset ratio gives the
+  // conversion no matter which convention the webview uses.
+  const start = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    const scale = el.offsetWidth > 0 ? el.getBoundingClientRect().width / el.offsetWidth : 1;
+    const startX = e.clientX;
+    const startW = width;
+    let latest: number | null = null;
+    const onMove = (ev: PointerEvent) => {
+      latest = clamp(startW + (dir * (ev.clientX - startX)) / scale);
+      setWidth(latest);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("col-resizing");
+      if (latest != null) localStorage.setItem(key, String(latest));
+    };
+    document.body.classList.add("col-resizing");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+  return { width, start };
 }
 
 function Legend() {
@@ -242,26 +316,44 @@ function ReviewActions({
     );
   }
 
+  // Approving over your own open questions is almost always a mistake —
+  // resolve (or escalate to request-changes) first.
+  const myOpen = reviews?.myOpenThreads ?? 0;
   return (
     <>
-      <button className="action-btn approve-btn" onClick={() => setMode("approve")}>
+      <button
+        className="action-btn approve-btn"
+        disabled={myOpen > 0}
+        title={
+          myOpen > 0
+            ? `You have ${myOpen} unresolved review thread${myOpen === 1 ? "" : "s"} — resolve ${myOpen === 1 ? "it" : "them"} before approving. (Comments starting with praise:, note:, or fyi:, or marked (non-blocking), don't count.)`
+            : undefined
+        }
+        onClick={() => setMode("approve")}
+      >
         ✓ Approve
       </button>
-      <button className="action-btn danger" onClick={() => setMode("request-changes")}>
+      <button className="action-btn quiet-danger" onClick={() => setMode("request-changes")}>
         ± Request changes
       </button>
     </>
   );
 }
 
-/** Merge / close / reopen with a two-step confirm — no accidental merges. */
-function PrControls({ pr }: { pr: TrackedPr }) {
+/** Merge / close / reopen with a two-step confirm — no accidental merges.
+ *  Close lives in the ⋯ overflow menu; a bump of `closeRequested` starts its
+ *  confirm step here so the busy/error handling stays in one place. */
+function PrControls({ pr, closeRequested }: { pr: TrackedPr; closeRequested: number }) {
   const [method, setMethod] = useState<"squash" | "merge" | "rebase">(
     () => (localStorage.getItem("cora.mergeMethod") as "squash" | "merge" | "rebase") ?? "squash",
   );
   const [confirming, setConfirming] = useState<"merge" | "close" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (closeRequested > 0 && pr.state === "OPEN") setConfirming("close");
+  }, [closeRequested, pr.state]);
 
   const act = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -315,30 +407,25 @@ function PrControls({ pr }: { pr: TrackedPr }) {
           </button>
         </>
       ) : (
-        <>
-          <span className="merge-group">
-            <button className="action-btn merge-btn" onClick={() => setConfirming("merge")}>
-              Merge
-            </button>
-            <select
-              className="merge-method"
-              value={method}
-              title="Merge method"
-              onChange={(e) => {
-                const m = e.target.value as typeof method;
-                setMethod(m);
-                localStorage.setItem("cora.mergeMethod", m);
-              }}
-            >
-              <option value="squash">squash</option>
-              <option value="merge">merge</option>
-              <option value="rebase">rebase</option>
-            </select>
-          </span>
-          <button className="action-btn danger" onClick={() => setConfirming("close")}>
-            Close
+        <span className="merge-group">
+          <button className="action-btn merge-btn" onClick={() => setConfirming("merge")}>
+            Merge
           </button>
-        </>
+          <select
+            className="merge-method"
+            value={method}
+            title="Merge method"
+            onChange={(e) => {
+              const m = e.target.value as typeof method;
+              setMethod(m);
+              localStorage.setItem("cora.mergeMethod", m);
+            }}
+          >
+            <option value="squash">squash</option>
+            <option value="merge">merge</option>
+            <option value="rebase">rebase</option>
+          </select>
+        </span>
       )}
       {error && <span className="settings-error">{error}</span>}
     </>
@@ -350,7 +437,7 @@ function RefreshPrButton({ prId }: { prId: string }) {
   const [busy, setBusy] = useState(false);
   return (
     <button
-      className="icon-btn refresh-btn"
+      className="icon-btn"
       title="Refresh this PR from GitHub"
       disabled={busy}
       onClick={() => {
@@ -358,7 +445,9 @@ function RefreshPrButton({ prId }: { prId: string }) {
         void ipc.refreshPr(prId).finally(() => setBusy(false));
       }}
     >
-      <span className={busy ? "glyph-spin" : undefined}>⟳</span>
+      <span className={busy ? "glyph-spin" : undefined}>
+        <IconRefresh />
+      </span>
     </button>
   );
 }
@@ -437,7 +526,6 @@ function AnalysisPanel({
 }) {
   const { runs, init, ensure, start } = useAnalysisStore();
   const [stack, setStack] = useState<DrillFrame[]>([ROOT_FRAME]);
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => setStack([ROOT_FRAME]), [pr.id]);
 
@@ -496,22 +584,38 @@ function AnalysisPanel({
     </nav>
   );
 
-  const liveSteps = (run?.progress ?? []).map((p) => ({
-    at: p.at,
-    kind: "status",
-    message: p.message,
-  }));
-  const drawer = (
-    <ActivityDrawer
-      open={drawerOpen}
-      onClose={() => setDrawerOpen(false)}
-      steps={run?.status === "done" ? (run.result?.trace ?? []) : liveSteps}
-      usage={run?.status === "done" ? run.result?.usage : undefined}
-      live={run?.status === "running"}
-    />
-  );
-
   const retry = () => void start(pr.id, frame.level, frame.focus);
+
+  // "± comment" on a finding: anchor a pre-filled composer in the diff.
+  // A PR-level conversation comment is the last resort, only when nothing
+  // in the finding resolves to a changed file.
+  const commentFinding = async (seed: string, nodeIds: string[]) => {
+    const store = useDiffStore.getState();
+    // The Assessment tab can be open before the diff was ever fetched —
+    // resolve against the real file list, not an empty one.
+    await store.ensure(pr.id, pr.headSha).catch(() => {});
+    const entry = useDiffStore.getState().entries[pr.id];
+    const files = entry?.raw ? parseDiffCached(entry.raw) : [];
+    const nodes = (run?.result?.graph.nodes ?? []).filter((n) => nodeIds.includes(n.id));
+    const path = resolveFindingFile(seed, nodes, files);
+    const { requestCompose } = useDiffStore.getState();
+    if (path) {
+      requestCompose({ target: "diff", path, seed });
+      window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "diff" }));
+    } else {
+      requestCompose({ target: "conversation", path: null, seed });
+      window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "comments" }));
+    }
+  };
+
+  // Code findings carry their own path + line — no resolution needed.
+  const commentCode = (f: CodeFinding) => {
+    const seed = `**${f.kind} · ${f.severity}**: ${f.finding}\n\n→ ${f.suggestion}`;
+    useDiffStore
+      .getState()
+      .requestCompose({ target: "diff", path: f.path, line: f.line, seed });
+    window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "diff" }));
+  };
 
   if (!run || run.status === "idle") {
     return (
@@ -534,9 +638,6 @@ function AnalysisPanel({
         <div className="panel-meta">
           {crumbs}
           <span className="spacer" />
-          <button className="action-btn" onClick={() => setDrawerOpen(true)}>
-            Activity ›
-          </button>
         </div>
         <div className="placeholder analysis-running">
           <span className="sync-dot live" />
@@ -548,7 +649,6 @@ function AnalysisPanel({
             ))}
           </div>
         </div>
-        {drawer}
       </>
     );
   }
@@ -632,16 +732,18 @@ function AnalysisPanel({
           )}
         </span>
         <span className="spacer" />
-        <RefreshPrButton prId={pr.id} />
-        <button className="icon-btn play-btn" title="Re-run the analysis" onClick={retry}>
-          ▶
-        </button>
-        <button className="action-btn" onClick={() => setDrawerOpen(true)}>
-          Activity ›
+        <button className="action-btn" title="Run the analysis again from scratch" onClick={retry}>
+          Re-analyze
         </button>
       </div>
       {tab === "assessment" ? (
-        <AssessmentView assessment={result.assessment} onFocusNodes={onFocusNodes} />
+        <AssessmentView
+          assessment={result.assessment}
+          codeFindings={result.codeFindings}
+          onFocusNodes={onFocusNodes}
+          onCommentFinding={commentFinding}
+          onCommentCode={commentCode}
+        />
       ) : (
         <>
           {frame.level !== "code" && (
@@ -693,34 +795,55 @@ function AnalysisPanel({
           )}
         </>
       )}
-      {drawer}
     </>
   );
 }
 
 function Detail({
   pr,
+  tab,
+  onTab: setTab,
   pendingComment,
   onPendingCommentHandled,
+  assistantOpen,
+  onToggleAssistant,
 }: {
   pr: TrackedPr;
+  tab: Tab;
+  onTab: (t: Tab) => void;
   pendingComment: string | null;
   onPendingCommentHandled: () => void;
+  assistantOpen: boolean;
+  onToggleAssistant: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>("assessment");
   const [highlight, setHighlight] = useState<string[]>([]);
   const [reviewBump, setReviewBump] = useState(0);
   const [reviews, setReviews] = useState<PrReviews | null>(null);
+  // ⋯ overflow menu (housekeeping actions) + its Close-PR confirm trigger.
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const [closeRequested, setCloseRequested] = useState(0);
   const { type, clean } = parseTitle(pr.title);
 
   useEffect(() => {
     setReviews(null);
     void ipc.getPrReviews(pr.id).then(setReviews).catch(() => setReviews(null));
   }, [pr.id, pr.headSha, reviewBump]);
+  // Anything that moves thread/review state (resolving a thread, posting a
+  // diff comment, a refresh) re-checks the approve gate.
+  useEffect(() => {
+    const un = listen("reviews:changed", () => setReviewBump((n) => n + 1));
+    return () => void un.then((fn) => fn());
+  }, []);
   const focusNodes = (ids: string[]) => {
     setHighlight(ids);
     if (ids.length > 0) setTab("c4");
   };
+
+  // A newly opened PR always starts at the Assessment.
+  useEffect(() => {
+    setTab("assessment");
+    setHighlight([]);
+  }, [pr.id]);
 
   // Reply-notification deep link: jump to the Comments tab, then the
   // CommentsView scrolls to the anchored comment.
@@ -745,6 +868,7 @@ function Detail({
     window.addEventListener("cora:set-tab", onTabHotkey);
     return () => window.removeEventListener("cora:set-tab", onTabHotkey);
   }, []);
+
   return (
     <div className="detail">
       <div className="crumbs">
@@ -773,19 +897,63 @@ function Detail({
         ))}
       </div>
       <div className="actions">
-        <a className="action-btn" href={pr.url} target="_blank" rel="noreferrer">
-          Open on GitHub ↗
-        </a>
-        <button className="action-btn" onClick={() => void ipc.setPrMuted(pr.id, !pr.muted)}>
-          {pr.muted ? "Unmute" : "Mute"}
-        </button>
-        <button className="action-btn" onClick={() => void ipc.untrackPr(pr.id)}>
-          Untrack
-        </button>
-        <span className="spacer" />
         <ReviewActions pr={pr} reviews={reviews} onDone={() => setReviewBump((n) => n + 1)} />
-        <PrControls pr={pr} />
+        <PrControls pr={pr} closeRequested={closeRequested} />
+        <span className="spacer" />
+        <RefreshPrButton prId={pr.id} />
+        <button className="icon-btn" title="Open on GitHub" onClick={() => void openUrl(pr.url)}>
+          <IconExternal />
+        </button>
+        <button
+          className="icon-btn"
+          title="More actions"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenuAt({ x: r.right, y: r.bottom + 4 });
+          }}
+        >
+          <IconEllipsis />
+        </button>
+        <button
+          className={`icon-btn${assistantOpen ? " active" : ""}`}
+          title="Assistant — chat about this PR (a)"
+          onClick={onToggleAssistant}
+        >
+          <IconChat />
+        </button>
       </div>
+      {menuAt && (
+        <ContextMenu
+          x={menuAt.x}
+          y={menuAt.y}
+          onClose={() => setMenuAt(null)}
+          sections={[
+            {
+              items: [
+                {
+                  label: pr.muted ? "Unmute" : "Mute",
+                  onClick: () => void ipc.setPrMuted(pr.id, !pr.muted),
+                },
+                { label: "Mark read", onClick: () => void ipc.markPrRead(pr.id) },
+                {
+                  label: "Untrack",
+                  danger: true,
+                  onClick: () => void ipc.untrackPr(pr.id),
+                },
+                ...(pr.state === "OPEN"
+                  ? [
+                      {
+                        label: "Close pull request…",
+                        danger: true,
+                        onClick: () => setCloseRequested((n) => n + 1),
+                      },
+                    ]
+                  : []),
+              ],
+            },
+          ]}
+        />
+      )}
       <ReviewStrip reviews={reviews} />
 
       <div className="tabs" role="tablist">
@@ -821,8 +989,35 @@ function Detail({
 export function MainApp() {
   const { prs, pollStatus, init } = usePrStore();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // IDE-style master/detail rail: the PR list is the "project list"; picking
+  // a PR focuses the rail on that PR's changed files until you go back.
+  const [railView, setRailView] = useState<"list" | "files">("list");
+  const [assistantOpenRaw, setAssistantOpenRaw] = usePersisted<"0" | "1">(
+    "cora.assistantOpen",
+    "0",
+  );
+  const assistantOpen = assistantOpenRaw === "1";
+  const setAssistant = (open: boolean) => setAssistantOpenRaw(open ? "1" : "0");
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsPane, setSettingsPane] = useState<SettingsPane>("general");
   const [showTrackInput, setShowTrackInput] = useState(false);
+  // Lifted from Detail so the assistant panel knows when the Diff tab is
+  // active (its File-insights view only makes sense against the diff).
+  const [tab, setTab] = useState<Tab>("assessment");
+
+  const openSettings = (pane: SettingsPane = "general") => {
+    setSettingsPane(pane);
+    setShowSettings(true);
+  };
+
+  // Drives the empty-state copy: "select a PR" vs "connect GitHub".
+  const [patPresent, setPatPresent] = useState<boolean | null>(null);
+  useEffect(() => {
+    void ipc
+      .githubPatPresent()
+      .then(setPatPresent)
+      .catch(() => setPatPresent(null));
+  }, [showSettings]);
 
   const [groupMode, setGroupMode] = usePersisted<GroupMode>("cora.groupMode", "org");
   const [sortMode, setSortMode] = usePersisted<SortMode>("cora.sortMode", "attention");
@@ -848,6 +1043,16 @@ export function MainApp() {
   const toggleMuted = () => {
     setShowMuted((s) => {
       localStorage.setItem("cora.showMuted", s ? "0" : "1");
+      return !s;
+    });
+  };
+
+  const [showReviewed, setShowReviewed] = useState(
+    () => localStorage.getItem("cora.showReviewed") === "1",
+  );
+  const toggleReviewed = () => {
+    setShowReviewed((s) => {
+      localStorage.setItem("cora.showReviewed", s ? "0" : "1");
       return !s;
     });
   };
@@ -882,10 +1087,8 @@ export function MainApp() {
     () => new Set(JSON.parse(localStorage.getItem("cora.collapsed") ?? "[]") as string[]),
   );
 
-  const [railWidth, setRailWidth] = useState(() =>
-    Math.min(520, Math.max(220, Number(localStorage.getItem("cora.railWidth")) || 300)),
-  );
-  const dragging = useRef(false);
+  const rail = useResizableWidth("cora.railWidth", 220, 520, 300, 1);
+  const assistant = useResizableWidth("cora.assistantWidth", 300, 900, 400, -1);
   const filterRef = useRef<HTMLInputElement>(null);
   const [menu, setMenu] = useState<
     | { x: number; y: number; kind: "pr"; pr: TrackedPr }
@@ -912,6 +1115,7 @@ export function MainApp() {
     const unlisten = onFocusPr((id) => {
       setShowSettings(false);
       setSelectedId(id);
+      setRailView("files");
       void ipc.markPrReadKinds(id, openKinds);
     });
     // Future reply notifications deep-link straight to a comment.
@@ -920,6 +1124,7 @@ export function MainApp() {
       (e) => {
         setShowSettings(false);
         setSelectedId(e.payload.prId);
+        setRailView("files");
         setPendingComment(e.payload.commentId);
         void ipc.markPrReadKinds(e.payload.prId, openKinds);
       },
@@ -929,6 +1134,24 @@ export function MainApp() {
       setShowSettings(false);
       setBucketFilter(e.payload);
     });
+    // Assistant marks files viewed: the frontend owns diff parsing and
+    // digests, so apply through the same path as the manual checkbox.
+    const unlistenViewed = listen<MarkViewedEvent>("viewed:mark", async (e) => {
+      const { prId, paths, all, viewed } = e.payload;
+      const pr = usePrStore.getState().prs.find((p) => p.id === prId);
+      if (!pr) return;
+      const diff = useDiffStore.getState();
+      await diff.ensure(prId, pr.headSha).catch(() => {});
+      const entry = useDiffStore.getState().entries[prId];
+      if (!entry?.raw) return;
+      const files = parseDiffCached(entry.raw);
+      const wanted = new Set(paths);
+      for (const f of files) {
+        if (all || wanted.has(f.path)) {
+          useDiffStore.getState().setViewed(prId, f.path, fileDigest(f), viewed);
+        }
+      }
+    });
     // Notification deep-link: macOS gives no click callback, so the first
     // focus after a notification claims the pending target (2 min window).
     const claimPending = () =>
@@ -936,6 +1159,7 @@ export function MainApp() {
         if (!target) return;
         setShowSettings(false);
         setSelectedId(target.prId);
+        setRailView("files");
         if (target.commentId) setPendingComment(target.commentId);
         void ipc.markPrReadKinds(target.prId, openKinds);
       });
@@ -946,6 +1170,7 @@ export function MainApp() {
       void unlisten.then((fn) => fn());
       void unlistenComment.then((fn) => fn());
       void unlistenBucket.then((fn) => fn());
+      void unlistenViewed.then((fn) => fn());
       void unlistenFocus.then((fn) => fn());
     };
   }, [init]);
@@ -960,20 +1185,6 @@ export function MainApp() {
     });
   };
 
-  const startResize = (e: React.PointerEvent) => {
-    dragging.current = true;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  };
-  const onResize = (e: React.PointerEvent) => {
-    if (!dragging.current) return;
-    const w = Math.min(520, Math.max(220, e.clientX));
-    setRailWidth(w);
-  };
-  const endResize = () => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    localStorage.setItem("cora.railWidth", String(railWidth));
-  };
 
   const { grouped, hiddenByReady } = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -986,7 +1197,10 @@ export function MainApp() {
         String(pr.number).includes(q),
     );
     const unignored = textMatched.filter(
-      (pr) => prioOf(pr.repo) !== "ignored" && (showMuted || !pr.muted),
+      (pr) =>
+        prioOf(pr.repo) !== "ignored" &&
+        (showMuted || !pr.muted) &&
+        (showReviewed || !reviewedAndIdle(pr)),
     );
     const bucketMatched = bucketFilter
       ? unignored.filter((pr) => inBucket(pr, bucketFilter))
@@ -1034,7 +1248,7 @@ export function MainApp() {
       entries.sort((a, b) => groupWeight(a) - groupWeight(b) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
-  }, [prs, filter, sortMode, groupMode, ready, prioOf, bucketFilter, showMuted]);
+  }, [prs, filter, sortMode, groupMode, ready, prioOf, bucketFilter, showMuted, showReviewed]);
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
@@ -1044,6 +1258,7 @@ export function MainApp() {
   const select = (id: string) => {
     setShowSettings(false);
     setSelectedId(id);
+    setRailView("files");
     void ipc.markPrReadKinds(id, [
       "new",
       "title-changed",
@@ -1055,6 +1270,15 @@ export function MainApp() {
       "review-changed",
     ]);
   };
+
+  // A file click in the focused rail lands on that file in the Diff tab.
+  const openFile = (path: string) => {
+    const store = useDiffStore.getState();
+    store.requestFocusFile(path);
+    store.setVisiblePath(path); // highlight immediately; scroll spy takes over
+    window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "diff" }));
+  };
+
 
   // Visible PRs in display order, for j/k navigation.
   const flatVisible = useMemo(
@@ -1091,6 +1315,11 @@ export function MainApp() {
         e.preventDefault();
         return;
       }
+      if (e.key === "a" && selected) {
+        setAssistant(!assistantOpen);
+        e.preventDefault();
+        return;
+      }
       if (e.key === "j" || e.key === "k") {
         if (flatVisible.length === 0) return;
         const idx = flatVisible.findIndex((p) => p.id === selectedId);
@@ -1114,181 +1343,194 @@ export function MainApp() {
   }, [flatVisible, selectedId, selected]);
 
   return (
-    <div className="main-shell" onPointerMove={onResize} onPointerUp={endResize}>
-      <nav className="rail" style={{ width: railWidth }}>
-        <div className="rail-header">
-          <span className="name">CORA</span>
-          <span className="eyebrow">{prs.length} tracked</span>
-          <span className="spacer" />
-          <button
-            className="icon-btn"
-            title="Track a PR by URL"
-            onClick={() => setShowTrackInput((s) => !s)}
-          >
-            +
-          </button>
-        </div>
-        {showTrackInput && <TrackPrInput onDone={() => setShowTrackInput(false)} />}
-
-        <div className="rail-controls">
-          <input
-            ref={filterRef}
-            className="filter-input"
-            placeholder="Filter…  ( / )"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          />
-          <select
-            title="Group by"
-            value={groupMode}
-            onChange={(e) => setGroupMode(e.target.value as GroupMode)}
-          >
-            <option value="org">by org</option>
-            <option value="repo">by repo</option>
-            <option value="type">by type</option>
-            <option value="reason">by reason</option>
-          </select>
-          <select
-            title="Sort by"
-            value={sortMode}
-            onChange={(e) => setSortMode(e.target.value as SortMode)}
-          >
-            <option value="attention">attention</option>
-            <option value="activity">activity</option>
-            <option value="repo">repo</option>
-          </select>
-        </div>
-
-        <div className="filter-chips">
-          <button
-            className={`chip${ready.ciPass ? " on" : ""}`}
-            title="Show only PRs whose CI checks pass (or that have no checks)"
-            onClick={() => toggleReady("ciPass")}
-          >
-            <span className="lamp ok" /> ci passing
-          </button>
-          <button
-            className={`chip${ready.reviewNeeded ? " on" : ""}`}
-            title="Show only PRs still awaiting a review decision"
-            onClick={() => toggleReady("reviewNeeded")}
-          >
-            <span className="lamp warn" /> needs review
-          </button>
-          <button
-            className={`chip${ready.noConflicts ? " on" : ""}`}
-            title="Hide PRs with merge conflicts"
-            onClick={() => toggleReady("noConflicts")}
-          >
-            <span className="lamp bad" /> no conflicts
-          </button>
-          <button
-            className={`chip${showMuted ? " on" : ""}`}
-            title="Muted PRs are hidden by default — toggle to see them (dimmed)"
-            onClick={toggleMuted}
-          >
-            <span className="lamp" /> muted
-          </button>
-          {hiddenByReady > 0 && <span className="hidden-note">−{hiddenByReady}</span>}
-        </div>
-
-        {bucketFilter && (
-          <div className="bucket-filter-chip">
-            <span className="eyebrow">{ACTION_META[bucketFilter].label}</span>
-            <button className="icon-btn" title="Clear filter" onClick={() => setBucketFilter(null)}>
-              ✕
-            </button>
-          </div>
-        )}
-
-        <Legend />
-
-        <div className="rail-list">
-          {grouped.length === 0 && (
-            <div className="rail-group">
-              <span className="eyebrow">{filter ? "No matches" : "Nothing tracked yet"}</span>
+    <div className="main-shell">
+      <nav className="rail" style={{ width: rail.width }}>
+        {selected && railView === "files" ? (
+          <PrFilesRail pr={selected} onBack={() => setRailView("list")} onOpenFile={openFile} />
+        ) : (
+          <>
+            <div className="rail-header">
+              <span className="name">CORA</span>
+              <span className="eyebrow">{prs.length} tracked</span>
+              <span className="spacer" />
+              <button
+                className="icon-btn"
+                title="Track a PR by URL"
+                onClick={() => setShowTrackInput((s) => !s)}
+              >
+                +
+              </button>
             </div>
-          )}
-          {grouped.map((group) => {
-            const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
-            const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
-            const repoPrio = groupMode === "repo" ? prioOf(group.key) : null;
-            return (
-              <div key={group.key} className="rail-group">
-                <button
-                  className="group-header"
-                  onClick={() => toggleGroup(`${groupMode}:${group.key}`)}
-                  onContextMenu={(e) => {
-                    // Repo groups get the repo-priority menu; a group's PRs all
-                    // share one repo in by-repo mode.
-                    if (groupMode !== "repo") return;
-                    e.preventDefault();
-                    setMenu({ x: e.clientX, y: e.clientY, kind: "repo", repo: group.key });
-                  }}
-                  aria-expanded={!isCollapsed}
-                >
-                  <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
-                  <span className="eyebrow">{group.label}</span>
-                  <span className="group-count">{group.prs.length}</span>
-                  {repoPrio && repoPrio !== "normal" && (
-                    <span className={`prio-tag ${repoPrio}`}>{repoPrio}</span>
-                  )}
-                  <span className="spacer" />
-                  {groupMode === "repo" && (
-                    <span
-                      className="flag-btn"
-                      role="button"
-                      title={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const next =
-                          PRIORITY_CYCLE[
-                            (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
-                              PRIORITY_CYCLE.length
-                          ];
-                        void setRepoPriority(group.key, next);
-                      }}
-                    >
-                      ⚑
-                    </span>
-                  )}
-                  {unreadSum > 0 && (
-                    <span
-                      className="unread-count"
-                      title={`${unreadSum} unacknowledged update${unreadSum > 1 ? "s" : ""} in this group`}
-                    >
-                      {unreadSum}
-                    </span>
-                  )}
+            {showTrackInput && <TrackPrInput onDone={() => setShowTrackInput(false)} />}
+
+            <div className="rail-controls">
+              <input
+                ref={filterRef}
+                className="filter-input"
+                placeholder="Filter…  ( / )"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+              <select
+                title="Group by"
+                value={groupMode}
+                onChange={(e) => setGroupMode(e.target.value as GroupMode)}
+              >
+                <option value="org">by org</option>
+                <option value="repo">by repo</option>
+                <option value="type">by type</option>
+                <option value="reason">by reason</option>
+              </select>
+              <select
+                title="Sort by"
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as SortMode)}
+              >
+                <option value="attention">attention</option>
+                <option value="activity">activity</option>
+                <option value="repo">repo</option>
+              </select>
+            </div>
+
+            <div className="filter-chips">
+              <button
+                className={`chip${ready.ciPass ? " on" : ""}`}
+                title="Show only PRs whose CI checks pass (or that have no checks)"
+                onClick={() => toggleReady("ciPass")}
+              >
+                <span className="lamp ok" /> ci passing
+              </button>
+              <button
+                className={`chip${ready.reviewNeeded ? " on" : ""}`}
+                title="Show only PRs still awaiting a review decision"
+                onClick={() => toggleReady("reviewNeeded")}
+              >
+                <span className="lamp warn" /> needs review
+              </button>
+              <button
+                className={`chip${ready.noConflicts ? " on" : ""}`}
+                title="Hide PRs with merge conflicts"
+                onClick={() => toggleReady("noConflicts")}
+              >
+                <span className="lamp bad" /> no conflicts
+              </button>
+              <button
+                className={`chip${showMuted ? " on" : ""}`}
+                title="Muted PRs are hidden by default — toggle to see them (dimmed)"
+                onClick={toggleMuted}
+              >
+                <span className="lamp" /> muted
+              </button>
+              <button
+                className={`chip${showReviewed ? " on" : ""}`}
+                title="PRs you've approved or requested changes on, with nothing new since, are hidden — toggle to see them (dimmed). They return on new commits, comments, or a re-requested review."
+                onClick={toggleReviewed}
+              >
+                <span className="lamp ok" /> reviewed
+              </button>
+              {hiddenByReady > 0 && <span className="hidden-note">−{hiddenByReady}</span>}
+            </div>
+
+            {bucketFilter && (
+              <div className="bucket-filter-chip">
+                <span className="eyebrow">{ACTION_META[bucketFilter].label}</span>
+                <button className="icon-btn" title="Clear filter" onClick={() => setBucketFilter(null)}>
+                  ✕
                 </button>
-                {!isCollapsed &&
-                  group.prs.map((pr) => (
-                    <button
-                      key={pr.id}
-                      className={`rail-row${pr.id === selectedId ? " selected" : ""}${pr.muted ? " muted-pr" : ""}`}
-                      onClick={() => select(pr.id)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setMenu({ x: e.clientX, y: e.clientY, kind: "pr", pr });
-                      }}
-                      title={`${pr.repo}#${pr.number} — ${pr.title}`}
-                    >
-                      <UnreadMarker pr={pr} />
-                      <StatusStrip pr={pr} />
-                      <span className="body">
-                        <span className="repo">
-                          {groupMode === "repo" ? `#${pr.number}` : `${shortRepo(pr.repo)}#${pr.number}`}
-                          {groupMode === "reason" && (
-                            <span className="repo-org"> · {orgOf(pr.repo)}</span>
-                          )}
-                        </span>
-                        <span className="pr-title">{parseTitle(pr.title).clean}</span>
-                      </span>
-                    </button>
-                  ))}
               </div>
-            );
-          })}
-        </div>
+            )}
+
+            <Legend />
+
+            <div className="rail-list">
+              {grouped.length === 0 && (
+                <div className="rail-group">
+                  <span className="eyebrow">{filter ? "No matches" : "Nothing tracked yet"}</span>
+                </div>
+              )}
+              {grouped.map((group) => {
+                const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
+                const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
+                const repoPrio = groupMode === "repo" ? prioOf(group.key) : null;
+                return (
+                  <div key={group.key} className="rail-group">
+                    <button
+                      className="group-header"
+                      onClick={() => toggleGroup(`${groupMode}:${group.key}`)}
+                      onContextMenu={(e) => {
+                        // Repo groups get the repo-priority menu; a group's PRs all
+                        // share one repo in by-repo mode.
+                        if (groupMode !== "repo") return;
+                        e.preventDefault();
+                        setMenu({ x: e.clientX, y: e.clientY, kind: "repo", repo: group.key });
+                      }}
+                      aria-expanded={!isCollapsed}
+                    >
+                      <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
+                      <span className="eyebrow">{group.label}</span>
+                      <span className="group-count">{group.prs.length}</span>
+                      {repoPrio && repoPrio !== "normal" && (
+                        <span className={`prio-tag ${repoPrio}`}>{repoPrio}</span>
+                      )}
+                      <span className="spacer" />
+                      {groupMode === "repo" && (
+                        <span
+                          className="flag-btn"
+                          role="button"
+                          title={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const next =
+                              PRIORITY_CYCLE[
+                                (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
+                                  PRIORITY_CYCLE.length
+                              ];
+                            void setRepoPriority(group.key, next);
+                          }}
+                        >
+                          ⚑
+                        </span>
+                      )}
+                      {unreadSum > 0 && (
+                        <span
+                          className="unread-count"
+                          title={`${unreadSum} unacknowledged update${unreadSum > 1 ? "s" : ""} in this group`}
+                        >
+                          {unreadSum}
+                        </span>
+                      )}
+                    </button>
+                    {!isCollapsed &&
+                      group.prs.map((pr) => (
+                        <button
+                          key={pr.id}
+                          className={`rail-row${pr.id === selectedId ? " selected" : ""}${pr.muted ? " muted-pr" : ""}${reviewedAndIdle(pr) ? " reviewed-idle" : ""}`}
+                          onClick={() => select(pr.id)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setMenu({ x: e.clientX, y: e.clientY, kind: "pr", pr });
+                          }}
+                          title={`${pr.repo}#${pr.number} — ${pr.title}`}
+                        >
+                          <UnreadMarker pr={pr} />
+                          <StatusStrip pr={pr} />
+                          <span className="body">
+                            <span className="repo">
+                              {groupMode === "repo" ? `#${pr.number}` : `${shortRepo(pr.repo)}#${pr.number}`}
+                              {groupMode === "reason" && (
+                                <span className="repo-org"> · {orgOf(pr.repo)}</span>
+                              )}
+                            </span>
+                            <span className="pr-title">{parseTitle(pr.title).clean}</span>
+                          </span>
+                        </button>
+                      ))}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
         <div className="rail-footer">
           <span
             className={`sync-dot ${pollStatus == null ? "" : pollStatus.ok ? "live" : "err"}`}
@@ -1296,16 +1538,27 @@ export function MainApp() {
           <span className="status-text">
             {pollStatus == null
               ? "starting…"
-              : pollStatus.ok
-                ? `synced ${timeAgo(pollStatus.at)} ago`
-                : (pollStatus.message ?? "sync failed")}
+              : pollStatus.syncing
+                ? "refreshing…"
+                : pollStatus.ok
+                  ? `synced ${timeAgo(pollStatus.at)} ago`
+                  : (pollStatus.message ?? "sync failed")}
           </span>
+          <button
+            className="icon-btn"
+            title="Refresh from GitHub now"
+            onClick={() => void ipc.pollNow()}
+          >
+            <span className={pollStatus?.syncing ? "glyph-spin" : undefined}>
+              <IconRefresh />
+            </span>
+          </button>
           <button
             className="icon-btn"
             title="History — your actions, undoable"
             onClick={() => setShowHistory(true)}
           >
-            ↺
+            <IconClipboard />
           </button>
           <button
             className="icon-btn"
@@ -1314,7 +1567,11 @@ export function MainApp() {
           >
             ▣
           </button>
-          <button className="icon-btn" title="Settings" onClick={() => setShowSettings((s) => !s)}>
+          <button
+            className="icon-btn"
+            title="Settings"
+            onClick={() => (showSettings ? setShowSettings(false) : openSettings())}
+          >
             ⚙
           </button>
         </div>
@@ -1323,24 +1580,52 @@ export function MainApp() {
         className="rail-resizer"
         role="separator"
         aria-orientation="vertical"
-        onPointerDown={startResize}
+        onPointerDown={rail.start}
       />
 
       <main className="content">
         {showSettings ? (
-          <SettingsView onClose={() => setShowSettings(false)} />
+          <SettingsView onClose={() => setShowSettings(false)} initialPane={settingsPane} />
         ) : selected ? (
           <Detail
             pr={selected}
+            tab={tab}
+            onTab={setTab}
             pendingComment={pendingComment}
             onPendingCommentHandled={() => setPendingComment(null)}
+            assistantOpen={assistantOpen}
+            onToggleAssistant={() => setAssistant(!assistantOpen)}
           />
         ) : prs.length === 0 && pollStatus?.ok === false ? (
-          <Onboarding onOpenSettings={() => setShowSettings(true)} />
+          <Onboarding onOpenSettings={() => openSettings("github")} />
+        ) : patPresent === false ? (
+          <div className="empty-detail">
+            <p>Connect GitHub to start tracking pull requests.</p>
+            <button className="action-btn auth-primary" onClick={() => openSettings("github")}>
+              Open GitHub settings
+            </button>
+          </div>
         ) : (
-          <div className="empty-detail">Select a pull request — or ⚙ to connect GitHub.</div>
+          <div className="empty-detail">Select a pull request.</div>
         )}
       </main>
+
+      {selected && !showSettings && assistantOpen && (
+        <>
+          <div
+            className="assistant-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            onPointerDown={assistant.start}
+          />
+          <AssistantPanel
+            pr={selected}
+            width={assistant.width}
+            insightsEnabled={tab === "diff"}
+            onClose={() => setAssistant(false)}
+          />
+        </>
+      )}
 
       {menu && (
         <ContextMenu
@@ -1464,6 +1749,8 @@ function HotkeysHelp({ onClose }: { onClose: () => void }) {
   const KEYS: [string, string][] = [
     ["j / k", "next / previous pull request"],
     ["1 – 4", "Assessment · Architecture · Diff · Comments"],
+    ["a", "toggle the assistant panel"],
+    ["⌘ +  /  −  /  0", "zoom in / out / reset"],
     ["/", "focus the filter"],
     ["esc", "close menus, drawers, this help"],
     ["?", "toggle this help"],
