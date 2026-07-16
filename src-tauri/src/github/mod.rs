@@ -28,6 +28,18 @@ pub fn parse_pr(v: &Value) -> Option<PrInfo> {
             .get("reviewDecision")
             .and_then(Value::as_str)
             .map(String::from),
+        my_review_state: v
+            .pointer("/viewerLatestReview/state")
+            .and_then(Value::as_str)
+            .map(String::from),
+        my_reviewed_at: v
+            .pointer("/viewerLatestReview/submittedAt")
+            .and_then(Value::as_str)
+            .map(String::from),
+        my_review_rerequested: v
+            .pointer("/viewerLatestReviewRequest/id")
+            .and_then(Value::as_str)
+            .is_some(),
         ci_status: last_commit
             .and_then(|c| c.pointer("/statusCheckRollup/state"))
             .and_then(Value::as_str)

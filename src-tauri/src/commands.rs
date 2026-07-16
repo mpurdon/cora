@@ -103,7 +103,7 @@ pub fn mark_pr_read_kinds(
     Ok(())
 }
 
-fn pr_label(store: &Store, id: &str) -> String {
+pub(crate) fn pr_label(store: &Store, id: &str) -> String {
     store
         .get_pr(id)
         .ok()
@@ -177,6 +177,40 @@ pub fn set_repo_priority(
 #[tauri::command]
 pub fn get_audit_log(store: State<'_, Arc<Store>>) -> AppResult<Vec<crate::models::AuditEntry>> {
     store.list_audit(200)
+}
+
+// -- activity feed (callout) ----------------------------------------------
+
+#[tauri::command]
+pub fn get_activity(
+    store: State<'_, Arc<Store>>,
+) -> AppResult<Vec<crate::models::ActivityItem>> {
+    store.list_activity(300)
+}
+
+/// Empty `ids` marks the whole feed.
+#[tauri::command]
+pub fn mark_activity_read(
+    app: AppHandle,
+    store: State<'_, Arc<Store>>,
+    ids: Vec<i64>,
+    read: bool,
+) -> AppResult<()> {
+    store.mark_activity_read(&ids, read)?;
+    let _ = app.emit(crate::models::events::ACTIVITY_CHANGED, ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_activity_flag(
+    app: AppHandle,
+    store: State<'_, Arc<Store>>,
+    id: i64,
+    flag: String,
+) -> AppResult<()> {
+    store.set_activity_flag(id, &flag)?;
+    let _ = app.emit(crate::models::events::ACTIVITY_CHANGED, ());
+    Ok(())
 }
 
 /// Reverse a recorded action by restoring its old value.
@@ -437,9 +471,29 @@ async fn execute_analysis(
         None
     };
 
-    let result =
+    let mut result =
         crate::analysis::engine::run(app, &settings, &token, &pr, level, focus, parent_context)
             .await?;
+
+    // Second stage: line-anchored defect/reuse findings over the review
+    // plan's significant files. Best-effort — its failure never sinks the
+    // architecture result.
+    if level == AnalysisLevel::Context && settings.code_findings_pass {
+        match crate::analysis::engine::code_findings(
+            app,
+            &settings,
+            &token,
+            &pr,
+            &result.assessment.review_plan,
+        )
+        .await
+        {
+            Ok(findings) => result.code_findings = findings,
+            Err(e) => {
+                crate::devlog::warn(app, "code-pass", format!("code findings pass failed: {e}"))
+            }
+        }
+    }
 
     store.put_analysis(
         &result.pr_id,
@@ -488,8 +542,13 @@ async fn refresh_pr_inner(app: &AppHandle, pr_id: &str) -> AppResult<TrackedPr> 
     let settings = store.settings()?;
     let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
 
+    // A single node is cheap enough to carry the viewer-scoped review fields
+    // inline (the batched poll fetches them separately — see fetch_viewer_reviews).
     let doc = format!(
-        "query($id: ID!) {{ node(id: $id) {{ ... on PullRequest {{ ...PrFields }} }} }}\n{PR_FRAGMENT}"
+        "query($id: ID!) {{ node(id: $id) {{ ... on PullRequest {{ ...PrFields
+           viewerLatestReview {{ state submittedAt }}
+           viewerLatestReviewRequest {{ id }}
+        }} }} }}\n{PR_FRAGMENT}"
     );
     let data = client.run(&doc, &serde_json::json!({ "id": pr_id })).await?;
     let node = data
@@ -505,6 +564,9 @@ async fn refresh_pr_inner(app: &AppHandle, pr_id: &str) -> AppResult<TrackedPr> 
     let now = Utc::now().to_rfc3339();
     let stored = store.upsert_pr(&info, &[], &changes, &now)?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    // Covers every "review state may have moved" path that funnels through a
+    // refresh: manual refresh button, submitted reviews, assistant actions.
+    let _ = app.emit(events::REVIEWS_CHANGED, ());
     Ok(stored)
 }
 
@@ -582,7 +644,12 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
                     nodes { author { login } state submittedAt }
                   }
                   commits(last: 1) { nodes { commit { committedDate } } }
-                  reviewThreads(first: 100) { nodes { isResolved } }
+                  reviewThreads(first: 100) {
+                    nodes {
+                      isResolved
+                      comments(first: 1) { nodes { author { login } body } }
+                    }
+                  }
                 }
               }
             }",
@@ -639,16 +706,34 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
         .pointer("/repository/pullRequest/commits/nodes/0/commit/committedDate")
         .and_then(serde_json::Value::as_str)
         .map(String::from);
-    let open_threads = data
+    let (open_threads, my_open_threads) = data
         .pointer("/repository/pullRequest/reviewThreads/nodes")
         .and_then(serde_json::Value::as_array)
         .map(|nodes| {
-            nodes
+            let open: Vec<_> = nodes
                 .iter()
-                .filter(|n| !n.get("isResolved").and_then(serde_json::Value::as_bool).unwrap_or(false))
-                .count() as i64
+                .filter(|n| {
+                    !n.get("isResolved").and_then(serde_json::Value::as_bool).unwrap_or(false)
+                })
+                .collect();
+            let mine = open
+                .iter()
+                .filter(|n| {
+                    n.pointer("/comments/nodes/0/author/login")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(viewer_login.as_str())
+                })
+                // Non-blocking comments (praise, notes, FYIs) open normal
+                // GitHub threads but shouldn't gate your own approval.
+                .filter(|n| {
+                    !n.pointer("/comments/nodes/0/body")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(crate::models::is_non_blocking_comment)
+                })
+                .count() as i64;
+            (open.len() as i64, mine)
         })
-        .unwrap_or(0);
+        .unwrap_or((0, 0));
 
     Ok(crate::models::PrReviews {
         requested,
@@ -656,6 +741,7 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
         viewer_login,
         last_commit_at,
         open_threads,
+        my_open_threads,
     })
 }
 
@@ -677,6 +763,7 @@ pub async fn resolve_thread(app: AppHandle, thread_id: String, resolve: bool) ->
          }"
     };
     client.run(doc, &serde_json::json!({ "threadId": thread_id })).await?;
+    let _ = app.emit(events::REVIEWS_CHANGED, ());
     Ok(())
 }
 
@@ -695,8 +782,13 @@ pub async fn submit_review(
     let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
     let gh_event = match event.as_str() {
         "approve" => "APPROVE",
-        "request-changes" => "REQUEST_CHANGES",
-        _ => "COMMENT",
+        "request-changes" | "request_changes" => "REQUEST_CHANGES",
+        "comment" => "COMMENT",
+        other => {
+            return Err(AppError::Other(format!(
+                "unknown review event '{other}' — expected approve, request-changes, or comment"
+            )))
+        }
     };
     if gh_event == "REQUEST_CHANGES" && body.trim().is_empty() {
         return Err(AppError::Other("requesting changes needs a comment".into()));
@@ -791,6 +883,38 @@ pub async fn reopen_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
     Ok(())
 }
 
+// -- assistant chat -----------------------------------------------------------
+
+#[tauri::command]
+pub fn chat_history(
+    app: AppHandle,
+    pr_id: String,
+) -> AppResult<crate::analysis::types::ChatTranscript> {
+    crate::analysis::chat::transcript(&app, &pr_id)
+}
+
+#[tauri::command]
+pub fn chat_send(app: AppHandle, window: WebviewWindow, pr_id: String, text: String) -> AppResult<()> {
+    require_main(&window)?;
+    crate::analysis::chat::send(app, pr_id, text)
+}
+
+#[tauri::command]
+pub fn chat_confirm(
+    app: AppHandle,
+    window: WebviewWindow,
+    pr_id: String,
+    approve: bool,
+) -> AppResult<()> {
+    require_main(&window)?;
+    crate::analysis::chat::confirm(app, pr_id, approve)
+}
+
+#[tauri::command]
+pub fn chat_clear(app: AppHandle, pr_id: String) -> AppResult<()> {
+    crate::analysis::chat::clear(&app, &pr_id)
+}
+
 /// The store → PR → token → settings dance shared by every REST-backed
 /// per-PR command.
 fn repo_tools_for(
@@ -840,6 +964,8 @@ pub async fn add_diff_comment(
             }),
         )
         .await?;
+    // A new thread of yours can gate Approve — tell the UI to refetch.
+    let _ = app.emit(events::REVIEWS_CHANGED, ());
     Ok(())
 }
 
@@ -903,6 +1029,9 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
                 }
               }
             }
+          }
+          reviews(first: 50) {
+            nodes { id author { login } state body submittedAt url }
           }
         }
       }
@@ -985,7 +1114,43 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
         })
         .unwrap_or_default();
 
-    Ok(PrConversation { comments, threads })
+    // Verdicts worth showing: a decision, or a summary body. Bare COMMENTED
+    // reviews (one per inline-comment batch) are noise — their content is
+    // already in the threads.
+    let reviews = data
+        .pointer("/repository/pullRequest/reviews/nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|r| {
+                    let state = r.get("state")?.as_str()?.to_string();
+                    let body = r.get("body").and_then(serde_json::Value::as_str).unwrap_or("");
+                    if state == "PENDING" || (state == "COMMENTED" && body.trim().is_empty()) {
+                        return None;
+                    }
+                    Some(crate::models::ReviewVerdict {
+                        id: r.get("id")?.as_str()?.to_string(),
+                        author: r
+                            .pointer("/author/login")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("ghost")
+                            .to_string(),
+                        state,
+                        body: body.to_string(),
+                        submitted_at: r
+                            .get("submittedAt")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        url: r.get("url").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(PrConversation { comments, threads, reviews })
 }
 
 /// Full file contents at the PR head, for the comment code drawer.
@@ -1247,6 +1412,9 @@ pub fn show_main_filtered(app: AppHandle, bucket: String) -> AppResult<()> {
 pub fn toggle_callout(app: AppHandle) -> AppResult<()> {
     if let Some(callout) = app.get_webview_window("callout") {
         if callout.is_visible().unwrap_or(false) {
+            // Capture the position/size before hiding — a hidden window
+            // reports nothing useful to the state plugin.
+            crate::flush_window_state(&app);
             let _ = callout.hide();
         } else {
             let _ = callout.show();

@@ -17,4 +17,9 @@ viewerLogin: string,
 /**
  * When the head commit landed; newer than my review = re-enable actions.
  */
-lastCommitAt: string | null, openThreads: number, };
+lastCommitAt: string | null, openThreads: number, 
+/**
+ * Unresolved threads the viewer started — approving over your own open
+ * questions is almost always a mistake.
+ */
+myOpenThreads: number, };

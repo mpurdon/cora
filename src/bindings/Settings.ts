@@ -41,4 +41,14 @@ autoAnalyzeReviewRequests: boolean,
 /**
  * Spend guard for pre-warming.
  */
-autoAnalyzeDailyCap: number, };
+autoAnalyzeDailyCap: number, 
+/**
+ * Team knowledge no diff reveals — design-system packages, shared
+ * libraries, review standards. Injected into analysis and chat prompts.
+ */
+reviewConventions: string, 
+/**
+ * Second analysis stage: line-anchored defect + reuse findings over the
+ * review plan's critical/important files.
+ */
+codeFindingsPass: boolean, };

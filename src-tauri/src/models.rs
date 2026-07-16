@@ -40,6 +40,12 @@ pub struct PrInfo {
     pub state: String,
     /// APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED
     pub review_decision: Option<String>,
+    /// YOUR latest review's state (APPROVED | CHANGES_REQUESTED | COMMENTED…).
+    pub my_review_state: Option<String>,
+    pub my_reviewed_at: Option<String>,
+    /// Someone re-requested your review after you reviewed — always resurface.
+    #[serde(default)]
+    pub my_review_rerequested: bool,
     /// SUCCESS | FAILURE | ERROR | PENDING | EXPECTED
     pub ci_status: Option<String>,
     /// MERGEABLE | CONFLICTING | UNKNOWN
@@ -195,6 +201,24 @@ pub struct PrConversation {
     pub comments: Vec<PrComment>,
     /// Code-anchored review threads.
     pub threads: Vec<ReviewThread>,
+    /// Review verdicts (approve / request changes) with their summary bodies —
+    /// these live on the review object, not in comments or threads.
+    #[serde(default)]
+    pub reviews: Vec<ReviewVerdict>,
+}
+
+/// A submitted review's verdict + summary text, shown in the conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewVerdict {
+    pub id: String,
+    pub author: String,
+    /// APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED
+    pub state: String,
+    pub body: String,
+    pub submitted_at: String,
+    pub url: String,
 }
 
 /// Per-repo attention weighting. Ignored repos are never tracked.
@@ -248,6 +272,14 @@ pub struct Settings {
     #[serde(default = "default_auto_analyze_cap")]
     #[ts(type = "number")]
     pub auto_analyze_daily_cap: u64,
+    /// Team knowledge no diff reveals — design-system packages, shared
+    /// libraries, review standards. Injected into analysis and chat prompts.
+    #[serde(default)]
+    pub review_conventions: String,
+    /// Second analysis stage: line-anchored defect + reuse findings over the
+    /// review plan's critical/important files.
+    #[serde(default = "default_true")]
+    pub code_findings_pass: bool,
 }
 
 fn default_auto_analyze_cap() -> u64 {
@@ -317,6 +349,8 @@ impl Default for Settings {
             review_ignore_globs: default_ignore_globs(),
             auto_analyze_review_requests: true,
             auto_analyze_daily_cap: default_auto_analyze_cap(),
+            review_conventions: String::new(),
+            code_findings_pass: true,
         }
     }
 }
@@ -349,6 +383,11 @@ pub struct PrReviews {
     #[serde(default)]
     #[ts(type = "number")]
     pub open_threads: i64,
+    /// Unresolved threads the viewer started — approving over your own open
+    /// questions is almost always a mistake.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub my_open_threads: i64,
 }
 
 /// One user-taken action, recorded for the History view. `old_value` is what
@@ -380,6 +419,9 @@ pub struct PollStatus {
     pub at: String,
     #[ts(type = "number")]
     pub rate_limit_remaining: Option<i64>,
+    /// A poll cycle is in flight right now ("refreshing…" feedback).
+    #[serde(default)]
+    pub syncing: bool,
 }
 
 /// Payload for the `pr:changed` event.
@@ -391,6 +433,50 @@ pub struct PrChangedEvent {
     pub changes: Vec<ChangeKind>,
 }
 
+/// One row in the callout's activity feed: something happened on a PR the
+/// reviewer cares about. Written by the poller as it detects changes;
+/// read/flag state is the reviewer's own.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityItem {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub at: String,
+    pub pr_id: String,
+    pub repo: String,
+    #[ts(type = "number")]
+    pub number: i64,
+    pub pr_title: String,
+    /// comment | review | commits | ci | merged | closed | reopened | new | ready
+    pub kind: String,
+    /// GitHub login behind the event, when known ("" otherwise).
+    pub actor: String,
+    /// Human line for the feed, e.g. `responded: "looks good but…"`.
+    pub summary: String,
+    /// Comment to deep-link to, when the event is a comment.
+    pub comment_id: String,
+    /// Authored-by-me PRs and high-priority repos/PRs are always important.
+    pub important: bool,
+    pub read: bool,
+    /// "" | "must-review" | "follow-up"
+    pub flag: String,
+}
+
+/// Assistant-initiated viewed-marking. The frontend owns diff parsing and
+/// per-file digests, so Rust only announces intent and the UI applies it
+/// through the same path as a manual checkbox.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkViewedEvent {
+    pub pr_id: String,
+    /// Ignored when `all` is set.
+    pub paths: Vec<String>,
+    pub all: bool,
+    pub viewed: bool,
+}
+
 pub mod events {
     /// Full tracked-set snapshot: `Vec<TrackedPr>`.
     pub const PRS_SNAPSHOT: &str = "prs:snapshot";
@@ -400,6 +486,37 @@ pub mod events {
     pub const POLL_STATUS: &str = "poll:status";
     /// Main window should focus a PR: payload is the PR node id.
     pub const FOCUS_PR: &str = "focus:pr";
+    /// Assistant asks the UI to mark diff files viewed: `MarkViewedEvent`.
+    pub const MARK_VIEWED: &str = "viewed:mark";
+    /// The activity feed changed (new rows, read/flag updates): no payload —
+    /// consumers refetch.
+    pub const ACTIVITY_CHANGED: &str = "activity:changed";
+    /// Review/thread state changed (resolve, new diff comment, submitted
+    /// review, refresh): the approve gate should refetch. No payload.
+    pub const REVIEWS_CHANGED: &str = "reviews:changed";
+}
+
+/// A review comment that opens a thread but shouldn't demand resolution:
+/// conventional-comments style `praise:` / `note:` / `fyi:` prefixes, or an
+/// explicit `(non-blocking)` decoration on the first line. Used to exclude
+/// the viewer's own threads from the approve gate.
+pub fn is_non_blocking_comment(body: &str) -> bool {
+    // Normalize markdown emphasis so `**praise:**` and `praise:` read alike.
+    let first: String = body
+        .trim_start()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !matches!(c, '*' | '_' | '`' | '~'))
+        .collect::<String>()
+        .trim_start()
+        .to_lowercase();
+    first.starts_with("praise:")
+        || first.starts_with("note:")
+        || first.starts_with("fyi:")
+        || first.contains("(non-blocking)")
+        || first.contains("non-blocking:")
 }
 
 /// The newest human comment among the `delta` most recent, if any.
@@ -462,6 +579,19 @@ pub fn compute_changes(old: &PrInfo, new: &PrInfo) -> Vec<ChangeKind> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn non_blocking_comment_detection() {
+        assert!(is_non_blocking_comment("praise: clean refactor!"));
+        assert!(is_non_blocking_comment("**praise:** nice idea!"));
+        assert!(is_non_blocking_comment("**Note**: for a future PR"));
+        assert!(is_non_blocking_comment("FYI: this moves in v2"));
+        assert!(is_non_blocking_comment("nit (non-blocking): rename?"));
+        assert!(is_non_blocking_comment("suggestion, non-blocking: could memoize"));
+        assert!(!is_non_blocking_comment("this breaks retries on 429"));
+        assert!(!is_non_blocking_comment("nit: rename this"));
+        assert!(!is_non_blocking_comment("question: why drop the lock?"));
+    }
+
     fn pr() -> PrInfo {
         PrInfo {
             id: "PR_1".into(),
@@ -473,6 +603,9 @@ mod tests {
             is_draft: false,
             state: "OPEN".into(),
             review_decision: Some("REVIEW_REQUIRED".into()),
+            my_review_state: None,
+            my_reviewed_at: None,
+            my_review_rerequested: false,
             ci_status: Some("PENDING".into()),
             mergeable: "MERGEABLE".into(),
             additions: 1,

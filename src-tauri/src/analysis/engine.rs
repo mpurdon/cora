@@ -21,14 +21,16 @@ use crate::models::{Settings, TrackedPr};
 const MAX_TURNS: usize = 30;
 const MAX_OUTPUT_TOKENS: i32 = 8192;
 
-pub const SYSTEM_PROMPT: &str = r#"You are a principal engineer reviewing a pull request. Your job is NOT line-level nitpicking (style, ternaries, null coalescing) — tools like Copilot handle that. Your job is to understand the change in relation to the whole system and explain it to a reviewer who lacks full context.
+pub const SYSTEM_PROMPT: &str = r#"You are a principal engineer reviewing a pull request. Your job is to understand the change in relation to the whole system and explain it to a reviewer who lacks full context. Style preferences (naming, ternaries vs if, .reduce vs loops, formatting) are NOT your job — but code-level DEFECTS with real consequences are never "just style": wrong or referentially-unstable hook/memo dependencies, unhandled error or empty states, loosened tests, races, and leaks are material findings when you encounter them.
 
 Priorities, strictly in this order:
 1. EXTERNAL boundaries: effects on external systems — third-party APIs, other teams' services, queues/topics, webhooks, contracts, data leaving the system. These are always the most important findings.
 2. SERVICE boundaries: effects that cross containers/services within the system — API shape changes, new dependencies between services, shared datastore access.
-3. INTERNAL structure: module responsibilities, dependency direction, pattern consistency with the rest of the repo. Mention only when material.
+3. INTERNAL structure: module responsibilities, dependency direction, pattern consistency with the rest of the repo. Mention only when material. Pattern consistency includes REUSE: when the diff hand-rolls a component or utility, search the repo and its shared packages/design system for an existing equivalent before accepting it — duplicating an existing primitive is a material finding.
 
 Writing style: the summary is a TLDR — two short sentences maximum, no mechanism walkthrough. Everything else goes in the detail field. A reviewer should absorb the summary in three seconds.
+
+Risk calibration for routine bumps: version bumps of pinned dependencies, GitHub Actions, and toolchains (workflow files, lockfiles, version manifests) are low-risk housekeeping by default. Frame them accordingly — reserve elevated risk for major-version jumps, security-relevant dependencies, or bumps that change behavior the repo visibly relies on. Do not dress a patch-level action bump up as an architectural event.
 
 Review plan: classify EVERY file in the diff for the reviewer — critical (contract/boundary/core-logic changes that must be read carefully), important (real logic worth reading), or mechanical (renames, imports, fallout from the real change, config echoes). Order most-important-first. This drives the reviewer's reading order, so be honest about what's mechanical. Reserve critical for changes to contracts, boundaries, data shapes, or core algorithms — repetitive pattern-following additions (wiring, node/edge registrations, simple predicate helpers) are important at most, even when behavior-adjacent. When computed per-file diff metrics are provided, calibrate against them: a file with few added branch points and no new definitions is not critical unless it changes an interface others depend on.
 
@@ -38,21 +40,33 @@ Method: explore the repository first (README/docs, tree, targeted file reads and
 
 C4 graph rules:
 - Build the graph at the requested C4 level, scoped to AFFECTED elements plus their immediate neighbors. Do not map the whole system.
+- Keep the environment at EVERY level: the people and external systems that interact with the elements in view must appear as periphery nodes (change: unchanged) even at COMPONENT and CODE levels. A drilled diagram that loses its actors and externals loses the point of C4 — the reader must always see who uses this and what it talks to outside the boundary.
 - Node ids must be deterministic and derived from stable names: "person:<role>", "ext:<system>", "system:<name>", "container:<name>", "component:<path>", "code:<path>#<class>". Lowercase, kebab-case.
+- Node names are short display names (2-4 words); move file paths, package scopes, and qualifiers into `description` or `technology`. Edge labels are terse verb phrases (2-4 words, e.g. "reads validations"); put transport/format in `protocol`, never in the label. Long labels turn the diagram into spaghetti.
 - Use `boundary` to nest: containers inside their system, components inside their container.
 - Mark every node/edge with its change status. Edges that cross a boundary MUST set crossesBoundary=true.
 
 When you are done exploring, you MUST call submit_analysis exactly once with the complete result. Include EVERY field in the schema — when a list has nothing to report, pass an empty array, never omit the field. Do not produce a final text answer."#;
 
+/// Team knowledge no diff reveals, appended to every model-facing prompt.
+pub(crate) fn conventions_section(settings: &Settings) -> String {
+    let c = settings.review_conventions.trim();
+    if c.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n## Team review conventions (from the reviewer's settings — treat as ground truth)\n{c}")
+    }
+}
+
 fn level_instructions(level: AnalysisLevel, focus: Option<&str>) -> String {
     match level {
         AnalysisLevel::Context => "Requested C4 level: CONTEXT + CONTAINER. Show the system in its environment (people, external systems) and the affected containers. This is the default view — keep it at architecture altitude.".into(),
         AnalysisLevel::Component => format!(
-            "Requested C4 level: COMPONENT. The user drilled into node '{}'. Anchor everything in the PR diff: deep-dive the components the diff touches, their responsibility shifts, dependency-direction violations, and pattern consistency. Include untouched components only as thin context (mark them unchanged), never as the subject.",
+            "Requested C4 level: COMPONENT. The user drilled into node '{}'. Anchor everything in the PR diff: deep-dive the components the diff touches, their responsibility shifts, dependency-direction violations, and pattern consistency. Include untouched components only as thin context (mark them unchanged), never as the subject. Carry over the wider environment: the people, external systems, and sibling containers this element serves or calls stay on the diagram as unchanged periphery nodes.",
             focus.unwrap_or("(unspecified)")
         ),
         AnalysisLevel::Code => format!(
-            "Requested C4 level: CODE. The user drilled into component '{}'. Show the classes/modules the diff changes and what those changes do to coupling, interfaces, and cohesion. Untouched classes appear only when needed to explain an affected relationship. Still architectural framing; no style nits.",
+            "Requested C4 level: CODE. The user drilled into component '{}'. Show the classes/modules the diff changes and what those changes do to coupling, interfaces, and cohesion. Untouched classes appear only when needed to explain an affected relationship. Keep the actors and external systems that reach this code on the diagram as unchanged periphery nodes. Still architectural framing; no style nits.",
             focus.unwrap_or("(unspecified)")
         ),
     }
@@ -121,9 +135,33 @@ fn submit_schema() -> Value {
     })
 }
 
+/// Bedrock runtime client from the user's profile/region/endpoint settings.
+/// Shared by the analysis engine and the assistant chat.
+pub(crate) async fn bedrock_client(settings: &Settings) -> aws_sdk_bedrockruntime::Client {
+    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+    if !settings.aws_profile.is_empty() {
+        loader = loader.profile_name(&settings.aws_profile);
+    }
+    if !settings.aws_region.is_empty() {
+        loader = loader.region(aws_config::Region::new(settings.aws_region.clone()));
+    }
+    let sdk_config = loader.load().await;
+    let mut conf = aws_sdk_bedrockruntime::config::Builder::from(&sdk_config);
+    // Only apply a real URL — a pasted ARN here breaks dispatch cryptically.
+    if settings.aws_endpoint_url.starts_with("http") {
+        conf = conf.endpoint_url(&settings.aws_endpoint_url);
+    }
+    conf = conf.timeout_config(
+        aws_sdk_bedrockruntime::config::timeout::TimeoutConfig::builder()
+            .operation_timeout(std::time::Duration::from_secs(300))
+            .build(),
+    );
+    aws_sdk_bedrockruntime::Client::from_conf(conf.build())
+}
+
 // -- serde_json::Value <-> aws_smithy_types::Document -------------------------
 
-fn value_to_document(v: &Value) -> Document {
+pub(crate) fn value_to_document(v: &Value) -> Document {
     match v {
         Value::Null => Document::Null,
         Value::Bool(b) => Document::Bool(*b),
@@ -144,7 +182,7 @@ fn value_to_document(v: &Value) -> Document {
     }
 }
 
-fn document_to_value(d: &Document) -> Value {
+pub(crate) fn document_to_value(d: &Document) -> Value {
     match d {
         Document::Null => Value::Null,
         Document::Bool(b) => Value::Bool(*b),
@@ -165,43 +203,126 @@ fn document_to_value(d: &Document) -> Value {
 
 // -----------------------------------------------------------------------------
 
-fn cache_point() -> CachePointBlock {
+pub(crate) fn cache_point() -> CachePointBlock {
     CachePointBlock::builder()
         .r#type(CachePointType::Default)
         .build()
         .expect("cache point")
 }
 
-fn tool_config(with_cache: bool) -> AppResult<ToolConfiguration> {
+/// Assemble a Converse tool config from spec triples, ending with a cache
+/// checkpoint when enabled — tool schemas are the largest static prefix.
+pub(crate) fn build_tool_config(
+    specs: &[(&'static str, &'static str, Value)],
+    with_cache: bool,
+) -> AppResult<ToolConfiguration> {
     let mut builder = ToolConfiguration::builder();
-    for (name, description, schema) in RepoTools::specs() {
+    for (name, description, schema) in specs {
         builder = builder.tools(Tool::ToolSpec(
             ToolSpecification::builder()
-                .name(name)
-                .description(description)
-                .input_schema(ToolInputSchema::Json(value_to_document(&schema)))
+                .name(*name)
+                .description(*description)
+                .input_schema(ToolInputSchema::Json(value_to_document(schema)))
                 .build()
                 .map_err(|e| AppError::Other(e.to_string()))?,
         ));
     }
-    builder = builder.tools(Tool::ToolSpec(
-        ToolSpecification::builder()
-            .name("submit_analysis")
-            .description("Submit the final architecture analysis. Call exactly once, when your exploration is complete.")
-            .input_schema(ToolInputSchema::Json(value_to_document(&submit_schema())))
-            .build()
-            .map_err(|e| AppError::Other(e.to_string()))?,
-    ));
     if with_cache {
-        // Tool schemas are the largest static prefix — cache them.
         builder = builder.tools(Tool::CachePoint(cache_point()));
     }
     builder.build().map_err(|e| AppError::Other(e.to_string()))
 }
 
+fn analysis_specs() -> Vec<(&'static str, &'static str, Value)> {
+    let mut specs = RepoTools::specs();
+    specs.push((
+        "submit_analysis",
+        "Submit the final architecture analysis. Call exactly once, when your exploration is complete.",
+        submit_schema(),
+    ));
+    specs
+}
+
+/// One Converse request under the shared failure policy: models or gateways
+/// that reject cache points get a cache-free retry, and credential-shaped
+/// errors carry the SSO hint. Used by the analysis run and the chat loop.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn converse_once(
+    app: &AppHandle,
+    log_scope: &str,
+    client: &aws_sdk_bedrockruntime::Client,
+    model_id: &str,
+    system: &str,
+    messages: &[Message],
+    specs: &[(&'static str, &'static str, Value)],
+    max_tokens: i32,
+    use_cache: &mut bool,
+    sso_profile: &str,
+) -> AppResult<aws_sdk_bedrockruntime::operation::converse::ConverseOutput> {
+    loop {
+        let config = build_tool_config(specs, *use_cache)?;
+        let mut system_blocks = vec![SystemContentBlock::Text(system.to_string())];
+        if *use_cache {
+            system_blocks.push(SystemContentBlock::CachePoint(cache_point()));
+        }
+        let request_messages = if *use_cache {
+            with_message_cache_points(messages)
+        } else {
+            messages.to_vec()
+        };
+        let attempt = client
+            .converse()
+            .model_id(model_id)
+            .set_system(Some(system_blocks))
+            .set_messages(Some(request_messages))
+            .tool_config(config)
+            .inference_config(InferenceConfiguration::builder().max_tokens(max_tokens).build())
+            .send()
+            .await;
+        match attempt {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                let detail =
+                    format!("{}", aws_smithy_types::error::display::DisplayErrorContext(&e));
+                let lower = detail.to_lowercase();
+                if *use_cache && (lower.contains("cache") || lower.contains("cachepoint")) {
+                    devlog::warn(app, log_scope, "model rejected prompt caching — disabling");
+                    *use_cache = false;
+                    continue;
+                }
+                let hint = if lower.contains("token")
+                    || lower.contains("expired")
+                    || lower.contains("credential")
+                    || lower.contains("sso")
+                {
+                    format!(
+                        " — your SSO session may have expired; run: aws sso login --profile {sso_profile}"
+                    )
+                } else {
+                    String::new()
+                };
+                return Err(AppError::Other(format!("Bedrock: {detail}{hint}")));
+            }
+        }
+    }
+}
+
+/// A tool_result content block, error-flagged when the call failed.
+pub(crate) fn tool_result(id: &str, content: String, is_error: bool) -> AppResult<ContentBlock> {
+    let mut trb = ToolResultBlock::builder()
+        .tool_use_id(id)
+        .content(ToolResultContentBlock::Text(content));
+    if is_error {
+        trb = trb.status(aws_sdk_bedrockruntime::types::ToolResultStatus::Error);
+    }
+    Ok(ContentBlock::ToolResult(
+        trb.build().map_err(|e| AppError::Other(e.to_string()))?,
+    ))
+}
+
 /// Rolling cache checkpoint: mark the latest user message so the next turn's
 /// prefix (everything up to and including it) is a cache hit.
-fn with_message_cache_points(messages: &[Message]) -> Vec<Message> {
+pub(crate) fn with_message_cache_points(messages: &[Message]) -> Vec<Message> {
     let last_user = messages.iter().rposition(|m| m.role() == &ConversationRole::User);
     messages
         .iter()
@@ -247,7 +368,7 @@ fn note(
     progress(app, pr_id, level, message);
 }
 
-fn describe_tool_call(name: &str, input: &Value) -> String {
+pub(crate) fn describe_tool_call(name: &str, input: &Value) -> String {
     match name {
         "get_pr_diff" => "reading the PR diff".into(),
         "get_file" => format!(
@@ -265,6 +386,17 @@ fn describe_tool_call(name: &str, input: &Value) -> String {
         "get_readme_and_docs" => "reading README and docs".into(),
         "list_recent_prs" => "checking recent PRs".into(),
         "submit_analysis" => "assembling the assessment".into(),
+        "mark_files_viewed" => {
+            let all = input.get("all").and_then(Value::as_bool).unwrap_or(false);
+            let n = input.get("paths").and_then(Value::as_array).map_or(0, Vec::len);
+            let unmark = input.get("viewed").and_then(Value::as_bool) == Some(false);
+            let verb = if unmark { "unmarking" } else { "marking" };
+            if all {
+                format!("{verb} all files viewed")
+            } else {
+                format!("{verb} {n} file(s) viewed")
+            }
+        }
         other => other.to_string(),
     }
 }
@@ -292,12 +424,13 @@ pub async fn run(
         ),
     );
 
-    let system_prompt = if settings.custom_system_prompt.trim().is_empty() {
+    let mut system_prompt = if settings.custom_system_prompt.trim().is_empty() {
         SYSTEM_PROMPT.to_string()
     } else {
         devlog::warn(app, "analysis", "using CUSTOM system prompt from developer settings");
         settings.custom_system_prompt.clone()
     };
+    system_prompt.push_str(&conventions_section(settings));
 
     // Drill-downs analyze code, not system-wide architecture — the faster
     // tier fits and roughly halves per-turn latency.
@@ -309,25 +442,7 @@ pub async fn run(
     };
     devlog::debug(app, "bedrock", format!("model for {} level: {model_id}", level.as_str()));
 
-    let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-    if !settings.aws_profile.is_empty() {
-        loader = loader.profile_name(&settings.aws_profile);
-    }
-    if !settings.aws_region.is_empty() {
-        loader = loader.region(aws_config::Region::new(settings.aws_region.clone()));
-    }
-    let sdk_config = loader.load().await;
-    let mut conf = aws_sdk_bedrockruntime::config::Builder::from(&sdk_config);
-    // Only apply a real URL — a pasted ARN here breaks dispatch cryptically.
-    if settings.aws_endpoint_url.starts_with("http") {
-        conf = conf.endpoint_url(&settings.aws_endpoint_url);
-    }
-    conf = conf.timeout_config(
-        aws_sdk_bedrockruntime::config::timeout::TimeoutConfig::builder()
-            .operation_timeout(std::time::Duration::from_secs(300))
-            .build(),
-    );
-    let client = aws_sdk_bedrockruntime::Client::from_conf(conf.build());
+    let client = bedrock_client(settings).await;
 
     let tools = RepoTools::new(
         &settings.github_graphql_url,
@@ -406,59 +521,22 @@ pub async fn run(
     let mut trace: Vec<TraceStep> = Vec::new();
     note(app, &mut trace, &pr_id, level, "status", "starting exploration");
 
+    let specs = analysis_specs();
     for turn in 0..MAX_TURNS {
         let started = std::time::Instant::now();
-        let resp = loop {
-            let config = tool_config(use_cache)?;
-            let mut system_blocks = vec![SystemContentBlock::Text(system_prompt.clone())];
-            if use_cache {
-                system_blocks.push(SystemContentBlock::CachePoint(cache_point()));
-            }
-            let request_messages = if use_cache {
-                with_message_cache_points(&messages)
-            } else {
-                messages.clone()
-            };
-            let attempt = client
-                .converse()
-                .model_id(&model_id)
-                .set_system(Some(system_blocks))
-                .set_messages(Some(request_messages))
-                .tool_config(config)
-                .inference_config(
-                    InferenceConfiguration::builder()
-                        .max_tokens(MAX_OUTPUT_TOKENS)
-                        .build(),
-                )
-                .send()
-                .await;
-            match attempt {
-                Ok(resp) => break resp,
-                Err(e) => {
-                    let detail =
-                        format!("{}", aws_smithy_types::error::display::DisplayErrorContext(&e));
-                    let lower = detail.to_lowercase();
-                    if use_cache && (lower.contains("cache") || lower.contains("cachepoint")) {
-                        devlog::warn(app, "bedrock", "model rejected prompt caching — disabling");
-                        use_cache = false;
-                        continue;
-                    }
-                    let hint = if lower.contains("token")
-                        || lower.contains("expired")
-                        || lower.contains("credential")
-                        || lower.contains("sso")
-                    {
-                        format!(
-                            " — your SSO session may have expired; run: aws sso login --profile {}",
-                            settings.aws_profile
-                        )
-                    } else {
-                        String::new()
-                    };
-                    return Err(AppError::Other(format!("Bedrock: {detail}{hint}")));
-                }
-            }
-        };
+        let resp = converse_once(
+            app,
+            "bedrock",
+            &client,
+            &model_id,
+            &system_prompt,
+            &messages,
+            &specs,
+            MAX_OUTPUT_TOKENS,
+            &mut use_cache,
+            &settings.aws_profile,
+        )
+        .await?;
 
         if let Some(usage) = resp.usage() {
             total_in += usage.input_tokens();
@@ -532,15 +610,7 @@ pub async fn run(
                     }
                 };
                 devlog::debug(app, "analysis", format!("tool {name} → {} chars", content.len()));
-                let mut trb = ToolResultBlock::builder()
-                    .tool_use_id(id)
-                    .content(ToolResultContentBlock::Text(content));
-                if is_error {
-                    trb = trb.status(aws_sdk_bedrockruntime::types::ToolResultStatus::Error);
-                }
-                tool_results.push(ContentBlock::ToolResult(
-                    trb.build().map_err(|e| AppError::Other(e.to_string()))?,
-                ));
+                tool_results.push(tool_result(id, content, is_error)?);
             }
         }
 
@@ -592,16 +662,13 @@ pub async fn run(
                         "status",
                         format!("submission incomplete ({e}) — retrying"),
                     );
-                    tool_results.push(ContentBlock::ToolResult(
-                        ToolResultBlock::builder()
-                            .tool_use_id(submit_id)
-                            .content(ToolResultContentBlock::Text(format!(
-                                "Submission rejected: {e}. Call submit_analysis again with EVERY field present (empty arrays where nothing applies)."
-                            )))
-                            .status(aws_sdk_bedrockruntime::types::ToolResultStatus::Error)
-                            .build()
-                            .map_err(|e| AppError::Other(e.to_string()))?,
-                    ));
+                    tool_results.push(tool_result(
+                        &submit_id,
+                        format!(
+                            "Submission rejected: {e}. Call submit_analysis again with EVERY field present (empty arrays where nothing applies)."
+                        ),
+                        true,
+                    )?);
                 }
                 Err(e) => return Err(e),
             }
@@ -645,6 +712,252 @@ pub async fn run(
     )))
 }
 
+// -- second stage: line-anchored code findings --------------------------------
+
+const CODE_PASS_PROMPT: &str = r#"You are doing the code-level pass of a pull request review. An architecture review already ran — do not repeat it. Hunt for exactly two classes of finding:
+
+1. DEFECTS — code-level problems with real consequences: wrong or referentially-unstable hook/memo/effect dependencies, unhandled error or empty states, loosened or weakened tests, race conditions, resource leaks, incorrect boundary conditions, state machines that can skip states.
+2. REUSE — new code that re-implements something that already exists in this repository or its shared packages/design system. Use search_code and list_tree to check before accepting new utilities or UI primitives; report the existing equivalent by name/path.
+
+Explicitly NOT your job: style preferences — naming, ternaries vs if, .reduce vs loops, enum tastes, formatting. If a finding is a preference rather than a consequence, drop it.
+
+Method: get the diff, then read only what you need — the changed hunks' surrounding context via get_file, and targeted search_code for reuse checks. Be economical. search_code is heavily rate-limited: budget 3-4 well-chosen queries per review, issued one at a time — prefer one broad query over several narrow ones.
+
+When done, call submit_code_findings exactly once. Anchor each finding to a path from the diff and the new-side line number of the changed line it concerns. An empty findings list is a valid, good result — never invent findings to fill space."#;
+
+fn code_findings_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "findings": {"type": "array", "items": {"type": "object", "properties": {
+                "path": {"type": "string", "description": "File path exactly as it appears in the diff"},
+                "line": {"type": "integer", "description": "New-side line number of the changed line this concerns"},
+                "severity": {"type": "string", "enum": ["info", "low", "medium", "high"]},
+                "kind": {"type": "string", "enum": ["defect", "reuse", "convention"]},
+                "finding": {"type": "string", "description": "What is wrong and why it matters — 1-2 sentences"},
+                "suggestion": {"type": "string", "description": "Concrete fix or the existing code to reuse"}
+            }, "required": ["path", "severity", "kind", "finding", "suggestion"]}}
+        },
+        "required": ["findings"]
+    })
+}
+
+fn parse_code_findings(payload: &mut Value) -> AppResult<Vec<crate::analysis::types::CodeFinding>> {
+    let mut unwrap_notes = Vec::new();
+    unwrap_stringified(payload, "findings", &mut unwrap_notes);
+    camelize_keys(payload);
+    const SEVERITY: &[(&str, &str)] = &[
+        ("critical", "high"),
+        ("blocker", "high"),
+        ("warning", "medium"),
+        ("moderate", "medium"),
+        ("minor", "low"),
+        ("informational", "info"),
+    ];
+    const KIND: &[(&str, &str)] = &[
+        ("bug", "defect"),
+        ("correctness", "defect"),
+        ("duplication", "reuse"),
+        ("duplicate", "reuse"),
+        ("standard", "convention"),
+        ("conventions", "convention"),
+    ];
+    let mut notes = Vec::new();
+    if let Some(arr) = payload.get_mut("findings").and_then(Value::as_array_mut) {
+        for f in arr {
+            normalize_enum(f, "severity", SEVERITY, &mut notes);
+            coerce_unknown::<Severity>(f, "severity", "low", &mut notes);
+            normalize_enum(f, "kind", KIND, &mut notes);
+            coerce_unknown::<crate::analysis::types::CodeFindingKind>(
+                f, "kind", "defect", &mut notes,
+            );
+        }
+    }
+    serde_json::from_value(
+        payload
+            .get("findings")
+            .cloned()
+            .ok_or_else(|| AppError::Other("submit_code_findings: missing findings".into()))?,
+    )
+    .map_err(|e| AppError::Other(format!("submit_code_findings: {e}")))
+}
+
+/// The code-level second stage: a short agentic run over the review plan's
+/// critical/important files, on the cheaper drill model. Failures here never
+/// sink the architecture result — the caller logs and moves on.
+pub async fn code_findings(
+    app: &AppHandle,
+    settings: &Settings,
+    token: &str,
+    pr: &TrackedPr,
+    review_plan: &[ReviewPlanEntry],
+) -> AppResult<Vec<crate::analysis::types::CodeFinding>> {
+    let pr_id = pr.info.id.clone();
+    let level = AnalysisLevel::Context;
+    progress(app, &pr_id, level, "code pass: starting");
+
+    let focus_paths: Vec<&str> = review_plan
+        .iter()
+        .filter(|e| e.significance != Significance::Mechanical)
+        .map(|e| e.path.as_str())
+        .take(20)
+        .collect();
+
+    let model_id = if settings.bedrock_drill_model_id.is_empty() {
+        settings.bedrock_model_id.clone()
+    } else {
+        settings.bedrock_drill_model_id.clone()
+    };
+    let client = bedrock_client(settings).await;
+    let tools = RepoTools::new(
+        &settings.github_graphql_url,
+        &pr.info.repo,
+        pr.info.number,
+        &pr.info.head_sha,
+        token,
+    )?;
+
+    let mut system = CODE_PASS_PROMPT.to_string();
+    system.push_str(&conventions_section(settings));
+
+    let mut specs = RepoTools::specs();
+    specs.push((
+        "submit_code_findings",
+        "Submit the final list of code-level findings. Call exactly once.",
+        code_findings_schema(),
+    ));
+
+    let kickoff = format!(
+        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}\n\nFocus on these files from the review plan (critical/important):\n{}\n\nStart with get_pr_diff.",
+        pr.info.repo,
+        pr.info.number,
+        pr.info.title,
+        pr.info.head_sha,
+        focus_paths
+            .iter()
+            .map(|p| format!("- {p}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let mut messages = vec![Message::builder()
+        .role(ConversationRole::User)
+        .content(ContentBlock::Text(kickoff))
+        .build()
+        .map_err(|e| AppError::Other(e.to_string()))?];
+
+    let mut use_cache = true;
+    let mut resubmits = 0u32;
+    const MAX_CODE_TURNS: usize = 16;
+
+    for _turn in 0..MAX_CODE_TURNS {
+        let resp = converse_once(
+            app,
+            "code-pass",
+            &client,
+            &model_id,
+            &system,
+            &messages,
+            &specs,
+            MAX_OUTPUT_TOKENS,
+            &mut use_cache,
+            &settings.aws_profile,
+        )
+        .await?;
+
+        let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {
+            return Err(AppError::Other("Bedrock returned no message".into()));
+        };
+
+        let mut tool_calls: Vec<(String, String, Value)> = Vec::new();
+        let mut submitted: Option<(String, Value)> = None;
+        for block in message.content() {
+            if let ContentBlock::ToolUse(tu) = block {
+                let input = document_to_value(tu.input());
+                progress(
+                    app,
+                    &pr_id,
+                    level,
+                    format!("code pass: {}", describe_tool_call(tu.name(), &input)),
+                );
+                if tu.name() == "submit_code_findings" {
+                    submitted = Some((tu.tool_use_id().to_string(), input));
+                } else {
+                    tool_calls.push((tu.tool_use_id().to_string(), tu.name().to_string(), input));
+                }
+            }
+        }
+
+        let mut tool_results: Vec<ContentBlock> = Vec::new();
+        if !tool_calls.is_empty() {
+            let executed = futures::future::join_all(tool_calls.iter().map(|(_, name, input)| {
+                let tools = &tools;
+                async move { tools.execute(name, input).await }
+            }))
+            .await;
+            for ((id, name, _), result) in tool_calls.iter().zip(executed) {
+                let (content, is_error) = match result {
+                    Ok(text) => (text, false),
+                    Err(e) => {
+                        devlog::warn(app, "code-pass", format!("tool {name} failed: {e}"));
+                        (format!("error: {e}"), true)
+                    }
+                };
+                tool_results.push(tool_result(id, content, is_error)?);
+            }
+        }
+
+        if let Some((submit_id, mut payload)) = submitted {
+            match parse_code_findings(&mut payload) {
+                Ok(findings) => {
+                    devlog::info(
+                        app,
+                        "code-pass",
+                        format!("complete — {} finding(s)", findings.len()),
+                    );
+                    progress(app, &pr_id, level, "code pass: done");
+                    return Ok(findings);
+                }
+                Err(e) if resubmits < 2 => {
+                    resubmits += 1;
+                    devlog::warn(app, "code-pass", format!("invalid submission ({e}) — retrying"));
+                    tool_results.push(tool_result(
+                        &submit_id,
+                        format!("Submission rejected: {e}. Call submit_code_findings again with every required field present."),
+                        true,
+                    )?);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        messages.push(message);
+        if !tool_results.is_empty() {
+            messages.push(
+                Message::builder()
+                    .role(ConversationRole::User)
+                    .set_content(Some(tool_results))
+                    .build()
+                    .map_err(|e| AppError::Other(e.to_string()))?,
+            );
+            continue;
+        }
+        if matches!(resp.stop_reason(), StopReason::EndTurn) {
+            messages.push(
+                Message::builder()
+                    .role(ConversationRole::User)
+                    .content(ContentBlock::Text(
+                        "Call submit_code_findings now with your complete result.".into(),
+                    ))
+                    .build()
+                    .map_err(|e| AppError::Other(e.to_string()))?,
+            );
+        }
+    }
+    Err(AppError::Other(format!(
+        "code pass did not complete within {MAX_CODE_TURNS} turns"
+    )))
+}
+
 /// Bedrock doesn't validate tool input against the schema, so submissions
 /// drift: snake_case keys, camelCase or Title Case enum values, severities
 /// like "critical" that aren't in our enum, a missing `change` on unchanged
@@ -653,6 +966,10 @@ pub async fn run(
 /// genuinely broken payloads. Returns a description of each coercion applied.
 fn sanitize_payload(payload: &mut Value) -> Vec<String> {
     let mut notes = Vec::new();
+    // A whole sub-struct occasionally arrives JSON-encoded as a string —
+    // unwrap first so the coercions below see real objects.
+    unwrap_stringified(payload, "graph", &mut notes);
+    unwrap_stringified(payload, "assessment", &mut notes);
     camelize_keys(payload);
 
     const NODE_KIND: &[(&str, &str)] = &[
@@ -815,6 +1132,69 @@ fn sanitize_payload(payload: &mut Value) -> Vec<String> {
         }
     }
     notes
+}
+
+/// Models sometimes emit a whole struct field as a JSON-encoded string
+/// ("assessment": "{\"summary\":...}"). Parse and unwrap it in place rather
+/// than burning a retry turn; tolerates the common botch of a spurious brace
+/// closing the top-level value mid-string.
+fn unwrap_stringified(payload: &mut Value, field: &str, notes: &mut Vec<String>) {
+    let Some(s) = payload.get(field).and_then(Value::as_str) else {
+        return;
+    };
+    let parsed = serde_json::from_str::<Value>(s)
+        .ok()
+        .or_else(|| serde_json::from_str::<Value>(&drop_spurious_closers(s)).ok());
+    if let Some(v) = parsed {
+        if v.is_object() || v.is_array() {
+            notes.push(format!("{field} arrived as a JSON string; unwrapped"));
+            payload[field] = v;
+        }
+    }
+}
+
+/// Remove `}`/`]` characters that would close the top-level value while
+/// meaningful content still follows — the typical shape of a hand-assembled
+/// JSON string with one closer too many in the middle.
+fn drop_spurious_closers(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, &c) in chars.iter().enumerate() {
+        if in_str {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                out.push(c);
+            }
+            '{' | '[' => {
+                depth += 1;
+                out.push(c);
+            }
+            '}' | ']' => {
+                let tail_empty = chars[i + 1..].iter().all(|t| t.is_whitespace());
+                if depth <= 1 && !tail_empty {
+                    continue; // would close the top level with content remaining
+                }
+                depth -= 1;
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// "externalSystem" / "External System" / "external_system" → "external-system".
@@ -1029,6 +1409,7 @@ fn build_result(
         created_at: Utc::now().to_rfc3339(),
         trace,
         usage,
+        code_findings: Vec::new(),
     }
 }
 
@@ -1107,5 +1488,35 @@ mod tests {
         let notes = sanitize_payload(&mut payload);
         assert!(notes.is_empty(), "no coercions expected, got: {notes:?}");
         parse_payload(&payload).expect("valid payload parses");
+    }
+
+    #[test]
+    fn sanitize_unwraps_stringified_assessment() {
+        // Observed in the wild: the model JSON-encodes the whole assessment
+        // as a string, with a spurious `}` after "detail" closing the object
+        // mid-stream.
+        let assessment_str = r#"{"summary":"Frontend-only change.","detail":"The PR is presentational."},"fit":"fits","fitRationale":"follows the pattern","boundaryImpacts":[],"wellArchitected":[],"contextNotes":["note"],"reviewPlan":[{"path":"a.tsx","significance":"important","reason":"r"}]}"#;
+        let mut payload = json!({
+            "graph": {
+                "nodes": [{"id": "c:api", "name": "API", "kind": "container", "change": "modified"}],
+                "edges": []
+            },
+            "assessment": assessment_str
+        });
+        let notes = sanitize_payload(&mut payload);
+        assert!(
+            notes.iter().any(|n| n.contains("unwrapped")),
+            "expected an unwrap note, got: {notes:?}"
+        );
+        let (_, assessment) = parse_payload(&payload).expect("unwrapped payload parses");
+        assert_eq!(assessment.summary, "Frontend-only change.");
+        assert_eq!(assessment.fit, crate::analysis::types::FitVerdict::Fits);
+        assert_eq!(assessment.review_plan.len(), 1);
+    }
+
+    #[test]
+    fn drop_spurious_closers_ignores_braces_inside_strings() {
+        let s = r#"{"a":"has } and ] inside","b":[1,2]}"#;
+        assert_eq!(drop_spurious_closers(s), s);
     }
 }
