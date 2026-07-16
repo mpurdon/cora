@@ -342,52 +342,58 @@ input:focus-visible {
 
 /* stat-tile console */
 
+/* One-row segmented strip: count over a tiny label per bucket, hairline
+   separators, zero-count segments dimmed. Click filters the main window. */
 .stat-grid {
   flex: none;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-  padding: 8px;
+  display: flex;
+  margin: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--ink-1);
+  overflow: hidden;
 }
 
 .stat-tile {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1px;
-  padding: 8px 4px 7px;
-  border-radius: 9px;
-  border: 1px solid var(--line);
-  background: var(--ink-1);
+  padding: 5px 2px 4px;
+  border-radius: 0;
+}
+
+.stat-tile + .stat-tile {
+  border-left: 1px solid var(--line);
 }
 
 .stat-tile:hover {
   background: var(--ink-2);
 }
 
-.stat-tile.selected {
-  border-color: color-mix(in srgb, var(--tile, var(--text)) 65%, transparent);
-  background: color-mix(in srgb, var(--tile, var(--text)) 8%, var(--ink-1));
-}
-
 .stat-tile.zero {
-  opacity: 0.4;
+  opacity: 0.35;
 }
 
 .tile-count {
   font-family: var(--mono);
-  font-size: 19px;
+  font-size: 13px;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1.2;
   color: var(--tile, var(--text));
 }
 
 .tile-label {
   font-family: var(--mono);
-  font-size: 8.5px;
-  letter-spacing: 0.08em;
+  font-size: 7.5px;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .tile-fix {
