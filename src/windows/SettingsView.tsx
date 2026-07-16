@@ -119,6 +119,31 @@ function nearestStepIdx(sec: number): number {
   return best;
 }
 
+/** PR-window ladder: 1d, 2d, 3d, 5d, 1w, 2w, 3w, 1m, 2m, 3m, 6m, 1y. */
+const AGE_STEPS = [1, 2, 3, 5, 7, 14, 21, 30, 61, 91, 183, 365];
+
+function fmtAge(days: number): string {
+  if (days === 1) return "1 day";
+  if (days < 7) return `${days} days`;
+  if (days < 30) {
+    const w = Math.round(days / 7);
+    return w === 1 ? "1 week" : `${w} weeks`;
+  }
+  if (days < 365) {
+    const m = Math.round(days / 30.4);
+    return m === 1 ? "1 month" : `${m} months`;
+  }
+  return "1 year";
+}
+
+function nearestAgeIdx(days: number): number {
+  let best = 0;
+  AGE_STEPS.forEach((v, i) => {
+    if (Math.abs(v - days) < Math.abs(AGE_STEPS[best] - days)) best = i;
+  });
+  return best;
+}
+
 function Field({
   label,
   hint,
@@ -482,6 +507,27 @@ function GitHubPane({ settings, save }: PaneProps) {
           <span>15m</span>
           <span>1h</span>
           <span>12h</span>
+        </div>
+      </Field>
+
+      <Field
+        label={`PR window — updated in the last ${fmtAge(settings.prMaxAgeDays || 365)}`}
+        hint="Hide pull requests that haven't been updated within this window. They come back the moment something happens on them."
+      >
+        <input
+          type="range"
+          className="interval-slider"
+          min={0}
+          max={AGE_STEPS.length - 1}
+          value={nearestAgeIdx(settings.prMaxAgeDays || 365)}
+          onChange={(e) => void save({ prMaxAgeDays: AGE_STEPS[Number(e.target.value)] })}
+        />
+        <div className="interval-scale mono">
+          <span>1d</span>
+          <span>1w</span>
+          <span>1m</span>
+          <span>3m</span>
+          <span>1y</span>
         </div>
       </Field>
     </section>
