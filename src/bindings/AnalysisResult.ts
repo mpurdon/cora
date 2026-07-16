@@ -3,6 +3,7 @@ import type { AnalysisLevel } from "./AnalysisLevel";
 import type { AnalysisUsage } from "./AnalysisUsage";
 import type { Assessment } from "./Assessment";
 import type { C4Graph } from "./C4Graph";
+import type { CodeFinding } from "./CodeFinding";
 import type { TraceStep } from "./TraceStep";
 
 export type AnalysisResult = { prId: string, headSha: string, level: AnalysisLevel, 
@@ -13,4 +14,8 @@ focusNodeId: string | null, graph: C4Graph, assessment: Assessment, createdAt: s
 /**
  * The agent's exploration steps, for re-reading after the fact.
  */
-trace: Array<TraceStep>, usage: AnalysisUsage, };
+trace: Array<TraceStep>, usage: AnalysisUsage, 
+/**
+ * Second-stage line-anchored findings (context level only).
+ */
+codeFindings: Array<CodeFinding>, };

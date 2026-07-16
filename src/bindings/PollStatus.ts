@@ -3,4 +3,8 @@
 /**
  * Emitted after every poll cycle so the UI can show connection health.
  */
-export type PollStatus = { ok: boolean, message: string | null, at: string, rateLimitRemaining: number, };
+export type PollStatus = { ok: boolean, message: string | null, at: string, rateLimitRemaining: number, 
+/**
+ * A poll cycle is in flight right now ("refreshing…" feedback).
+ */
+syncing: boolean, };

@@ -30,6 +30,14 @@ state: string,
  */
 reviewDecision: string | null, 
 /**
+ * YOUR latest review's state (APPROVED | CHANGES_REQUESTED | COMMENTED…).
+ */
+myReviewState: string | null, myReviewedAt: string | null, 
+/**
+ * Someone re-requested your review after you reviewed — always resurface.
+ */
+myReviewRerequested: boolean, 
+/**
  * SUCCESS | FAILURE | ERROR | PENDING | EXPECTED
  */
 ciStatus: string | null, 
