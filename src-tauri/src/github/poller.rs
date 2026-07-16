@@ -28,11 +28,21 @@ pub fn spawn(app: AppHandle) {
         loop {
             let base_interval = {
                 let store = app.state::<Arc<Store>>();
-                store.settings().map(|s| s.poll_interval_secs.max(15)).unwrap_or(45)
+                store.settings().map(|s| s.poll_interval_secs.max(5)).unwrap_or(45)
             };
+            emit_syncing(&app);
+            crate::devlog::debug(&app, "poller", "poll cycle starting");
             let sleep_secs = match poll_once(&app).await {
                 Ok(rate_remaining) => {
                     failures = 0;
+                    crate::devlog::debug(
+                        &app,
+                        "poller",
+                        format!(
+                            "poll cycle ok — rate remaining {}",
+                            rate_remaining.map_or("?".into(), |r| r.to_string())
+                        ),
+                    );
                     if rate_remaining.is_some_and(|r| r < LOW_RATE_LIMIT) {
                         base_interval * 4
                     } else {
@@ -59,7 +69,27 @@ fn emit_status(app: &AppHandle, ok: bool, message: Option<String>, rate: Option<
     }
     let _ = app.emit(
         events::POLL_STATUS,
-        PollStatus { ok, message, at: Utc::now().to_rfc3339(), rate_limit_remaining: rate },
+        PollStatus {
+            ok,
+            message,
+            at: Utc::now().to_rfc3339(),
+            rate_limit_remaining: rate,
+            syncing: false,
+        },
+    );
+}
+
+/// Announce a cycle starting, so the UI can show "refreshing…".
+fn emit_syncing(app: &AppHandle) {
+    let _ = app.emit(
+        events::POLL_STATUS,
+        PollStatus {
+            ok: true,
+            message: None,
+            at: Utc::now().to_rfc3339(),
+            rate_limit_remaining: None,
+            syncing: true,
+        },
     );
 }
 
@@ -114,6 +144,74 @@ fn notify_for_changes(app: &AppHandle, pr: &crate::models::TrackedPr, changes: &
             Some(crate::notify::FocusTarget { pr_id: pr.info.id.clone(), comment_id: None }),
         );
     }
+}
+
+/// Turn a poll-cycle change into a feed row for the callout's activity log.
+/// Importance: your own PRs always matter; so do high-priority repos/PRs.
+fn record_activity(
+    store: &Arc<Store>,
+    settings: &crate::models::Settings,
+    pr: &crate::models::TrackedPr,
+    changes: &[ChangeKind],
+    now: &str,
+) -> bool {
+    let important = pr.sources.contains(&PrSource::Authored)
+        || pr.priority == crate::models::PrPriority::High
+        || settings.repo_priorities.get(&pr.info.repo) == Some(&RepoPriority::High);
+    let mut wrote = false;
+    for change in changes {
+        let (kind, actor, summary, comment_id) = match change {
+            ChangeKind::NewComments => {
+                let Some(c) = crate::models::latest_human_comment(&pr.info.recent_comments, 5)
+                else {
+                    continue; // bot chatter doesn't belong in the feed
+                };
+                ("comment", c.author.clone(), format!("commented: “{}”", c.snippet), c.id.clone())
+            }
+            ChangeKind::ReviewChanged => {
+                let state = match pr.info.review_decision.as_deref() {
+                    Some("APPROVED") => "review approved",
+                    Some("CHANGES_REQUESTED") => "changes requested",
+                    _ => "review state changed",
+                };
+                ("review", String::new(), state.to_string(), String::new())
+            }
+            ChangeKind::NewCommits => {
+                ("commits", pr.info.author.clone(), "pushed new commits".into(), String::new())
+            }
+            ChangeKind::CiChanged => match pr.info.ci_status.as_deref() {
+                Some("FAILURE") | Some("ERROR") => {
+                    ("ci", String::new(), "CI went red".into(), String::new())
+                }
+                Some("SUCCESS") => ("ci", String::new(), "CI is green".into(), String::new()),
+                _ => continue, // pending flapping is noise
+            },
+            ChangeKind::Merged => ("merged", String::new(), "merged".into(), String::new()),
+            ChangeKind::Closed => ("closed", String::new(), "closed".into(), String::new()),
+            ChangeKind::Reopened => ("reopened", String::new(), "reopened".into(), String::new()),
+            // New PRs feed only when they matter: a direct review ask, or a
+            // PR in something marked important. Merely entering the tracked
+            // set (involves:, watched) is noise.
+            ChangeKind::New if pr.sources.contains(&PrSource::ReviewRequested) => {
+                ("new", pr.info.author.clone(), "review requested".into(), String::new())
+            }
+            ChangeKind::New if important => {
+                ("new", pr.info.author.clone(), "opened a PR".into(), String::new())
+            }
+            ChangeKind::DraftChanged if !pr.info.is_draft => {
+                ("ready", pr.info.author.clone(), "marked ready for review".into(), String::new())
+            }
+            // Title edits and draft flips into draft are noise.
+            _ => continue,
+        };
+        if store
+            .add_activity(now, &pr.info, kind, &actor, &summary, &comment_id, important)
+            .is_ok()
+        {
+            wrote = true;
+        }
+    }
+    wrote
 }
 
 /// Kick off a background L1 analysis for a PR that just entered the review
@@ -212,6 +310,35 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
         .map(|p| (p.info.id.clone(), p))
         .collect();
 
+    // Viewer-scoped review state comes from separate cheap chunked queries
+    // (see fetch_viewer_reviews). Best-effort: on failure keep last known
+    // values instead of failing the whole cycle or wiping state.
+    let ids: Vec<String> = merged.keys().cloned().collect();
+    let viewer_reviews = match crate::github::query::fetch_viewer_reviews(&client, &ids).await {
+        Ok(map) => map,
+        Err(e) => {
+            crate::devlog::warn(app, "poller", format!("viewer-review fetch failed: {e}"));
+            std::collections::HashMap::new()
+        }
+    };
+    for (id, (info, _)) in merged.iter_mut() {
+        match viewer_reviews.get(id) {
+            Some((state, at, rereq)) => {
+                info.my_review_state = state.clone();
+                info.my_reviewed_at = at.clone();
+                info.my_review_rerequested = *rereq;
+            }
+            None => {
+                if let Some(prev) = existing.get(id) {
+                    info.my_review_state = prev.info.my_review_state.clone();
+                    info.my_reviewed_at = prev.info.my_reviewed_at.clone();
+                    info.my_review_rerequested = prev.info.my_review_rerequested;
+                }
+            }
+        }
+    }
+
+    let mut activity_written = false;
     for (id, (info, sources)) in &merged {
         // Ignored repos never enter (or stay in) the tracked set.
         if settings.repo_priorities.get(&info.repo) == Some(&RepoPriority::Ignored) {
@@ -222,7 +349,14 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
         }
         let changes = match existing.get(id) {
             Some(prev) => compute_changes(&prev.info, info),
-            None => vec![ChangeKind::New],
+            None => {
+                // GitHub's search index lags: a just-merged/closed PR can keep
+                // matching `is:open` for a while. Don't resurrect it as new.
+                if info.state != "OPEN" {
+                    continue;
+                }
+                vec![ChangeKind::New]
+            }
         };
         if changes.contains(&ChangeKind::NewCommits) {
             // New commits invalidate every cached analysis for this PR.
@@ -251,9 +385,15 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
             maybe_prewarm(app, &store, &settings, &stored.info, head_moved);
         }
         if !changes.is_empty() && !stored.muted {
+            if record_activity(&store, &settings, &stored, &changes, &now) {
+                activity_written = true;
+            }
             notify_for_changes(app, &stored, &changes);
             let _ = app.emit(events::PR_CHANGED, PrChangedEvent { pr: stored, changes });
         }
+    }
+    if activity_written {
+        let _ = app.emit(events::ACTIVITY_CHANGED, ());
     }
 
     let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);

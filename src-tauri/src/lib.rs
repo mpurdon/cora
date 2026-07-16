@@ -18,6 +18,13 @@ use tokio::sync::Notify;
 use github::poller::PollTrigger;
 use store::Store;
 
+/// Persist window geometry — never visibility; our own setting governs
+/// whether the callout shows at launch.
+pub(crate) fn flush_window_state(app: &tauri::AppHandle) {
+    use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+    let _ = app.save_window_state(StateFlags::all() - StateFlags::VISIBLE);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -44,6 +51,7 @@ pub fn run() {
             )));
             app.manage(devlog::DevLog::new());
             app.manage(notify::PendingFocus::new());
+            app.manage(analysis::chat::ChatSessions::default());
 
             // Respect the "open callout at launch" preference.
             let show_callout = app
@@ -70,6 +78,27 @@ pub fn run() {
                     }
                 });
             }
+
+            // The callout is never "closed", only hidden — and dev restarts /
+            // Cmd+Q don't pass through the tray quit handler — so the
+            // window-state plugin's own save hooks rarely fire for it.
+            // Persist explicitly: throttled while dragging/resizing, and on
+            // every focus loss (catches the end of a drag).
+            if let Some(callout) = app.get_webview_window("callout") {
+                let handle = app.handle().clone();
+                let last_save = std::sync::Mutex::new(std::time::Instant::now());
+                callout.on_window_event(move |event| match event {
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                        let mut last = last_save.lock().unwrap();
+                        if last.elapsed() >= std::time::Duration::from_millis(800) {
+                            *last = std::time::Instant::now();
+                            flush_window_state(&handle);
+                        }
+                    }
+                    tauri::WindowEvent::Focused(false) => flush_window_state(&handle),
+                    _ => {}
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -85,6 +114,9 @@ pub fn run() {
             commands::set_pr_priority,
             commands::set_repo_priority,
             commands::get_audit_log,
+            commands::get_activity,
+            commands::mark_activity_read,
+            commands::set_activity_flag,
             commands::undo_audit,
             commands::get_pr_comments,
             commands::get_file_at_head,
@@ -103,6 +135,10 @@ pub fn run() {
             commands::track_pr_url,
             commands::get_analysis,
             commands::run_analysis,
+            commands::chat_history,
+            commands::chat_send,
+            commands::chat_confirm,
+            commands::chat_clear,
             commands::get_pr_diff,
             commands::ensure_review_mark,
             commands::set_review_mark,
@@ -123,8 +159,14 @@ pub fn run() {
             commands::show_main_filtered,
             commands::toggle_callout,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Cmd+Q and other non-tray exits still flush window positions.
+            if let tauri::RunEvent::Exit = event {
+                flush_window_state(app);
+            }
+        });
 }
 
 fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -151,11 +193,7 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             "quit" => {
                 // Tray quit bypasses window close events — flush positions
                 // (callout included) so they restore next launch.
-                use tauri_plugin_window_state::AppHandleExt;
-                let _ = app.save_window_state(
-                    tauri_plugin_window_state::StateFlags::all()
-                        - tauri_plugin_window_state::StateFlags::VISIBLE,
-                );
+                flush_window_state(app);
                 app.exit(0);
             }
             _ => {}

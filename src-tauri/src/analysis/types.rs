@@ -227,6 +227,36 @@ pub struct TraceStep {
     pub message: String,
 }
 
+/// What class of code-level finding the second pass reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodeFindingKind {
+    /// A consequence-bearing bug: wrong deps, unhandled paths, races, leaks.
+    Defect,
+    /// Hand-rolled code duplicating an existing repo/design-system primitive.
+    Reuse,
+    /// A team-conventions violation (from the reviewer's settings).
+    Convention,
+}
+
+/// Line-anchored output of the code-findings pass — the altitude below the
+/// architecture assessment, still above style nits.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeFinding {
+    pub path: String,
+    /// New-side diff line the finding anchors to, when the model gave one.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub line: Option<i64>,
+    pub severity: Severity,
+    pub kind: CodeFindingKind,
+    pub finding: String,
+    pub suggestion: String,
+}
+
 /// Token cost of one analysis run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -258,6 +288,9 @@ pub struct AnalysisResult {
     pub trace: Vec<TraceStep>,
     #[serde(default)]
     pub usage: AnalysisUsage,
+    /// Second-stage line-anchored findings (context level only).
+    #[serde(default)]
+    pub code_findings: Vec<CodeFinding>,
 }
 
 /// Streaming progress for the UI ("reading src/payments/…").
@@ -309,8 +342,70 @@ pub struct AnalysisError {
     pub kind: AnalysisErrorKind,
 }
 
+// -- assistant chat -----------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChatItemKind {
+    /// A message the user typed.
+    User,
+    /// Assistant prose (markdown).
+    Assistant,
+    /// A research step the assistant took ("reading src/…").
+    Tool,
+    /// An app action executed after user confirmation.
+    Action,
+    Error,
+}
+
+/// One entry in the assistant conversation transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatItem {
+    pub at: String,
+    pub kind: ChatItemKind,
+    pub text: String,
+}
+
+/// A mutating app action the assistant wants to take — held until the user
+/// confirms, so every outward effect stays a human decision.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatPendingAction {
+    pub name: String,
+    /// One-line human description ("comment on src/api.ts:41").
+    pub summary: String,
+    /// The full text/body the action would post, for review before running.
+    pub detail: String,
+}
+
+/// Snapshot of a PR's chat session for (re)mounting the panel.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTranscript {
+    pub items: Vec<ChatItem>,
+    pub busy: bool,
+    pub pending: Option<ChatPendingAction>,
+}
+
+/// Payload for chat:item / chat:state events.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatEvent {
+    pub pr_id: String,
+    pub item: Option<ChatItem>,
+    pub busy: bool,
+    pub pending: Option<ChatPendingAction>,
+}
+
 pub mod events {
     pub const ANALYSIS_PROGRESS: &str = "analysis:progress";
     pub const ANALYSIS_COMPLETE: &str = "analysis:complete";
     pub const ANALYSIS_ERROR: &str = "analysis:error";
+    pub const CHAT_EVENT: &str = "chat:event";
 }

@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS audit (
   new_value     TEXT NOT NULL DEFAULT '',
   undone        INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS activity (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  at         TEXT NOT NULL,
+  pr_id      TEXT NOT NULL,
+  repo       TEXT NOT NULL,
+  number     INTEGER NOT NULL,
+  pr_title   TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  actor      TEXT NOT NULL DEFAULT '',
+  summary    TEXT NOT NULL,
+  comment_id TEXT NOT NULL DEFAULT '',
+  important  INTEGER NOT NULL DEFAULT 0,
+  read       INTEGER NOT NULL DEFAULT 0,
+  flag       TEXT NOT NULL DEFAULT ''
+);
 ";
 
 impl Store {
@@ -67,6 +82,9 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         // Additive migration; harmless error when the column already exists.
         let _ = conn.execute("ALTER TABLE prs ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'", []);
+        // Cleanup for a fixed bug: untracked-but-still-searchable PRs spammed
+        // "now tracking" rows every poll cycle.
+        let _ = conn.execute("DELETE FROM activity WHERE summary = 'now tracking'", []);
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -187,7 +205,7 @@ impl Store {
             "INSERT INTO prs (id, data, sources, muted, tracked, unread, first_seen, last_change_at)
              VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
-               data = ?2, sources = ?3, unread = ?5, last_change_at = ?7",
+               data = ?2, sources = ?3, tracked = 1, unread = ?5, last_change_at = ?7",
             params![
                 info.id,
                 data,
@@ -440,6 +458,79 @@ impl Store {
         Ok(())
     }
 
+    // -- activity feed (callout) ---------------------------------------------
+
+    /// Record a feed row. Pruned to the most recent 500 to keep the callout
+    /// (and this table) from growing without bound.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_activity(
+        &self,
+        at: &str,
+        pr: &crate::models::PrInfo,
+        kind: &str,
+        actor: &str,
+        summary: &str,
+        comment_id: &str,
+        important: bool,
+    ) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO activity (at, pr_id, repo, number, pr_title, kind, actor, summary, comment_id, important)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![at, pr.id, pr.repo, pr.number, pr.title, kind, actor, summary, comment_id, important],
+        )?;
+        conn.execute(
+            "DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT 500)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_activity(&self, limit: i64) -> AppResult<Vec<crate::models::ActivityItem>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, at, pr_id, repo, number, pr_title, kind, actor, summary, comment_id, important, read, flag
+             FROM activity ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| {
+            Ok(crate::models::ActivityItem {
+                id: r.get(0)?,
+                at: r.get(1)?,
+                pr_id: r.get(2)?,
+                repo: r.get(3)?,
+                number: r.get(4)?,
+                pr_title: r.get(5)?,
+                kind: r.get(6)?,
+                actor: r.get(7)?,
+                summary: r.get(8)?,
+                comment_id: r.get(9)?,
+                important: r.get(10)?,
+                read: r.get(11)?,
+                flag: r.get(12)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Empty `ids` means mark everything.
+    pub fn mark_activity_read(&self, ids: &[i64], read: bool) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        if ids.is_empty() {
+            conn.execute("UPDATE activity SET read = ?1", params![read])?;
+        } else {
+            for id in ids {
+                conn.execute("UPDATE activity SET read = ?1 WHERE id = ?2", params![read, id])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_activity_flag(&self, id: i64, flag: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE activity SET flag = ?1 WHERE id = ?2", params![flag, id])?;
+        Ok(())
+    }
+
     pub fn list_audit(&self, limit: i64) -> AppResult<Vec<crate::models::AuditEntry>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -505,6 +596,9 @@ mod tests {
             is_draft: false,
             state: "OPEN".into(),
             review_decision: None,
+            my_review_state: None,
+            my_reviewed_at: None,
+            my_review_rerequested: false,
             ci_status: None,
             mergeable: "UNKNOWN".into(),
             additions: 0,

@@ -81,14 +81,34 @@ pub struct GraphQlClient {
 
 impl GraphQlClient {
     pub fn new(url: &str, token: &str) -> AppResult<Self> {
+        // 60s: the batched poll computes viewer-scoped fields across ~140
+        // PRs and GitHub can stream that slowly — a mid-body timeout
+        // surfaces as a cryptic "error decoding response body".
         let http = reqwest::Client::builder()
             .user_agent("cora-pr-review")
-            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
             .build()?;
         Ok(Self { http, url: url.to_string(), token: token.to_string() })
     }
 
+    /// GitHub's GraphQL edge throws transient 5xx / truncated bodies fairly
+    /// often, especially on heavy batched queries — retry those a couple of
+    /// times with backoff before surfacing a failure.
     pub async fn run(&self, query: &str, variables: &Value) -> AppResult<Value> {
+        let mut attempt = 0u32;
+        loop {
+            match self.run_once(query, variables).await {
+                Err(e) if attempt < 2 && is_transient(&e) => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_secs(3 * attempt as u64)).await;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn run_once(&self, query: &str, variables: &Value) -> AppResult<Value> {
         let resp = self
             .http
             .post(&self.url)
@@ -106,19 +126,78 @@ impl GraphQlClient {
         }
         let body: Value = resp.json().await?;
         if let Some(errors) = body.get("errors").and_then(Value::as_array) {
-            // Partial data with NOT_FOUND node errors is fine (stale tracked
-            // ids); anything without data is a hard failure.
-            if body.pointer("/data").map(Value::is_null).unwrap_or(true) {
+            // Queries tolerate partial data (stale tracked ids surface as
+            // NOT_FOUND node errors next to perfectly good results). Mutations
+            // never do: a rejected mutation comes back as
+            // {"data": {"theMutation": null}, "errors": [...]} — non-null data
+            // — and swallowing that reports success for a write GitHub refused.
+            let is_mutation = query.trim_start().starts_with("mutation");
+            let data_null = body.pointer("/data").map(Value::is_null).unwrap_or(true);
+            if is_mutation || data_null {
                 let msgs: Vec<String> = errors
                     .iter()
                     .filter_map(|e| e.get("message").and_then(Value::as_str).map(String::from))
                     .collect();
-                return Err(AppError::GitHub(msgs.join("; ")));
+                let joined = if msgs.is_empty() { "GraphQL error".into() } else { msgs.join("; ") };
+                return Err(AppError::GitHub(joined));
             }
         }
         body.get("data")
             .cloned()
             .ok_or_else(|| AppError::GitHub("empty response".into()))
+    }
+}
+
+/// The viewer's latest review per PR: state, submittedAt, re-requested.
+pub type ViewerReviews = HashMap<String, (Option<String>, Option<String>, bool)>;
+
+/// viewer-scoped review fields are computed per-viewer per-PR on GitHub's
+/// side — batching them into the main ~140-node poll pushes the query past
+/// GitHub's gateway timeout (persistent 502s). Fetch them separately, in
+/// small chunks that each stay comfortably cheap.
+pub async fn fetch_viewer_reviews(
+    client: &GraphQlClient,
+    ids: &[String],
+) -> AppResult<ViewerReviews> {
+    const DOC: &str = "query($ids: [ID!]!) { nodes(ids: $ids) { ... on PullRequest {
+        id
+        viewerLatestReview { state submittedAt }
+        viewerLatestReviewRequest { id }
+    } } }";
+    let mut out = HashMap::new();
+    for chunk in ids.chunks(40) {
+        let data = client.run(DOC, &json!({ "ids": chunk })).await?;
+        let Some(nodes) = data.pointer("/nodes").and_then(Value::as_array) else { continue };
+        for n in nodes {
+            let Some(id) = n.get("id").and_then(Value::as_str) else { continue };
+            out.insert(
+                id.to_string(),
+                (
+                    n.pointer("/viewerLatestReview/state")
+                        .and_then(Value::as_str)
+                        .map(String::from),
+                    n.pointer("/viewerLatestReview/submittedAt")
+                        .and_then(Value::as_str)
+                        .map(String::from),
+                    n.pointer("/viewerLatestReviewRequest/id")
+                        .and_then(Value::as_str)
+                        .is_some(),
+                ),
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// Worth an automatic retry: gateway hiccups (502/503/504), timeouts, and
+/// bodies that got cut off mid-stream. Auth and query errors are not.
+fn is_transient(e: &AppError) -> bool {
+    match e {
+        AppError::Http(e) => e.is_timeout() || e.is_connect() || e.is_decode(),
+        AppError::GitHub(msg) => {
+            msg.contains("502") || msg.contains("503") || msg.contains("504")
+        }
+        _ => false,
     }
 }
 

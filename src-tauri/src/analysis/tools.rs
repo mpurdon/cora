@@ -14,6 +14,9 @@ pub struct RepoTools {
     /// The full diff is wanted by both the metrics pass and the model's
     /// get_pr_diff tool in the same run — fetch it once per instance.
     diff_cache: tokio::sync::OnceCell<String>,
+    /// GitHub code search allows ~10 requests/min; concurrent tool calls
+    /// serialize through this gate with spacing instead of bursting into 429s.
+    search_gate: tokio::sync::Mutex<Option<std::time::Instant>>,
 }
 
 const MAX_FILE_CHARS: usize = 40_000;
@@ -38,25 +41,47 @@ impl RepoTools {
             number,
             token: token.to_string(),
             diff_cache: tokio::sync::OnceCell::new(),
+            search_gate: tokio::sync::Mutex::new(None),
         })
     }
 
     async fn get(&self, path: &str, accept: &str) -> AppResult<reqwest::Response> {
-        let resp = self
-            .http
-            .get(format!("{}/{}", self.api_base, path))
-            .bearer_auth(&self.token)
-            .header("Accept", accept)
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            return Err(AppError::GitHub(format!(
-                "GET {path}: HTTP {}",
-                resp.status()
-            )));
+        for attempt in 0..3u32 {
+            let resp = self
+                .http
+                .get(format!("{}/{}", self.api_base, path))
+                .bearer_auth(&self.token)
+                .header("Accept", accept)
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .send()
+                .await?;
+            let status = resp.status();
+            // Rate-limited: honor Retry-After (capped) and try again rather
+            // than handing the model a dead tool.
+            let limited = status == 429
+                || (status == 403
+                    && resp
+                        .headers()
+                        .get("x-ratelimit-remaining")
+                        .and_then(|v| v.to_str().ok())
+                        == Some("0"));
+            if limited && attempt < 2 {
+                let wait = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(15)
+                    .min(60);
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                continue;
+            }
+            if !status.is_success() {
+                return Err(AppError::GitHub(format!("GET {path}: HTTP {status}")));
+            }
+            return Ok(resp);
         }
-        Ok(resp)
+        unreachable!("retry loop always returns")
     }
 
     /// The tool specs the model sees. Names must match `execute`.
@@ -186,16 +211,79 @@ impl RepoTools {
         let diff = self
             .diff_cache
             .get_or_try_init(|| async {
-                let resp = self
+                match self
                     .get(
                         &format!("repos/{}/pulls/{}", self.repo, self.number),
                         "application/vnd.github.v3.diff",
                     )
-                    .await?;
-                Ok::<_, crate::error::AppError>(resp.text().await?)
+                    .await
+                {
+                    Ok(resp) => Ok::<_, crate::error::AppError>(resp.text().await?),
+                    // GitHub refuses the whole-PR diff media type past ~20k
+                    // lines / 300 files (406). Reassemble from the paginated
+                    // per-file endpoint, which has no such ceiling.
+                    Err(e) if e.to_string().contains("406") => self.diff_from_files().await,
+                    Err(e) => Err(e),
+                }
             })
             .await?;
         Ok(diff.clone())
+    }
+
+    /// Reconstruct a unified diff from `pulls/{n}/files` — the fallback for
+    /// PRs whose combined diff GitHub won't serve. Per-file patches GitHub
+    /// still omits (giant/binary) become a marker hunk so the UI can say so.
+    async fn diff_from_files(&self) -> AppResult<String> {
+        let mut out = String::new();
+        for page in 1..=30 {
+            let resp = self
+                .get(
+                    &format!(
+                        "repos/{}/pulls/{}/files?per_page=100&page={page}",
+                        self.repo, self.number
+                    ),
+                    "application/vnd.github+json",
+                )
+                .await?;
+            let files: serde_json::Value = resp.json().await.map_err(crate::error::AppError::from)?;
+            let Some(arr) = files.as_array() else { break };
+            if arr.is_empty() {
+                break;
+            }
+            for f in arr {
+                let path = f.get("filename").and_then(serde_json::Value::as_str).unwrap_or("?");
+                let prev = f
+                    .get("previous_filename")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(path);
+                let status = f.get("status").and_then(serde_json::Value::as_str).unwrap_or("");
+                out.push_str(&format!("diff --git a/{prev} b/{path}\n"));
+                if status == "removed" {
+                    out.push_str("deleted file mode 100644\n");
+                } else if status == "added" {
+                    out.push_str("new file mode 100644\n");
+                }
+                let a = if status == "added" { "/dev/null".into() } else { format!("a/{prev}") };
+                let b = if status == "removed" { "/dev/null".into() } else { format!("b/{path}") };
+                out.push_str(&format!("--- {a}\n+++ {b}\n"));
+                match f.get("patch").and_then(serde_json::Value::as_str) {
+                    Some(p) => {
+                        out.push_str(p);
+                        out.push('\n');
+                    }
+                    None => out.push_str("@@ -0,0 +0,0 @@ patch omitted by GitHub (too large or binary)\n"),
+                }
+            }
+            if arr.len() < 100 {
+                break;
+            }
+        }
+        if out.is_empty() {
+            return Err(crate::error::AppError::Other(
+                "GitHub returned no diff for this PR (too large)".into(),
+            ));
+        }
+        Ok(out)
     }
 
     async fn file(&self, path: &str, r#ref: Option<&str>) -> AppResult<String> {
@@ -247,6 +335,21 @@ impl RepoTools {
     }
 
     async fn search(&self, query: &str) -> AppResult<String> {
+        // Serialize concurrent searches with spacing (~9/min) — the gate is
+        // held across the request so a burst of tool calls forms a queue.
+        let mut last = self.search_gate.lock().await;
+        if let Some(prev) = *last {
+            let min_gap = std::time::Duration::from_millis(6500);
+            if prev.elapsed() < min_gap {
+                tokio::time::sleep(min_gap - prev.elapsed()).await;
+            }
+        }
+        let result = self.search_inner(query).await;
+        *last = Some(std::time::Instant::now());
+        result
+    }
+
+    async fn search_inner(&self, query: &str) -> AppResult<String> {
         let q = format!("{query} repo:{}", self.repo);
         let resp = self
             .get(
