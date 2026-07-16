@@ -1,6 +1,6 @@
 # CORA
 
-A native macOS desktop app that watches your GitHub pull requests and helps you review them well — an AI review copilot built with Tauri 2, React, and Rust.
+A desktop app that watches your GitHub pull requests and helps you review them well — an AI review copilot built with Tauri 2, React, and Rust. Cross-platform by construction (Tauri renders in the OS webview); developed and tested on macOS.
 
 CORA tracks the PRs that need your attention, analyzes each one against the whole repository (not just the diff), and turns the review into a guided reading: what matters, what's mechanical, what's risky, and what nobody noticed.
 
@@ -33,9 +33,9 @@ CORA tracks the PRs that need your attention, analyzes each one against the whol
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel)
+- macOS is the developed-and-tested platform; Windows/Linux should work via Tauri but are unverified
 - [Rust](https://rustup.rs) and [Node.js](https://nodejs.org) 20+
-- A GitHub personal access token (stored in the macOS Keychain, never leaves the machine)
+- A GitHub personal access token (stored in the OS credential store — Keychain on macOS — and never leaves the machine)
 - An AWS account with Bedrock model access (auth via `aws sso login` profile; model id or inference-profile ARN configurable in Settings)
 
 ## Development
@@ -66,9 +66,9 @@ src-tauri/src/       Rust backend
   github/            GitHub API client + background poller
   analysis/          Bedrock agentic analysis engine, tools, chat sessions
   store.rs           SQLite persistence (app data dir)
-  secrets.rs         Keychain-backed token storage
+  secrets.rs         Token storage in the OS credential store (keyring)
 ```
 
 ## Configuration
 
-Everything lives in Settings (gear icon): GitHub token, AWS profile/region/model, analysis passes, noise-file globs, notification and callout behavior. State is stored in `~/Library/Application Support/com.mp.cora/`.
+Everything lives in Settings (gear icon): GitHub token, AWS profile/region/model, analysis passes, noise-file globs, notification and callout behavior. State is stored in the app data directory (`~/Library/Application Support/com.mp.cora/` on macOS).
