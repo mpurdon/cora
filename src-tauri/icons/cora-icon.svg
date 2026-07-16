@@ -1,0 +1,104 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- CORA app icon — "the scout's trail": a crescent-C moon over a pine
+       ridge, a moonlit trail forking like a branch graph through the valley.
+       Named for Cora Munro (The Last of the Mohicans). -->
+  <defs>
+    <clipPath id="squircle">
+      <rect x="100" y="100" width="824" height="824" rx="188" />
+    </clipPath>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#233440" />
+      <stop offset="0.5" stop-color="#17251f" />
+      <stop offset="1" stop-color="#0b120e" />
+    </linearGradient>
+    <radialGradient id="moonglow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ede6d2" stop-opacity="0.35" />
+      <stop offset="0.55" stop-color="#ede6d2" stop-opacity="0.10" />
+      <stop offset="1" stop-color="#ede6d2" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="trail" x1="0" y1="924" x2="0" y2="660" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ece5d0" stop-opacity="0.95" />
+      <stop offset="0.62" stop-color="#ece5d0" stop-opacity="0.5" />
+      <stop offset="1" stop-color="#ece5d0" stop-opacity="0.06" />
+    </linearGradient>
+    <radialGradient id="vignette" cx="0.5" cy="0.46" r="0.72">
+      <stop offset="0.62" stop-color="#000000" stop-opacity="0" />
+      <stop offset="1" stop-color="#000000" stop-opacity="0.32" />
+    </radialGradient>
+    <mask id="crescent">
+      <circle cx="512" cy="332" r="148" fill="white" />
+      <circle cx="580" cy="318" r="132" fill="black" />
+    </mask>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#sky)" />
+
+    <!-- stars -->
+    <g fill="#ece5d0">
+      <circle cx="238" cy="238" r="3.5" opacity="0.75" />
+      <circle cx="330" cy="176" r="2.4" opacity="0.5" />
+      <circle cx="700" cy="200" r="3" opacity="0.7" />
+      <circle cx="796" cy="300" r="2.4" opacity="0.5" />
+      <circle cx="768" cy="170" r="2" opacity="0.4" />
+      <circle cx="180" cy="380" r="2.6" opacity="0.55" />
+      <circle cx="620" cy="150" r="2.2" opacity="0.45" />
+      <circle cx="860" cy="430" r="2.2" opacity="0.4" />
+      <circle cx="152" cy="520" r="2" opacity="0.35" />
+    </g>
+
+    <!-- crescent moon: the C -->
+    <circle cx="512" cy="332" r="290" fill="url(#moonglow)" />
+    <circle cx="512" cy="332" r="148" fill="#ece5d0" mask="url(#crescent)" />
+
+    <!-- back ridge, moon-misted -->
+    <path fill="#1c352c" d="M100 704
+      L156 664 L196 690 L240 640 L286 684 L330 630 L372 676
+      L418 640 L452 668 L478 646 L512 664 L548 648 L586 670
+      L626 632 L668 678 L714 636 L758 682 L800 646 L848 688 L888 656 L924 690
+      L924 924 L100 924 Z" />
+
+    <!-- moonlit trail: trunk, then a fork — the branch graph. Branch tips
+         end below the ridge line so they vanish into the dark woods. -->
+    <path fill="url(#trail)" d="M444 924
+      C 470 856, 462 818, 486 762
+      L 538 762
+      C 560 818, 572 856, 596 924 Z" />
+    <path fill="url(#trail)" d="M486 762
+      C 458 734, 430 716, 398 702
+      L 412 680
+      C 446 696, 478 720, 502 746 Z" />
+    <path fill="url(#trail)" d="M538 762
+      C 566 734, 596 716, 630 702
+      L 616 680
+      C 580 696, 548 720, 522 746 Z" />
+
+    <!-- footprint commits; ember dot = HEAD at the fork -->
+    <g fill="#ece5d0">
+      <circle cx="516" cy="868" r="13" opacity="0.95" />
+      <circle cx="508" cy="812" r="10" opacity="0.85" />
+      <circle cx="452" cy="716" r="7" opacity="0.6" />
+      <circle cx="580" cy="712" r="7" opacity="0.6" />
+    </g>
+    <circle cx="512" cy="758" r="12" fill="#dfa45b" />
+
+    <!-- front pine masses, leaving the valley open -->
+    <path fill="#0a140f" d="M100 790
+      L138 742 L160 764 L186 716 L212 754 L232 700 L233 700
+      L262 748 L292 712 L322 762 L352 726 L386 780 L410 750 L436 800
+      L436 924 L100 924 Z" />
+    <path fill="#0a140f" d="M598 800
+      L626 752 L654 786 L680 726 L708 768 L732 712 L760 758
+      L788 716 L816 764 L844 728 L872 772 L900 740 L924 766
+      L924 924 L598 924 Z" />
+    <!-- two firs for silhouette character -->
+    <path fill="#0e1a13" d="M208 924 L208 812
+      L172 856 L196 848 L162 896 L192 886 L154 924 Z
+      M208 812 L244 856 L220 848 L254 896 L224 886 L262 924 L208 924 Z" />
+    <path fill="#0e1a13" d="M812 924 L812 826
+      L782 862 L802 856 L772 900 L798 892 L766 924 Z
+      M812 826 L842 862 L822 856 L852 900 L826 892 L858 924 L812 924 Z" />
+
+    <rect x="100" y="100" width="824" height="824" fill="url(#vignette)" />
+  </g>
+</svg>
