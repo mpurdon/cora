@@ -7,9 +7,11 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PrComment } from "../../bindings/PrComment";
 import type { PrConversation } from "../../bindings/PrConversation";
 import type { ReviewThread } from "../../bindings/ReviewThread";
+import type { ReviewVerdict } from "../../bindings/ReviewVerdict";
 import { ipc } from "../../lib/ipc";
+import { useDiffStore } from "../../state/diffStore";
 import { timeAgo } from "../../state/prStore";
-import { parseDiff, type DiffFile } from "./DiffView";
+import { DiffJump, parseDiff, type DiffFile } from "./DiffView";
 
 /** Comment id → DOM anchor, so reply notifications can deep-link here. */
 export const commentAnchor = (commentId: string) => `comment-${commentId}`;
@@ -258,6 +260,46 @@ export function Composer({
   );
 }
 
+/** Mirrors the Rust-side gate (models::is_non_blocking_comment): threads
+ *  opened as praise/note/fyi or marked (non-blocking) don't hold up approval,
+ *  so show them as such. */
+export function isNonBlockingComment(body: string): boolean {
+  const first = (body.trimStart().split("\n")[0] ?? "")
+    .replace(/[*_`~]/g, "")
+    .trimStart()
+    .toLowerCase();
+  return (
+    first.startsWith("praise:") ||
+    first.startsWith("note:") ||
+    first.startsWith("fyi:") ||
+    first.includes("(non-blocking)") ||
+    first.includes("non-blocking:")
+  );
+}
+
+const VERDICT_META: Record<string, { label: string; cls: string }> = {
+  APPROVED: { label: "approved", cls: "approved" },
+  CHANGES_REQUESTED: { label: "requested changes", cls: "changes" },
+  COMMENTED: { label: "reviewed", cls: "commented" },
+  DISMISSED: { label: "review dismissed", cls: "dismissed" },
+};
+
+/** A submitted review's verdict + summary body, inline in the conversation —
+ *  this text lives on the review object, not in any comment or thread. */
+function ReviewVerdictCard({ review }: { review: ReviewVerdict }) {
+  const meta = VERDICT_META[review.state] ?? { label: review.state.toLowerCase(), cls: "commented" };
+  return (
+    <div className={`review-verdict ${meta.cls}`}>
+      <div className="verdict-head">
+        <span className="comment-author">{review.author}</span>
+        <span className={`verdict-chip ${meta.cls}`}>{meta.label}</span>
+        <span className="comment-ago mono">{timeAgo(review.submittedAt)} ago</span>
+      </div>
+      {review.body.trim() && <CommentBody body={review.body} />}
+    </div>
+  );
+}
+
 function Thread({
   thread,
   onShowCode,
@@ -276,15 +318,28 @@ function Thread({
         {thread.path && (
           <button
             className="thread-anchor mono"
-            title="Show this code"
+            title={`Show this code — ${thread.path}`}
             onClick={() => onShowCode(thread)}
           >
-            {thread.path}
-            {thread.line != null && `:${thread.startLine != null ? `${thread.startLine}–` : ""}${thread.line}`}
+            {thread.path.includes("/") && (
+              <span className="anchor-dir">
+                {thread.path.slice(0, thread.path.lastIndexOf("/") + 1)}
+              </span>
+            )}
+            <span className="anchor-name">
+              {thread.path.slice(thread.path.lastIndexOf("/") + 1)}
+              {thread.line != null &&
+                `:${thread.startLine != null ? `${thread.startLine}–` : ""}${thread.line}`}
+            </span>
           </button>
         )}
         {thread.resolved && <span className="thread-tag resolved-tag">resolved</span>}
         {thread.outdated && <span className="thread-tag">outdated</span>}
+        {!thread.resolved && isNonBlockingComment(root.body) && (
+          <span className="thread-tag" title="Doesn't block approval">
+            non-blocking
+          </span>
+        )}
         <span className="spacer" />
         {!replying && (
           <>
@@ -398,7 +453,9 @@ function CodeDrawer({
 
           {diffFile != null && (
             <pre className="diff-body">
+              <div className="diff-scroll-inner">
               {diffFile.lines.map((l, i) => {
+                if (l.kind === "hunk") return <DiffJump key={i} text={l.text} />;
                 const referenced = l.kind !== "del" && inRange(l.newLine);
                 return (
                   <div
@@ -416,6 +473,7 @@ function CodeDrawer({
                   </div>
                 );
               })}
+              </div>
             </pre>
           )}
 
@@ -456,6 +514,18 @@ export function CommentsView({
   const [error, setError] = useState<string | null>(null);
   const [codeThread, setCodeThread] = useState<ReviewThread | null>(null);
   const [prefill, setPrefill] = useState("");
+
+  // A "± comment" on a finding with no resolvable diff file lands here,
+  // pre-filling the conversation composer instead.
+  const composeRequest = useDiffStore((s) => s.composeRequest);
+  useEffect(() => {
+    if (composeRequest?.target !== "conversation") return;
+    setPrefill(composeRequest.seed);
+    useDiffStore.getState().clearCompose();
+    requestAnimationFrame(() => {
+      document.getElementById("conversation-composer")?.scrollIntoView({ block: "center" });
+    });
+  }, [composeRequest]);
 
   const quoteReply = (comment: PrComment) => {
     const quoted = comment.body
@@ -528,15 +598,22 @@ export function CommentsView({
 
       <section>
         <span className="eyebrow">Conversation</span>
-        {conversation.comments.map((c) => (
-          <Comment
-            key={c.id}
-            comment={c}
-            isReply={false}
-            onChanged={load}
-            onQuoteReply={quoteReply}
-          />
-        ))}
+        {[
+          ...conversation.comments.map((c) => ({ at: c.createdAt, el: (
+            <Comment
+              key={c.id}
+              comment={c}
+              isReply={false}
+              onChanged={load}
+              onQuoteReply={quoteReply}
+            />
+          ) })),
+          ...(conversation.reviews ?? []).map((r) => ({ at: r.submittedAt, el: (
+            <ReviewVerdictCard key={r.id} review={r} />
+          ) })),
+        ]
+          .sort((a, b) => a.at.localeCompare(b.at))
+          .map((x) => x.el)}
         <div id="conversation-composer">
           <Composer
             key={prefill} // remount to adopt a new quote prefill

@@ -1,15 +1,52 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  isValidElement,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { ipc } from "../lib/ipc";
+import {
+  activeThemeId,
+  allThemes,
+  cloneTheme,
+  COLOR_KEYS,
+  COLOR_LABELS,
+  customThemes,
+  deleteCustomTheme,
+  saveCustomTheme,
+  setActiveTheme,
+  type Theme,
+} from "../lib/theme";
 import { usePrStore } from "../state/prStore";
 import { DeveloperPane } from "./DeveloperPane";
 
-type Pane = "general" | "github" | "repos" | "aws" | "developer";
+export type SettingsPane = "general" | "appearance" | "github" | "repos" | "aws" | "developer";
+type Pane = SettingsPane;
+
+/** Active settings-search query; Fields hide themselves unless they match. */
+const SearchCtx = createContext("");
+/** Human pane name, shown as a chip on matched fields during search. */
+const PaneNameCtx = createContext("");
+
+function nodeText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join(" ");
+  if (isValidElement(node)) {
+    return nodeText((node.props as { children?: ReactNode }).children);
+  }
+  return "";
+}
 
 const PANES: { key: Pane; label: string; glyph: string; dev?: boolean }[] = [
   { key: "general", label: "General", glyph: "◐" },
+  { key: "appearance", label: "Appearance", glyph: "◧" },
   { key: "github", label: "GitHub", glyph: "⎇" },
   { key: "repos", label: "Repositories", glyph: "▤" },
   { key: "aws", label: "AWS", glyph: "▲" },
@@ -17,6 +54,70 @@ const PANES: { key: Pane; label: string; glyph: string; dev?: boolean }[] = [
 ];
 
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** Switch-style on/off control — settings never use bare checkboxes. */
+function Toggle({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label?: ReactNode;
+}) {
+  return (
+    <label className="toggle-row">
+      <input
+        type="checkbox"
+        className="toggle-input"
+        role="switch"
+        aria-checked={checked}
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="toggle-track">
+        <span className="toggle-knob" />
+      </span>
+      {label}
+    </label>
+  );
+}
+
+/** Poll-interval ladder: fine steps at the fast end, coarser as it grows.
+ *  5s→1m, 30s→5m, 1m→15m, 5m→1h, 30m→6h, 1h→12h. */
+const POLL_STEPS = (() => {
+  const steps: number[] = [];
+  const add = (from: number, to: number, step: number) => {
+    for (let v = from; v <= to; v += step) steps.push(v);
+  };
+  add(5, 60, 5);
+  add(90, 300, 30);
+  add(360, 900, 60);
+  add(1200, 3600, 300);
+  add(5400, 21600, 1800);
+  add(25200, 43200, 3600);
+  return steps;
+})();
+
+function fmtInterval(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) {
+    const m = Math.floor(sec / 60);
+    const r = sec % 60;
+    return r ? `${m}m ${r}s` : `${m}m`;
+  }
+  const h = Math.floor(sec / 3600);
+  const r = Math.round((sec % 3600) / 60);
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
+
+function nearestStepIdx(sec: number): number {
+  let best = 0;
+  POLL_STEPS.forEach((v, i) => {
+    if (Math.abs(v - sec) < Math.abs(POLL_STEPS[best] - sec)) best = i;
+  });
+  return best;
+}
 
 function Field({
   label,
@@ -27,8 +128,16 @@ function Field({
   hint?: ReactNode;
   children: ReactNode;
 }) {
+  const query = useContext(SearchCtx).trim().toLowerCase();
+  const paneName = useContext(PaneNameCtx);
+  if (query) {
+    const haystack =
+      `${label} ${nodeText(hint)} ${nodeText(children)} ${paneName}`.toLowerCase();
+    if (!haystack.includes(query)) return null;
+  }
   return (
     <div className="field">
+      {query && paneName && <span className="eyebrow field-pane">{paneName}</span>}
       <label>{label}</label>
       {children}
       {hint && <div className="field-hint">{hint}</div>}
@@ -36,11 +145,18 @@ function Field({
   );
 }
 
-export function SettingsView({ onClose }: { onClose: () => void }) {
-  const [pane, setPane] = useState<Pane>("github");
+export function SettingsView({
+  onClose,
+  initialPane,
+}: {
+  onClose: () => void;
+  initialPane?: SettingsPane;
+}) {
+  const [pane, setPane] = useState<Pane>(initialPane ?? "general");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const prs = usePrStore((s) => s.prs);
 
   useEffect(() => {
@@ -66,11 +182,20 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
     <div className="settings-shell">
       <nav className="settings-nav">
         <span className="eyebrow settings-title">Settings</span>
+        <input
+          className="settings-search"
+          placeholder="Search settings…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
         {PANES.filter((p) => !p.dev || settings.developerMode).map((p) => (
           <button
             key={p.key}
-            className={`settings-nav-item${pane === p.key ? " active" : ""}`}
-            onClick={() => setPane(p.key)}
+            className={`settings-nav-item${pane === p.key && !query.trim() ? " active" : ""}`}
+            onClick={() => {
+              setQuery("");
+              setPane(p.key);
+            }}
           >
             <span className="glyph">{p.glyph}</span>
             {p.label}
@@ -85,17 +210,39 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         </div>
       </nav>
 
-      <div className="settings-pane">
-        {pane === "general" && <GeneralPane settings={settings} save={save} />}
-        {pane === "github" && <GitHubPane settings={settings} save={save} />}
-        {pane === "repos" && (
-          <ReposPane settings={settings} save={save} activeRepos={prs.map((p) => p.repo)} />
-        )}
-        {pane === "aws" && <AwsPane settings={settings} save={save} />}
-        {pane === "developer" && settings.developerMode && (
-          <DeveloperPane settings={settings} save={save} />
-        )}
-      </div>
+      {query.trim() ? (
+        // Search: every Field across the panes, filtered down to matches
+        // (section headers hidden via .settings-search-results).
+        <div className="settings-pane settings-search-results">
+          <SearchCtx.Provider value={query}>
+            <PaneNameCtx.Provider value="General">
+              <GeneralPane settings={settings} save={save} />
+            </PaneNameCtx.Provider>
+            <PaneNameCtx.Provider value="Appearance">
+              <AppearancePane />
+            </PaneNameCtx.Provider>
+            <PaneNameCtx.Provider value="GitHub">
+              <GitHubPane settings={settings} save={save} />
+            </PaneNameCtx.Provider>
+            <PaneNameCtx.Provider value="AWS">
+              <AwsPane settings={settings} save={save} />
+            </PaneNameCtx.Provider>
+          </SearchCtx.Provider>
+        </div>
+      ) : (
+        <div className="settings-pane">
+          {pane === "general" && <GeneralPane settings={settings} save={save} />}
+          {pane === "appearance" && <AppearancePane />}
+          {pane === "github" && <GitHubPane settings={settings} save={save} />}
+          {pane === "repos" && (
+            <ReposPane settings={settings} save={save} activeRepos={prs.map((p) => p.repo)} />
+          )}
+          {pane === "aws" && <AwsPane settings={settings} save={save} />}
+          {pane === "developer" && settings.developerMode && (
+            <DeveloperPane settings={settings} save={save} />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -111,28 +258,15 @@ function GeneralPane({ settings, save }: PaneProps) {
       <h2>General</h2>
       <p className="pane-intro">How CORA behaves day to day.</p>
 
-      <Field label="Poll interval (seconds)" hint="How often CORA checks GitHub for changes. Minimum 15.">
-        <input
-          type="number"
-          min={15}
-          className="input-narrow"
-          value={settings.pollIntervalSecs}
-          onChange={(e) => void save({ pollIntervalSecs: Math.max(15, Number(e.target.value) || 45) })}
-        />
-      </Field>
-
       <Field
         label="Callout window"
         hint="The small always-on-top PR panel. You can always toggle it from the tray or with ▣."
       >
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={settings.showCalloutOnStartup}
-            onChange={(e) => void save({ showCalloutOnStartup: e.target.checked })}
-          />
-          Open the callout at launch
-        </label>
+        <Toggle
+          checked={settings.showCalloutOnStartup}
+          onChange={(v) => void save({ showCalloutOnStartup: v })}
+          label="Open the callout at launch"
+        />
       </Field>
 
       <Field label="Symbol legend" hint="Show the lamps/markers explainer card again in the PR list.">
@@ -152,14 +286,11 @@ function GeneralPane({ settings, save }: PaneProps) {
         label="Pre-warm analysis"
         hint="Start the architecture analysis in the background as soon as a PR asks for your review, so results are ready when you open it. Capped per day to keep Bedrock costs bounded."
       >
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={settings.autoAnalyzeReviewRequests}
-            onChange={(e) => void save({ autoAnalyzeReviewRequests: e.target.checked })}
-          />
-          Auto-analyze new review requests
-        </label>
+        <Toggle
+          checked={settings.autoAnalyzeReviewRequests}
+          onChange={(v) => void save({ autoAnalyzeReviewRequests: v })}
+          label="Auto-analyze new review requests"
+        />
         {settings.autoAnalyzeReviewRequests && (
           <label className="check-row">
             <input
@@ -201,6 +332,36 @@ function GeneralPane({ settings, save }: PaneProps) {
       </Field>
 
       <Field
+        label="Team review conventions"
+        hint={
+          <>
+            Knowledge no diff reveals — fed to the analysis, the code pass, and the assistant.
+            e.g. <span className="mono">UI primitives come from @team-and-tech/mona-lisa-design-system —
+            flag hand-rolled equivalents.</span>
+          </>
+        }
+      >
+        <textarea
+          className="globs-editor"
+          spellCheck={false}
+          placeholder="Design-system packages, shared libraries, review standards…"
+          defaultValue={settings.reviewConventions}
+          onBlur={(e) => void save({ reviewConventions: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Code findings pass"
+        hint="After the architecture analysis, a second pass over the critical/important files hunts consequence-bearing defects and hand-rolled duplicates of existing code. Runs on the drill-down model."
+      >
+        <Toggle
+          checked={settings.codeFindingsPass}
+          onChange={(v) => void save({ codeFindingsPass: v })}
+          label="Run the code-level pass after each analysis"
+        />
+      </Field>
+
+      <Field
         label="Notifications"
         hint="Note: in dev builds macOS attributes notifications to the terminal that launched CORA; packaged builds notify as CORA."
       >
@@ -216,14 +377,11 @@ function GeneralPane({ settings, save }: PaneProps) {
         label="Developer mode"
         hint="Adds a Developer pane: live internal logs, the Bedrock system prompt editor, and app internals."
       >
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={settings.developerMode}
-            onChange={(e) => void save({ developerMode: e.target.checked })}
-          />
-          Enable developer mode
-        </label>
+        <Toggle
+          checked={settings.developerMode}
+          onChange={(v) => void save({ developerMode: v })}
+          label="Enable developer mode"
+        />
       </Field>
     </section>
   );
@@ -305,6 +463,181 @@ function GitHubPane({ settings, save }: PaneProps) {
           onChange={(e) => void save({ githubGraphqlUrl: e.target.value })}
         />
       </Field>
+
+      <Field
+        label={`Poll interval — every ${fmtInterval(settings.pollIntervalSecs)}`}
+        hint="How often CORA checks GitHub for changes. Fine steps at the fast end (5s), coarser toward the 12-hour maximum."
+      >
+        <input
+          type="range"
+          className="interval-slider"
+          min={0}
+          max={POLL_STEPS.length - 1}
+          value={nearestStepIdx(settings.pollIntervalSecs)}
+          onChange={(e) => void save({ pollIntervalSecs: POLL_STEPS[Number(e.target.value)] })}
+        />
+        <div className="interval-scale mono">
+          <span>5s</span>
+          <span>1m</span>
+          <span>15m</span>
+          <span>1h</span>
+          <span>12h</span>
+        </div>
+      </Field>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- appearance
+
+const SANS_SUGGESTIONS = [
+  '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  "Inter, sans-serif",
+  '"SF Pro Text", sans-serif',
+  '"Helvetica Neue", Helvetica, Arial, sans-serif',
+  '"Avenir Next", sans-serif',
+  "Roboto, sans-serif",
+];
+
+const MONO_SUGGESTIONS = [
+  'ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace',
+  '"JetBrains Mono", monospace',
+  '"Fira Code", monospace',
+  '"Cascadia Code", monospace',
+  '"IBM Plex Mono", monospace',
+  '"Source Code Pro", monospace',
+];
+
+function AppearancePane() {
+  // Theme state lives in localStorage (shared with the callout window);
+  // this counter just re-renders after each mutation.
+  const [, setBump] = useState(0);
+  const bump = () => setBump((n) => n + 1);
+
+  const active = activeThemeId();
+  const themes = allThemes();
+  // Only custom themes are editable — the editor targets the active one.
+  const editing = customThemes().find((c) => c.id === active) ?? null;
+
+  const update = (patch: Partial<Theme>) => {
+    if (!editing) return;
+    saveCustomTheme({ ...editing, ...patch });
+    bump();
+  };
+
+  return (
+    <section className="pane-section">
+      <h2>Appearance</h2>
+      <p className="pane-intro">
+        Pick a theme, or clone one to make it yours — colors and fonts apply live as you edit,
+        in every window.
+      </p>
+
+      <Field label="Theme">
+        <div className="theme-list">
+          {themes.map((th) => (
+            <div key={th.id} className={`theme-row${th.id === active ? " active" : ""}`}>
+              <button
+                className="theme-pick"
+                onClick={() => {
+                  setActiveTheme(th.id);
+                  bump();
+                }}
+              >
+                <span className="theme-swatches">
+                  {(["ink0", "ink1", "text", "ok", "warn", "bad", "chat"] as const).map((k) => (
+                    <span key={k} style={{ background: th.colors[k] }} />
+                  ))}
+                </span>
+                <span className="theme-name">{th.name}</span>
+                {!th.builtin && <span className="theme-tag mono">custom</span>}
+              </button>
+              <button className="action-btn" title="Copy into an editable theme" onClick={() => {
+                const clone = cloneTheme(th);
+                setActiveTheme(clone.id);
+                bump();
+              }}>
+                Clone
+              </button>
+              {!th.builtin && (
+                <button
+                  className="icon-btn"
+                  title="Delete this theme"
+                  onClick={() => {
+                    deleteCustomTheme(th.id);
+                    bump();
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </Field>
+
+      {editing ? (
+        <>
+          <Field label="Theme name">
+            <input
+              value={editing.name}
+              onChange={(e) => update({ name: e.target.value })}
+            />
+          </Field>
+
+          <Field label="Colors" hint="Every change applies immediately across the app.">
+            <div className="color-grid">
+              {COLOR_KEYS.map((k) => (
+                <label key={k} className="color-cell">
+                  <input
+                    type="color"
+                    value={editing.colors[k]}
+                    onChange={(e) =>
+                      update({ colors: { ...editing.colors, [k]: e.target.value } })
+                    }
+                  />
+                  <span className="color-label">{COLOR_LABELS[k]}</span>
+                  <span className="mono color-hex">{editing.colors[k]}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+
+          <Field
+            label="Application font"
+            hint="UI chrome — lists, buttons, prose. Any CSS font stack; suggestions in the dropdown."
+          >
+            <input
+              list="sans-fonts"
+              value={editing.fonts.sans}
+              onChange={(e) => update({ fonts: { ...editing.fonts, sans: e.target.value } })}
+            />
+            <datalist id="sans-fonts">
+              {SANS_SUGGESTIONS.map((f) => (
+                <option key={f} value={f} />
+              ))}
+            </datalist>
+          </Field>
+
+          <Field label="Code font" hint="Diffs, file paths, identifiers, data.">
+            <input
+              list="mono-fonts"
+              value={editing.fonts.mono}
+              onChange={(e) => update({ fonts: { ...editing.fonts, mono: e.target.value } })}
+            />
+            <datalist id="mono-fonts">
+              {MONO_SUGGESTIONS.map((f) => (
+                <option key={f} value={f} />
+              ))}
+            </datalist>
+          </Field>
+        </>
+      ) : (
+        <p className="pane-intro">
+          Built-in themes are read-only — <strong>Clone</strong> one to edit its colors and
+          fonts with live preview.
+        </p>
+      )}
     </section>
   );
 }
@@ -425,11 +758,7 @@ function ReposPane({
                 <td className="mono repo-cell">{row.repo}</td>
                 <td className="col-center mono">{row.activePrs > 0 ? row.activePrs : "—"}</td>
                 <td className="col-center">
-                  <input
-                    type="checkbox"
-                    checked={row.watched}
-                    onChange={(e) => toggleWatched(row.repo, e.target.checked)}
-                  />
+                  <Toggle checked={row.watched} onChange={(v) => toggleWatched(row.repo, v)} />
                 </td>
                 <td>
                   <select

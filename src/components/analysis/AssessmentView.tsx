@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Assessment } from "../../bindings/Assessment";
+import type { CodeFinding } from "../../bindings/CodeFinding";
 import type { ImpactKind } from "../../bindings/ImpactKind";
 import type { Pillar } from "../../bindings/Pillar";
 import type { WaFinding } from "../../bindings/WaFinding";
@@ -37,22 +38,44 @@ function DetailExpander({ detail }: { detail: string }) {
   );
 }
 
+/** Hover affordance on a finding: open a comment composer pre-filled with
+ *  the finding, anchored in the diff when a file can be resolved. */
+function CommentFindingButton({ onClick }: { onClick: () => void }) {
+  return (
+    <span
+      className="finding-comment-btn"
+      role="button"
+      title="Draft a review comment from this finding"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      ± comment
+    </span>
+  );
+}
+
 /** Collapsed by default: severity + the actionable "→ …" line. Expanding
  *  reveals the full finding detail and the canvas link. */
 function WaFindingRow({
   finding,
   onFocusNodes,
+  onCommentFinding,
 }: {
   finding: WaFinding;
   onFocusNodes: (nodeIds: string[]) => void;
+  onCommentFinding: (seed: string, nodeIds: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const seed = `**${PILLAR_LABEL[finding.pillar]} · ${finding.severity}**: ${finding.finding}\n\n→ ${finding.recommendation}`;
   return (
     <div className={`wa-finding-row${open ? " open" : ""}`}>
       <button className="wa-finding-header" onClick={() => setOpen((o) => !o)}>
         <span className="chevron">{open ? "▾" : "▸"}</span>
         <span className={`sev sev-${finding.severity}`}>{finding.severity}</span>
         <span className="wa-rec-line">→ {finding.recommendation}</span>
+        <CommentFindingButton onClick={() => onCommentFinding(seed, finding.nodeIds)} />
       </button>
       {open && (
         <div className="wa-finding-detail">
@@ -70,11 +93,21 @@ function WaFindingRow({
 
 export function AssessmentView({
   assessment,
+  codeFindings,
   onFocusNodes,
+  onCommentFinding,
+  onCommentCode,
 }: {
   assessment: Assessment;
+  codeFindings: CodeFinding[];
   onFocusNodes: (nodeIds: string[]) => void;
+  onCommentFinding: (seed: string, nodeIds: string[]) => void;
+  onCommentCode: (finding: CodeFinding) => void;
 }) {
+  const codeByFile = new Map<string, CodeFinding[]>();
+  for (const f of codeFindings) {
+    codeByFile.set(f.path, [...(codeByFile.get(f.path) ?? []), f]);
+  }
   const byPillar = new Map<Pillar, WaFinding[]>();
   for (const f of assessment.wellArchitected) {
     byPillar.set(f.pillar, [...(byPillar.get(f.pillar) ?? []), f]);
@@ -93,6 +126,17 @@ export function AssessmentView({
         <p className="assess-rationale">{assessment.fitRationale}</p>
       </section>
 
+      {assessment.contextNotes.length > 0 && (
+        <section>
+          <span className="eyebrow">What you'd need to know without full context</span>
+          <ul className="context-notes">
+            {assessment.contextNotes.map((note, i) => (
+              <li key={i}>{note}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {assessment.boundaryImpacts.length > 0 && (
         <section>
           <span className="eyebrow">Boundary impacts — most important first</span>
@@ -108,10 +152,45 @@ export function AssessmentView({
                     {IMPACT_LABEL[impact.kind]}
                   </span>
                   <span className="impact-desc">{impact.description}</span>
+                  <CommentFindingButton
+                    onClick={() =>
+                      onCommentFinding(
+                        `**${IMPACT_LABEL[impact.kind]} impact**: ${impact.description}`,
+                        impact.nodeIds,
+                      )
+                    }
+                  />
                 </button>
               </li>
             ))}
           </ol>
+        </section>
+      )}
+
+      {codeByFile.size > 0 && (
+        <section>
+          <span className="eyebrow">Code findings — defects &amp; reuse</span>
+          {[...codeByFile.entries()].map(([path, findings]) => (
+            <div key={path} className="code-file-group">
+              <div className="code-file-path mono" title={path}>
+                {path.includes("/") && (
+                  <span className="anchor-dir">{path.slice(0, path.lastIndexOf("/") + 1)}</span>
+                )}
+                <span className="anchor-name">{path.slice(path.lastIndexOf("/") + 1)}</span>
+              </div>
+              {findings.map((f, i) => (
+                <div key={i} className="code-finding-row">
+                  <span className={`sev sev-${f.severity}`}>{f.severity}</span>
+                  <span className="kind-tag mono">{f.kind}</span>
+                  <div className="code-finding-body">
+                    <div>{f.finding}</div>
+                    <div className="code-finding-suggestion">→ {f.suggestion}</div>
+                  </div>
+                  <CommentFindingButton onClick={() => onCommentCode(f)} />
+                </div>
+              ))}
+            </div>
+          ))}
         </section>
       )}
 
@@ -122,21 +201,15 @@ export function AssessmentView({
             <div key={pillar} className="pillar-group">
               <div className="pillar-name">{PILLAR_LABEL[pillar]}</div>
               {findings.map((f, i) => (
-                <WaFindingRow key={i} finding={f} onFocusNodes={onFocusNodes} />
+                <WaFindingRow
+                  key={i}
+                  finding={f}
+                  onFocusNodes={onFocusNodes}
+                  onCommentFinding={onCommentFinding}
+                />
               ))}
             </div>
           ))}
-        </section>
-      )}
-
-      {assessment.contextNotes.length > 0 && (
-        <section>
-          <span className="eyebrow">What you'd need to know without full context</span>
-          <ul className="context-notes">
-            {assessment.contextNotes.map((note, i) => (
-              <li key={i}>{note}</li>
-            ))}
-          </ul>
         </section>
       )}
     </div>

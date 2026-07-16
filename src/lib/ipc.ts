@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { ActivityItem } from "../bindings/ActivityItem";
 import type { AnalysisError } from "../bindings/AnalysisError";
+import type { ChatEvent } from "../bindings/ChatEvent";
+import type { ChatTranscript } from "../bindings/ChatTranscript";
 import type { AuditEntry } from "../bindings/AuditEntry";
 import type { ChangeKind } from "../bindings/ChangeKind";
 import type { RepoPriority } from "../bindings/RepoPriority";
@@ -25,6 +28,7 @@ export const events = {
   analysisProgress: "analysis:progress",
   analysisComplete: "analysis:complete",
   analysisError: "analysis:error",
+  chatEvent: "chat:event",
 } as const;
 
 export const ipc = {
@@ -46,6 +50,11 @@ export const ipc = {
   runAnalysis: (prId: string, level: AnalysisLevel, focus?: string, force?: boolean) =>
     invoke<void>("run_analysis", { prId, level, focus: focus ?? null, force: force ?? false }),
   getPrDiff: (prId: string) => invoke<string>("get_pr_diff", { prId }),
+  chatHistory: (prId: string) => invoke<ChatTranscript>("chat_history", { prId }),
+  chatSend: (prId: string, text: string) => invoke<void>("chat_send", { prId, text }),
+  chatConfirm: (prId: string, approve: boolean) =>
+    invoke<void>("chat_confirm", { prId, approve }),
+  chatClear: (prId: string) => invoke<void>("chat_clear", { prId }),
   ensureReviewMark: (prId: string) => invoke<ReviewMark>("ensure_review_mark", { prId }),
   setReviewMark: (prId: string) => invoke<ReviewMark>("set_review_mark", { prId }),
   getDiffSince: (prId: string) => invoke<string>("get_diff_since", { prId }),
@@ -55,6 +64,10 @@ export const ipc = {
     invoke<void>("set_repo_priority", { repo, priority }),
   getAuditLog: () => invoke<AuditEntry[]>("get_audit_log"),
   undoAudit: (id: number) => invoke<void>("undo_audit", { id }),
+  getActivity: () => invoke<ActivityItem[]>("get_activity"),
+  markActivityRead: (ids: number[], read: boolean) =>
+    invoke<void>("mark_activity_read", { ids, read }),
+  setActivityFlag: (id: number, flag: string) => invoke<void>("set_activity_flag", { id, flag }),
   getPrComments: (prId: string) => invoke<PrConversation>("get_pr_comments", { prId }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),
   getPrReviews: (prId: string) => invoke<PrReviews>("get_pr_reviews", { prId }),
@@ -124,4 +137,8 @@ export function onAnalysisError(cb: (e: AnalysisError) => void): Promise<Unliste
 
 export function onDevLog(cb: (entry: LogEntry) => void): Promise<UnlistenFn> {
   return listen<LogEntry>("dev:log", (e) => cb(e.payload));
+}
+
+export function onChatEvent(cb: (e: ChatEvent) => void): Promise<UnlistenFn> {
+  return listen<ChatEvent>(events.chatEvent, (e) => cb(e.payload));
 }
