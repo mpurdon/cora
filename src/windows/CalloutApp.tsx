@@ -1,54 +1,34 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { ActivityItem } from "../bindings/ActivityItem";
 import type { TrackedPr } from "../bindings/TrackedPr";
-import {
-  ACTION_META,
-  ACTION_ORDER,
-  bucketReason,
-  inBucket,
-  type ActionKind,
-} from "../lib/actions";
+import { ACTION_META, ACTION_ORDER, inBucket, type ActionKind } from "../lib/actions";
 import { ipc } from "../lib/ipc";
-import { parseTitle, timeAgo, usePrStore } from "../state/prStore";
-
-const ROW_HEIGHT = 44;
-const LIST_CHROME = 30; // bucket label row
+import { usePrStore } from "../state/prStore";
 
 function Tile({
   kind,
   count,
-  selected,
   pulsing,
-  onSelect,
 }: {
   kind: ActionKind;
   count: number;
-  selected: boolean;
   pulsing: boolean;
-  onSelect: () => void;
 }) {
   return (
     <button
       className={[
         "stat-tile",
         `tile-${kind}`,
-        selected ? "selected" : "",
         count === 0 ? "zero" : "",
         pulsing ? "tile-pulse" : "",
       ]
         .filter(Boolean)
         .join(" ")}
-      onClick={(e) => {
-        // Single click filters the list; double click jumps to the main
-        // window pre-filtered on this bucket.
-        if (e.detail === 2) {
-          void invoke("show_main_filtered", { bucket: kind });
-        } else {
-          onSelect();
-        }
-      }}
-      title={`${ACTION_META[kind].label} — double-click to open in CORA`}
+      onClick={() => void invoke("show_main_filtered", { bucket: kind })}
+      title={`${ACTION_META[kind].label} — open CORA filtered to these`}
     >
       <span className="tile-count">{count}</span>
       <span className="tile-label">{ACTION_META[kind].short}</span>
@@ -56,82 +36,134 @@ function Tile({
   );
 }
 
-function FocusRow({ pr, kind }: { pr: TrackedPr; kind: ActionKind }) {
+const FLAG_LABEL: Record<string, string> = {
+  "must-review": "must review",
+  "follow-up": "follow up with author",
+};
+
+/** Teams-style day buckets: today, weekday names back through the week,
+ *  then coarser blocks. */
+function groupLabel(at: string): string {
+  const d = new Date(at);
+  const now = new Date();
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((day(now) - day(d)) / 86_400_000);
+  if (days <= 0) return "today";
+  if (days < 7) return d.toLocaleDateString(undefined, { weekday: "long" }).toLowerCase();
+  if (days < 14) return "last week";
+  if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear())
+    return "this month";
+  return "older";
+}
+
+function itemTime(at: string): string {
+  const d = new Date(at);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return sameDay
+    ? time
+    : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
+}
+
+function Row({
+  item,
+  onOpen,
+  onMenu,
+}: {
+  item: ActivityItem;
+  onOpen: (item: ActivityItem) => void;
+  onMenu: (e: React.MouseEvent, item: ActivityItem) => void;
+}) {
   return (
     <button
-      className="action-row"
-      onClick={() => void ipc.showMainWindow(pr.id)}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        void ipc.setPrMuted(pr.id, true);
-      }}
-      title={`${pr.repo}#${pr.number} — click to open, right-click to mute`}
+      className={`feed-item${item.read ? "" : " unread"}${item.important ? " important" : ""}`}
+      onClick={() => onOpen(item)}
+      onContextMenu={(e) => onMenu(e, item)}
+      title={`${item.repo}#${item.number} — ${item.prTitle}\nclick to open · right-click to flag`}
     >
-      <span className="body">
-        <span className="pr-title">{parseTitle(pr.title).clean}</span>
-        <span className="action-reason">
-          <span className="repo">
-            {pr.repo.split("/")[1] ?? pr.repo}#{pr.number}
-          </span>
-          {" · "}
-          {bucketReason(pr, kind)}
+      <span className="feed-dot" />
+      <span className="feed-body">
+        <span className="feed-line">
+          {item.actor && <span className="feed-actor">@{item.actor}</span>}{" "}
+          <span className="feed-summary">{item.summary}</span>
+        </span>
+        <span className="feed-meta mono">
+          {item.repo.split("/")[1] ?? item.repo}#{item.number}
+          {item.flag && <span className={`feed-flag ${item.flag}`}>{FLAG_LABEL[item.flag]}</span>}
         </span>
       </span>
-      <span className="ago">{timeAgo(pr.lastChangeAt)}</span>
+      <span className="feed-time mono">{itemTime(item.at)}</span>
     </button>
   );
 }
 
 export function CalloutApp() {
   const { prs, pollStatus, recentlyChanged, init } = usePrStore();
-  const [selected, setSelected] = useState<ActionKind | null>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const [maxRows, setMaxRows] = useState(5);
+  const [items, setItems] = useState<ActivityItem[]>([]);
+  const [menu, setMenu] = useState<{ x: number; y: number; item: ActivityItem } | null>(null);
+
+  const refresh = () => void ipc.getActivity().then(setItems).catch(() => {});
 
   useEffect(() => {
     document.body.classList.add("callout");
     void init();
+    refresh();
+    const un = listen("activity:changed", refresh);
+    return () => void un.then((fn) => fn());
   }, [init]);
 
-  // The focus list never scrolls — fit rows to the space we actually have.
   useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver(() => {
-      setMaxRows(Math.max(1, Math.floor((el.clientHeight - LIST_CHROME) / ROW_HEIGHT) - 1));
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [menu]);
 
   const buckets = useMemo(() => {
     const counts = new Map<ActionKind, TrackedPr[]>();
     for (const kind of ACTION_ORDER) {
-      counts.set(
-        kind,
-        prs
-          .filter((pr) => inBucket(pr, kind))
-          .sort((a, b) => b.lastChangeAt.localeCompare(a.lastChangeAt)),
-      );
+      counts.set(kind, prs.filter((pr) => inBucket(pr, kind)));
     }
     return counts;
   }, [prs]);
-
-  // Default focus: the most urgent non-empty bucket.
-  const active: ActionKind | null =
-    selected && (buckets.get(selected)?.length ?? 0) > 0
-      ? selected
-      : (ACTION_ORDER.find((k) => (buckets.get(k)?.length ?? 0) > 0) ?? null);
-
-  const activeItems = active ? (buckets.get(active) ?? []) : [];
-  const shown = activeItems.slice(0, maxRows);
-  const overflow = activeItems.length - shown.length;
 
   const attention = new Set(
     ACTION_ORDER.filter((k) => k !== "new" && k !== "comments").flatMap((k) =>
       (buckets.get(k) ?? []).map((p) => p.id),
     ),
   ).size;
+
+  // Featured: anything you flagged, plus unread activity on important PRs
+  // (your own PRs, high-priority repos/PRs).
+  const featured = items.filter((i) => i.flag !== "" || (i.important && !i.read));
+  const featuredIds = new Set(featured.map((i) => i.id));
+  const rest = items.filter((i) => !featuredIds.has(i.id));
+  const groups: [string, ActivityItem[]][] = [];
+  for (const item of rest) {
+    const label = groupLabel(item.at);
+    const last = groups[groups.length - 1];
+    if (last && last[0] === label) last[1].push(item);
+    else groups.push([label, [item]]);
+  }
+  const unreadCount = items.filter((i) => !i.read).length;
+
+  const openItem = (item: ActivityItem) => {
+    void ipc.markActivityRead([item.id], true);
+    void ipc.showMainWindow(item.prId);
+    if (item.commentId) {
+      void emit("focus:comment", { prId: item.prId, commentId: item.commentId });
+    }
+  };
+
+  const flagItem = (item: ActivityItem, flag: string) => {
+    void ipc.setActivityFlag(item.id, flag);
+    setMenu(null);
+  };
 
   const noToken = pollStatus?.ok === false && pollStatus.message?.includes("no GitHub token");
   const syncClass = pollStatus == null ? "" : pollStatus.ok ? "live" : "err";
@@ -147,6 +179,15 @@ export function CalloutApp() {
           {attention === 0 ? "all clear" : `${attention} need${attention === 1 ? "s" : ""} you`}
         </span>
         <span className="spacer" data-tauri-drag-region />
+        {unreadCount > 0 && (
+          <button
+            className="icon-btn"
+            title={`Mark all ${unreadCount} read`}
+            onClick={() => void ipc.markActivityRead([], true)}
+          >
+            ✓
+          </button>
+        )}
         <button className="icon-btn" title="Refresh now" onClick={() => void ipc.pollNow()}>
           ⟳
         </button>
@@ -177,35 +218,65 @@ export function CalloutApp() {
                 key={kind}
                 kind={kind}
                 count={buckets.get(kind)?.length ?? 0}
-                selected={active === kind}
                 pulsing={(buckets.get(kind) ?? []).some((p) => recentlyChanged.has(p.id))}
-                onSelect={() => setSelected(kind)}
               />
             ))}
           </div>
 
-          <div className="focus-list" ref={listRef}>
-            {active == null ? (
+          <div className="activity-feed">
+            {items.length === 0 && (
               <div className="callout-empty">
-                <span>Nothing needs you right now.</span>
+                <span>Activity on your PRs will land here.</span>
               </div>
-            ) : (
+            )}
+            {featured.length > 0 && (
               <>
-                <div className="bucket-label eyebrow">{ACTION_META[active].label}</div>
-                {shown.map((pr) => (
-                  <FocusRow key={pr.id} pr={pr} kind={active} />
+                <div className="feed-group eyebrow featured-label">★ featured</div>
+                {featured.map((item) => (
+                  <Row key={item.id} item={item} onOpen={openItem} onMenu={(e, it) => {
+                    e.preventDefault();
+                    setMenu({ x: e.clientX, y: e.clientY, item: it });
+                  }} />
                 ))}
-                {overflow > 0 && (
-                  <button
-                    className="more-link"
-                    onClick={() => void invoke("show_main_filtered", { bucket: active })}
-                  >
-                    + {overflow} more in CORA ↗
-                  </button>
-                )}
               </>
             )}
+            {groups.map(([label, groupItems]) => (
+              <div key={label + groupItems[0]?.id}>
+                <div className="feed-group eyebrow">{label}</div>
+                {groupItems.map((item) => (
+                  <Row key={item.id} item={item} onOpen={openItem} onMenu={(e, it) => {
+                    e.preventDefault();
+                    setMenu({ x: e.clientX, y: e.clientY, item: it });
+                  }} />
+                ))}
+              </div>
+            ))}
           </div>
+
+          {menu && (
+            <div className="feed-menu" style={{ left: menu.x, top: menu.y }}>
+              {Object.entries(FLAG_LABEL).map(([flag, label]) => (
+                <button
+                  key={flag}
+                  className={menu.item.flag === flag ? "on" : ""}
+                  onClick={() => flagItem(menu.item, menu.item.flag === flag ? "" : flag)}
+                >
+                  ⚑ {label}
+                </button>
+              ))}
+              {menu.item.flag && (
+                <button onClick={() => flagItem(menu.item, "")}>clear flag</button>
+              )}
+              <button
+                onClick={() => {
+                  void ipc.markActivityRead([menu.item.id], !menu.item.read);
+                  setMenu(null);
+                }}
+              >
+                mark {menu.item.read ? "unread" : "read"}
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>

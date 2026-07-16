@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type { C4Node } from "../../bindings/C4Node";
 import { ipc } from "../../lib/ipc";
-import { parseDiff, type DiffFile } from "./DiffView";
+import { DiffJump, parseDiff, type DiffFile } from "./DiffView";
 
 /** Best-effort mapping from a C4 node to the diff files it concerns.
  *  Node ids follow "code:<path>#<symbol>" / "component:<path>" conventions,
  *  but models drift — so fall back to name matching against paths and
  *  added lines. */
-function matchFiles(files: DiffFile[], node: C4Node): DiffFile[] {
+export function matchFiles(files: DiffFile[], node: C4Node): DiffFile[] {
   const idPath = node.id
     .replace(/^(code|component|container|system|ext):/, "")
     .split("#")[0]
@@ -32,6 +32,44 @@ function matchFiles(files: DiffFile[], node: C4Node): DiffFile[] {
   return [];
 }
 
+/** Where in the diff does a finding belong? Three passes, most precise
+ *  first: its graph nodes → a path named in the text → identifier-looking
+ *  tokens (camelCase/snake_case) matched against changed lines. Null only
+ *  when nothing anchors it — a genuinely PR-level remark. */
+export function resolveFindingFile(
+  seed: string,
+  nodes: C4Node[],
+  files: DiffFile[],
+): string | null {
+  const byNode = nodes.flatMap((n) => matchFiles(files, n))[0]?.path;
+  if (byNode) return byNode;
+
+  const lower = seed.toLowerCase();
+  const byPath =
+    files.find((f) => lower.includes(f.path.toLowerCase()))?.path ??
+    files.find((f) => {
+      const base = (f.path.split("/").pop() ?? "").toLowerCase();
+      return base.length > 4 && lower.includes(base);
+    })?.path;
+  if (byPath) return byPath;
+
+  // Identifier-ish tokens only (camelCase or snake_case) — plain English
+  // words would anchor everything to everything.
+  const tokens = [
+    ...[...seed.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]),
+    ...(seed.match(/[A-Za-z_][A-Za-z0-9_]{4,}/g) ?? []),
+  ].filter((tok) => /[a-z][A-Z]|_/.test(tok));
+  const unique = [...new Set(tokens)];
+  if (unique.length === 0) return null;
+  let best: { path: string; hits: number } | null = null;
+  for (const f of files) {
+    const changed = f.lines.filter((l) => l.kind === "add" || l.kind === "del");
+    const hits = unique.filter((tok) => changed.some((l) => l.text.includes(tok))).length;
+    if (hits > 0 && (!best || hits > best.hits)) best = { path: f.path, hits };
+  }
+  return best?.path ?? null;
+}
+
 /** Pure diff rendering — no comments, no composers. */
 function BareFileDiff({ file }: { file: DiffFile }) {
   const [open, setOpen] = useState(true);
@@ -47,14 +85,21 @@ function BareFileDiff({ file }: { file: DiffFile }) {
       </button>
       {open && (
         <pre className="diff-body">
-          {file.lines.map((l, i) => (
-            <div key={i} className={`diff-line ${l.kind}`}>
-              <span className="diff-gutter">
-                {l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}
-              </span>
-              {l.text}
-            </div>
-          ))}
+          <div className="diff-scroll-inner">
+            {file.lines.map((l, i) =>
+              l.kind === "hunk" ? (
+                <DiffJump key={i} text={l.text} />
+              ) : (
+                <div key={i} className={`diff-line ${l.kind}`}>
+                  <span className="code-lineno">{l.newLine ?? ""}</span>
+                  <span className="diff-gutter">
+                    {l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}
+                  </span>
+                  {l.text}
+                </div>
+              ),
+            )}
+          </div>
         </pre>
       )}
     </div>
