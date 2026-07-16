@@ -280,6 +280,11 @@ pub struct Settings {
     /// review plan's critical/important files.
     #[serde(default = "default_true")]
     pub code_findings_pass: bool,
+    /// PRs with no activity inside this window are hidden from the list and
+    /// excluded from search discovery. 0 disables the filter.
+    #[serde(default = "default_pr_max_age_days")]
+    #[ts(type = "number")]
+    pub pr_max_age_days: u64,
 }
 
 fn default_auto_analyze_cap() -> u64 {
@@ -329,6 +334,12 @@ fn default_pr_priority() -> PrPriority {
     PrPriority::Normal
 }
 
+fn default_pr_max_age_days() -> u64 {
+    // Top of the settings ladder — effectively "show everything" so the
+    // filter is opt-in rather than a surprise on upgrade.
+    365
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -351,6 +362,7 @@ impl Default for Settings {
             auto_analyze_daily_cap: default_auto_analyze_cap(),
             review_conventions: String::new(),
             code_findings_pass: true,
+            pr_max_age_days: default_pr_max_age_days(),
         }
     }
 }

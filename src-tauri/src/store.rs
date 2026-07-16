@@ -157,6 +157,27 @@ impl Store {
         Ok(prs)
     }
 
+    /// The PRs the UI shows: everything tracked, minus PRs idle longer than
+    /// the settings window. Every snapshot sent to the frontend goes through
+    /// this; `list_prs` stays unfiltered for internal reconciliation.
+    pub fn visible_prs(&self) -> AppResult<Vec<TrackedPr>> {
+        let max_days = self.settings()?.pr_max_age_days;
+        let prs = self.list_prs()?;
+        if max_days == 0 {
+            return Ok(prs);
+        }
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_days as i64);
+        Ok(prs
+            .into_iter()
+            .filter(|p| {
+                chrono::DateTime::parse_from_rfc3339(&p.info.updated_at)
+                    .map(|t| t >= cutoff)
+                    // Unparseable timestamp: keep — hiding must be deliberate.
+                    .unwrap_or(true)
+            })
+            .collect())
+    }
+
     pub fn set_pr_priority(&self, id: &str, priority: crate::models::PrPriority) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

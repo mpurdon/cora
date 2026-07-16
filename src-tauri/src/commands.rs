@@ -44,6 +44,11 @@ pub fn set_settings(
 ) -> AppResult<()> {
     require_main(&window)?;
     store.save_settings(&settings)?;
+    // Re-emit immediately so settings that shape the visible set (the PR age
+    // window) take effect without waiting for the poll cycle the trigger kicks.
+    let _ = window
+        .app_handle()
+        .emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     trigger.0.notify_one();
     Ok(())
 }
@@ -81,13 +86,13 @@ pub fn clear_github_pat(window: WebviewWindow) -> AppResult<()> {
 
 #[tauri::command]
 pub fn list_prs(store: State<'_, Arc<Store>>) -> AppResult<Vec<TrackedPr>> {
-    store.list_prs()
+    store.visible_prs()
 }
 
 #[tauri::command]
 pub fn mark_pr_read(app: AppHandle, store: State<'_, Arc<Store>>, id: String) -> AppResult<()> {
     store.mark_read(&id)?;
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
 
@@ -99,7 +104,7 @@ pub fn mark_pr_read_kinds(
     kinds: Vec<ChangeKind>,
 ) -> AppResult<()> {
     store.mark_read_kinds(&id, &kinds)?;
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
 
@@ -128,7 +133,7 @@ pub fn set_pr_muted(
         &(!muted).to_string(),
         &muted.to_string(),
     )?;
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
 
@@ -137,7 +142,7 @@ pub fn untrack_pr(app: AppHandle, store: State<'_, Arc<Store>>, id: String) -> A
     let label = pr_label(&store, &id);
     store.untrack(&id)?;
     store.add_audit("untracked", &id, &label, "tracked", "untracked")?;
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
 
@@ -170,7 +175,7 @@ pub fn set_repo_priority(
         &format!("{priority:?}").to_lowercase(),
     )?;
     trigger.0.notify_one();
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
 
@@ -260,7 +265,7 @@ pub fn undo_audit(
         other => return Err(AppError::Other(format!("cannot undo action: {other}"))),
     }
     store.mark_audit_undone(id)?;
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
 
@@ -306,7 +311,7 @@ pub async fn track_pr_url(
         "untracked",
         "tracked",
     )?;
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(stored)
 }
 
@@ -520,7 +525,7 @@ pub fn set_pr_priority(
         .unwrap_or(crate::models::PrPriority::Normal);
     store.set_pr_priority(&id, priority)?;
     store.add_audit("pr-priority", &id, &label, old.as_str(), priority.as_str())?;
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
 
@@ -563,7 +568,7 @@ async fn refresh_pr_inner(app: &AppHandle, pr_id: &str) -> AppResult<TrackedPr> 
     }
     let now = Utc::now().to_rfc3339();
     let stored = store.upsert_pr(&info, &[], &changes, &now)?;
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     // Covers every "review state may have moved" path that funnels through a
     // refresh: manual refresh button, submitted reviews, assistant actions.
     let _ = app.emit(events::REVIEWS_CHANGED, ());

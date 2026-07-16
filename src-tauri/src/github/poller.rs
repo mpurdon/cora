@@ -280,6 +280,11 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
     let request = PollRequest {
         watched_repos: settings.watched_repos.clone(),
         tracked_ids: store.tracked_ids()?,
+        updated_since: (settings.pr_max_age_days > 0).then(|| {
+            (Utc::now() - chrono::Duration::days(settings.pr_max_age_days as i64))
+                .format("%Y-%m-%d")
+                .to_string()
+        }),
     };
     let (doc, vars) = request.build();
     let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
@@ -396,7 +401,7 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
         let _ = app.emit(events::ACTIVITY_CHANGED, ());
     }
 
-    let _ = app.emit(events::PRS_SNAPSHOT, store.list_prs()?);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     let rate = data.pointer("/rateLimit/remaining").and_then(serde_json::Value::as_i64);
     crate::devlog::debug(
         app,
