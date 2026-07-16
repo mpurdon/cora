@@ -51,4 +51,9 @@ reviewConventions: string,
  * Second analysis stage: line-anchored defect + reuse findings over the
  * review plan's critical/important files.
  */
-codeFindingsPass: boolean, };
+codeFindingsPass: boolean, 
+/**
+ * PRs with no activity inside this window are hidden from the list and
+ * excluded from search discovery. 0 disables the filter.
+ */
+prMaxAgeDays: number, };

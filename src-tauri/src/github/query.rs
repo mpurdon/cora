@@ -23,12 +23,19 @@ fragment PrFields on PullRequest {
 pub struct PollRequest {
     pub watched_repos: Vec<String>,
     pub tracked_ids: Vec<String>,
+    /// YYYY-MM-DD; when set, every search scope gains `updated:>=` so PRs
+    /// idle beyond the settings window never enter discovery.
+    pub updated_since: Option<String>,
 }
 
 impl PollRequest {
     /// Build one batched GraphQL document + variables. Aliases for empty
     /// scopes are omitted entirely (GraphQL requires every variable be used).
     pub fn build(&self) -> (String, Value) {
+        let base = match &self.updated_since {
+            Some(d) => format!("is:pr is:open archived:false updated:>={d}"),
+            None => "is:pr is:open archived:false".to_string(),
+        };
         let mut var_defs = vec![
             "$qReview: String!",
             "$qAuthor: String!",
@@ -42,9 +49,9 @@ impl PollRequest {
 ",
         );
         let mut vars = json!({
-            "qReview": "is:pr is:open archived:false review-requested:@me",
-            "qAuthor": "is:pr is:open archived:false author:@me",
-            "qInvolves": "is:pr is:open archived:false involves:@me",
+            "qReview": format!("{base} review-requested:@me"),
+            "qAuthor": format!("{base} author:@me"),
+            "qInvolves": format!("{base} involves:@me"),
         });
 
         if !self.watched_repos.is_empty() {
@@ -54,8 +61,7 @@ impl PollRequest {
             );
             let repo_quals: Vec<String> =
                 self.watched_repos.iter().map(|r| format!("repo:{r}")).collect();
-            vars["qWatched"] =
-                json!(format!("is:pr is:open archived:false {}", repo_quals.join(" ")));
+            vars["qWatched"] = json!(format!("{base} {}", repo_quals.join(" ")));
         }
 
         if !self.tracked_ids.is_empty() {
@@ -223,7 +229,12 @@ mod tests {
 
     #[test]
     fn omits_empty_scopes() {
-        let (doc, vars) = PollRequest { watched_repos: vec![], tracked_ids: vec![] }.build();
+        let (doc, vars) = PollRequest {
+            watched_repos: vec![],
+            tracked_ids: vec![],
+            updated_since: None,
+        }
+        .build();
         assert!(!doc.contains("watched:"));
         assert!(!doc.contains("tracked:"));
         assert!(doc.contains("reviewRequested:"));
@@ -235,6 +246,7 @@ mod tests {
         let (doc, vars) = PollRequest {
             watched_repos: vec!["acme/api".into(), "acme/web".into()],
             tracked_ids: vec!["PR_x".into()],
+            updated_since: None,
         }
         .build();
         assert!(doc.contains("watched: search"));
@@ -243,5 +255,21 @@ mod tests {
             vars["qWatched"].as_str().unwrap(),
             "is:pr is:open archived:false repo:acme/api repo:acme/web"
         );
+    }
+
+    #[test]
+    fn updated_since_qualifies_every_search_scope() {
+        let (_, vars) = PollRequest {
+            watched_repos: vec!["acme/api".into()],
+            tracked_ids: vec![],
+            updated_since: Some("2026-06-16".into()),
+        }
+        .build();
+        for key in ["qReview", "qAuthor", "qInvolves", "qWatched"] {
+            assert!(
+                vars[key].as_str().unwrap().contains("updated:>=2026-06-16"),
+                "{key} missing recency qualifier"
+            );
+        }
     }
 }
