@@ -26,7 +26,15 @@ import {
 import { usePrStore } from "../state/prStore";
 import { DeveloperPane } from "./DeveloperPane";
 
-export type SettingsPane = "general" | "appearance" | "github" | "repos" | "aws" | "developer";
+export type SettingsPane =
+  | "general"
+  | "appearance"
+  | "github"
+  | "orgs"
+  | "repos"
+  | "users"
+  | "aws"
+  | "developer";
 type Pane = SettingsPane;
 
 /** Active settings-search query; Fields hide themselves unless they match. */
@@ -48,7 +56,9 @@ const PANES: { key: Pane; label: string; glyph: string; dev?: boolean }[] = [
   { key: "general", label: "General", glyph: "◐" },
   { key: "appearance", label: "Appearance", glyph: "◧" },
   { key: "github", label: "GitHub", glyph: "⎇" },
+  { key: "orgs", label: "Organizations", glyph: "◫" },
   { key: "repos", label: "Repositories", glyph: "▤" },
+  { key: "users", label: "Users", glyph: "◔" },
   { key: "aws", label: "AWS", glyph: "▲" },
   { key: "developer", label: "Developer", glyph: "⌬", dev: true },
 ];
@@ -60,15 +70,18 @@ function Toggle({
   checked,
   onChange,
   label,
+  disabled,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label?: ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <label className="toggle-row">
       <input
         type="checkbox"
+        disabled={disabled}
         className="toggle-input"
         role="switch"
         aria-checked={checked}
@@ -187,10 +200,12 @@ export function SettingsView({
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [activeOrg, setActiveOrg] = useState<string | null>(null);
   const prs = usePrStore((s) => s.prs);
 
   useEffect(() => {
     void ipc.getSettings().then(setSettings);
+    void ipc.getOrgState().then((s) => setActiveOrg(s.active)).catch(() => {});
   }, []);
 
   if (!settings) return null;
@@ -212,6 +227,14 @@ export function SettingsView({
     <div className="settings-shell">
       <nav className="settings-nav">
         <span className="eyebrow settings-title">Settings</span>
+        {activeOrg && (
+          <span
+            className="settings-org-banner mono"
+            title="Settings are per-organization — you are editing this org's"
+          >
+            {activeOrg}
+          </span>
+        )}
         <input
           className="settings-search"
           placeholder="Search settings…"
@@ -264,8 +287,12 @@ export function SettingsView({
           {pane === "general" && <GeneralPane settings={settings} save={save} />}
           {pane === "appearance" && <AppearancePane />}
           {pane === "github" && <GitHubPane settings={settings} save={save} />}
+          {pane === "orgs" && <OrgsPane />}
           {pane === "repos" && (
             <ReposPane settings={settings} save={save} activeRepos={prs.map((p) => p.repo)} />
+          )}
+          {pane === "users" && (
+            <UsersPane settings={settings} save={save} activeAuthors={prs.map((p) => p.author)} />
           )}
           {pane === "aws" && <AwsPane settings={settings} save={save} />}
           {pane === "developer" && settings.developerMode && (
@@ -517,6 +544,28 @@ function GitHubPane({ settings, save }: PaneProps) {
       </Field>
 
       <Field
+        label={`Background org poll — every ${fmtInterval(settings.backgroundPollSecs || 300)}`}
+        hint="How often orgs that are NOT active in the org selector refresh. They keep polling for awareness (native notifications), just at this gentler cadence."
+      >
+        <input
+          type="range"
+          className="interval-slider"
+          min={0}
+          max={POLL_STEPS.length - 1}
+          value={nearestStepIdx(settings.backgroundPollSecs || 300)}
+          style={sliderFill(nearestStepIdx(settings.backgroundPollSecs || 300), POLL_STEPS.length - 1)}
+          onChange={(e) => void save({ backgroundPollSecs: POLL_STEPS[Number(e.target.value)] })}
+        />
+        <div className="interval-scale mono">
+          <span>5s</span>
+          <span>1m</span>
+          <span>15m</span>
+          <span>1h</span>
+          <span>12h</span>
+        </div>
+      </Field>
+
+      <Field
         label={`PR window — updated in the last ${fmtAge(settings.prMaxAgeDays || 365)}`}
         hint="Hide pull requests that haven't been updated within this window. They come back the moment something happens on them."
       >
@@ -537,6 +586,87 @@ function GitHubPane({ settings, save }: PaneProps) {
           <span>1y</span>
         </div>
       </Field>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- orgs
+
+/** Which GitHub orgs CORA works with. Each enabled org gets a fully
+ *  isolated database + settings; the selector in the rail switches. */
+function OrgsPane() {
+  const [available, setAvailable] = useState<
+    import("../bindings/GithubOrg").GithubOrg[] | null
+  >(null);
+  const [orgState, setOrgState] = useState<
+    import("../bindings/OrgState").OrgState | null
+  >(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = () => {
+    void ipc.getOrgState().then(setOrgState).catch(() => {});
+    void ipc
+      .listGithubOrgs()
+      .then(setAvailable)
+      .catch((e) => setError(String(e)));
+  };
+  useEffect(refresh, []);
+
+  const toggle = async (login: string, enable: boolean) => {
+    if (!orgState) return;
+    const next = enable
+      ? [...orgState.enabled, login]
+      : orgState.enabled.filter((o) => o !== login);
+    setBusy(true);
+    setError(null);
+    try {
+      await ipc.setEnabledOrgs(next);
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="pane-section">
+      <h2>Organizations</h2>
+      <p className="pane-intro">
+        Every enabled organization is fully isolated: its own database, settings, watched
+        repos, activity feed, and AWS configuration. Data never crosses org boundaries.
+        Non-active orgs keep polling in the background at the gentler cadence set in
+        General.
+      </p>
+      {error && <div className="settings-error">{error}</div>}
+      {available == null && !error && <p className="pane-intro">Loading orgs from GitHub…</p>}
+      {available?.map((org) => {
+        const enabled = orgState?.enabled.includes(org.login) ?? false;
+        const active = orgState?.active === org.login;
+        return (
+          <div key={org.login} className="org-row">
+            <Toggle
+              checked={enabled}
+              disabled={busy || (enabled && (orgState?.enabled.length ?? 0) <= 1)}
+              onChange={(v) => void toggle(org.login, v)}
+            />
+            <span className="org-login mono">{org.login}</span>
+            {org.name !== org.login && <span className="org-name">{org.name}</span>}
+            {org.personal && <span className="org-tag">personal</span>}
+            {active && <span className="org-tag active">active</span>}
+            {enabled && !active && (
+              <button
+                className="action-btn org-activate"
+                disabled={busy}
+                onClick={() => void ipc.setActiveOrg(org.login).then(refresh)}
+              >
+                Make active
+              </button>
+            )}
+          </div>
+        );
+      })}
     </section>
   );
 }
@@ -704,6 +834,7 @@ function ReposPane({
 }: PaneProps & { activeRepos: string[] }) {
   const [draft, setDraft] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
 
   const activeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -717,13 +848,17 @@ function ReposPane({
       ...Object.keys(settings.repoPriorities),
       ...activeCounts.keys(),
     ]);
-    return [...all].sort().map((repo) => ({
-      repo,
-      watched: settings.watchedRepos.includes(repo),
-      priority: settings.repoPriorities[repo] ?? ("normal" as RepoPriority),
-      activePrs: activeCounts.get(repo) ?? 0,
-    }));
-  }, [settings, activeCounts]);
+    const q = filter.trim().toLowerCase();
+    return [...all]
+      .filter((repo) => !q || repo.toLowerCase().includes(q))
+      .sort()
+      .map((repo) => ({
+        repo,
+        watched: settings.watchedRepos.includes(repo),
+        priority: settings.repoPriorities[repo] ?? ("normal" as RepoPriority),
+        activePrs: activeCounts.get(repo) ?? 0,
+      }));
+  }, [settings, activeCounts, filter]);
 
   const addRepo = () => {
     const repo = draft.trim();
@@ -789,10 +924,18 @@ function ReposPane({
       </div>
       {draftError && <div className="settings-error">{draftError}</div>}
 
+      <input
+        className="table-filter mono"
+        placeholder="search repositories…"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+      />
+
       {rows.length === 0 ? (
         <p className="pane-intro">
-          Nothing yet — repos appear here once you watch one or once PRs involving you are
-          tracked.
+          {filter
+            ? "No repositories match."
+            : "Nothing yet — repos appear here once you watch one or once PRs involving you are tracked."}
         </p>
       ) : (
         <table className="repo-table">
@@ -830,6 +973,150 @@ function ReposPane({
                       className="icon-btn"
                       title="Unwatch and clear priority"
                       onClick={() => removeRepo(row.repo)}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------- users
+
+const LOGIN_RE = /^[A-Za-z0-9-]+(\[bot\])?$/;
+
+/** Author priorities, mirroring the Repositories pane — see and adjust any
+ *  user's weight without needing one of their PRs on screen. */
+function UsersPane({
+  settings,
+  save,
+  activeAuthors,
+}: PaneProps & { activeAuthors: string[] }) {
+  const [draft, setDraft] = useState("");
+  const [draftError, setDraftError] = useState<string | null>(null);
+  // Manually added logins with no stored priority yet — kept locally so the
+  // row exists to pick a priority on (normal is never persisted).
+  const [added, setAdded] = useState<string[]>([]);
+
+  const activeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const author of activeAuthors) counts.set(author, (counts.get(author) ?? 0) + 1);
+    return counts;
+  }, [activeAuthors]);
+
+  const [filter, setFilter] = useState("");
+
+  const rows = useMemo(() => {
+    const all = new Set<string>([
+      ...Object.keys(settings.authorPriorities),
+      ...activeCounts.keys(),
+      ...added,
+    ]);
+    const q = filter.trim().toLowerCase();
+    return [...all]
+      .filter((author) => !q || author.toLowerCase().includes(q))
+      .sort()
+      .map((author) => ({
+        author,
+        priority: settings.authorPriorities[author] ?? ("normal" as RepoPriority),
+        activePrs: activeCounts.get(author) ?? 0,
+      }));
+  }, [settings, activeCounts, added, filter]);
+
+  const setPriority = (author: string, priority: RepoPriority) => {
+    const next = { ...settings.authorPriorities };
+    if (priority === "normal") delete next[author];
+    else next[author] = priority;
+    void save({ authorPriorities: next });
+  };
+
+  const addUser = () => {
+    const login = draft.trim().replace(/^@/, "");
+    if (!LOGIN_RE.test(login)) {
+      setDraftError("GitHub login only — letters, digits, hyphens (e.g. besendorfer)");
+      return;
+    }
+    setDraftError(null);
+    setDraft("");
+    setAdded((a) => (a.includes(login) ? a : [...a, login]));
+  };
+
+  return (
+    <section className="pane-section pane-wide">
+      <h2>Users</h2>
+      <p className="pane-intro">
+        <strong>Priority</strong> weights a PR author everywhere — high authors float to the
+        top of every group and their activity is always featured; ignored authors (bots,
+        dependabot) are never tracked at all. Right-clicking a PR sets this too.
+      </p>
+
+      <div className="repo-add">
+        <input
+          placeholder="github login — press Enter to add"
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setDraftError(null);
+          }}
+          onKeyDown={(e) => e.key === "Enter" && draft && addUser()}
+        />
+        <button className="action-btn" disabled={!draft} onClick={addUser}>
+          Add
+        </button>
+      </div>
+      {draftError && <div className="settings-error">{draftError}</div>}
+
+      <input
+        className="table-filter mono"
+        placeholder="search users…"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+      />
+
+      {rows.length === 0 ? (
+        <p className="pane-intro">
+          {filter
+            ? "No users match."
+            : "Nothing yet — authors appear here once their PRs are tracked, or add one above."}
+        </p>
+      ) : (
+        <table className="repo-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th className="col-center">Open PRs</th>
+              <th>Priority</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.author} className={row.priority === "ignored" ? "row-ignored" : ""}>
+                <td className="mono repo-cell">@{row.author}</td>
+                <td className="col-center mono">{row.activePrs > 0 ? row.activePrs : "—"}</td>
+                <td>
+                  <select
+                    value={row.priority}
+                    onChange={(e) => setPriority(row.author, e.target.value as RepoPriority)}
+                  >
+                    <option value="high">high</option>
+                    <option value="normal">normal</option>
+                    <option value="low">low</option>
+                    <option value="ignored">ignored</option>
+                  </select>
+                </td>
+                <td className="col-center">
+                  {row.priority !== "normal" && (
+                    <button
+                      className="icon-btn"
+                      title="Clear priority"
+                      onClick={() => setPriority(row.author, "normal")}
                     >
                       ✕
                     </button>

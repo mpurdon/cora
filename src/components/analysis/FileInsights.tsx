@@ -4,6 +4,7 @@ import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
 import { codePassFailure } from "./AssessmentView";
 import { useDiffStore } from "../../state/diffStore";
 import { parseDiffCached } from "./DiffView";
+import { findingSeed } from "../../lib/comments";
 
 /** Per-file insights for the file currently in view on the Diff tab —
  *  follows the scroll spy, so it always describes what the reviewer is
@@ -28,8 +29,7 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
   }
 
   const commentCode = (f: CodeFinding) => {
-    const seed = `**${f.kind} · ${f.severity}**: ${f.finding}\n\n→ ${f.suggestion}`;
-    requestCompose({ target: "diff", path: f.path, line: f.line, seed });
+    requestCompose({ target: "diff", path: f.path, line: f.line, seed: findingSeed(f) });
   };
 
   if (!visiblePath || !file) {

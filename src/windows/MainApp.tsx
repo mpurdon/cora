@@ -37,7 +37,9 @@ import {
   IconRefresh,
 } from "../components/icons";
 import { PrFilesRail } from "../components/PrFilesRail";
-import { ipc, onFocusPr } from "../lib/ipc";
+import { events, ipc, onFocusPr } from "../lib/ipc";
+import { findingSeed } from "../lib/comments";
+import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
 import { ciTone, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
@@ -823,10 +825,9 @@ function AnalysisPanel({
 
   // Code findings carry their own path + line — no resolution needed.
   const commentCode = (f: CodeFinding) => {
-    const seed = `**${f.kind} · ${f.severity}**: ${f.finding}\n\n→ ${f.suggestion}`;
     useDiffStore
       .getState()
-      .requestCompose({ target: "diff", path: f.path, line: f.line, seed });
+      .requestCompose({ target: "diff", path: f.path, line: f.line, seed: findingSeed(f) });
     window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "diff" }));
   };
 
@@ -1341,10 +1342,12 @@ export function MainApp() {
   };
 
   const [priorities, setPriorities] = useState<Record<string, RepoPriority>>({});
+  const [authorPriorities, setAuthorPriorities] = useState<Record<string, RepoPriority>>({});
   const [watchedRepos, setWatchedRepos] = useState<string[]>([]);
   useEffect(() => {
     void ipc.getSettings().then((s) => {
       setPriorities(s.repoPriorities);
+      setAuthorPriorities(s.authorPriorities);
       setWatchedRepos(s.watchedRepos);
     });
   }, [showSettings]); // re-read after the settings page closes
@@ -1366,6 +1369,15 @@ export function MainApp() {
     const s = await ipc.getSettings();
     setPriorities(s.repoPriorities);
   };
+  const authorPrioOf = useCallback(
+    (author: string): RepoPriority => authorPriorities[author] ?? "normal",
+    [authorPriorities],
+  );
+  const setAuthorPriority = async (author: string, p: RepoPriority) => {
+    await ipc.setAuthorPriority(author, p); // audited server-side
+    const s = await ipc.getSettings();
+    setAuthorPriorities(s.authorPriorities);
+  };
   const [collapsed, setCollapsed] = useState<Set<string>>(
     () => new Set(JSON.parse(localStorage.getItem("cora.collapsed") ?? "[]") as string[]),
   );
@@ -1382,9 +1394,56 @@ export function MainApp() {
   const [showHistory, setShowHistory] = useState(false);
   const [pendingComment, setPendingComment] = useState<string | null>(null);
   const [bucketFilter, setBucketFilter] = useState<ActionKind | null>(null);
+  const [orgState, setOrgState] = useState<import("../bindings/OrgState").OrgState | null>(null);
+  const [availableOrgs, setAvailableOrgs] = useState<
+    import("../bindings/GithubOrg").GithubOrg[]
+  >([]);
+  const [orgMenuAt, setOrgMenuAt] = useState<{ x: number; y: number } | null>(null);
+
+  const refreshOrgState = useCallback(
+    () => void ipc.getOrgState().then(setOrgState).catch(() => {}),
+    [],
+  );
+
+  useEffect(() => {
+    // Every org the PAT can see — the corner selector offers not-yet-enabled
+    // ones under "enable…" so switching never requires a Settings trip.
+    void ipc.listGithubOrgs().then(setAvailableOrgs).catch(() => {});
+  }, []);
+
+  const chooseOrg = useCallback(
+    async (login: string) => {
+      const state = await ipc.getOrgState().catch(() => null);
+      if (!state) return;
+      try {
+        if (!state.enabled.includes(login)) {
+          await ipc.setEnabledOrgs([...state.enabled, login]);
+        }
+        if (state.active !== login) {
+          await ipc.setActiveOrg(login);
+        }
+      } catch (e) {
+        console.error("org switch failed", e);
+      }
+      refreshOrgState();
+    },
+    [refreshOrgState],
+  );
 
   useEffect(() => {
     void init();
+    refreshOrgState();
+    // Org switch (from any window): hard-reset every PR-keyed cache so no
+    // data from the previous org lingers, then refetch as the new org.
+    const unlistenOrg = listen<string>(events.orgChanged, () => {
+      setSelectedId(null);
+      usePrStore.getState().reset();
+      useAnalysisStore.getState().reset();
+      useChatStore.getState().reset();
+      useDiffStore.getState().reset();
+      void init();
+      refreshOrgState();
+    });
     const openKinds: import("../bindings/ChangeKind").ChangeKind[] = [
       "new",
       "title-changed",
@@ -1455,8 +1514,9 @@ export function MainApp() {
       void unlistenBucket.then((fn) => fn());
       void unlistenViewed.then((fn) => fn());
       void unlistenFocus.then((fn) => fn());
+      void unlistenOrg.then((fn) => fn());
     };
-  }, [init]);
+  }, [init, refreshOrgState]);
 
   const toggleGroup = (key: string) => {
     setCollapsed((prev) => {
@@ -1482,6 +1542,7 @@ export function MainApp() {
     const unignored = textMatched.filter(
       (pr) =>
         prioOf(pr.repo) !== "ignored" &&
+        authorPrioOf(pr.author) !== "ignored" &&
         (showMuted || !pr.muted) &&
         (showReviewed || !reviewedAndIdle(pr)),
     );
@@ -1490,9 +1551,12 @@ export function MainApp() {
       : unignored;
     const visible = bucketMatched.filter((pr) => passesReady(pr, ready));
     const hiddenByReady = unignored.length - visible.length;
+    // Ordering: repo priority, then the author's priority within the group,
+    // then per-PR priority, then the chosen sort.
     const sorted = [...visible].sort(
       (a, b) =>
         PRIORITY_WEIGHT[prioOf(a.repo)] - PRIORITY_WEIGHT[prioOf(b.repo)] ||
+        PRIORITY_WEIGHT[authorPrioOf(a.author)] - PRIORITY_WEIGHT[authorPrioOf(b.author)] ||
         PR_PRIORITY_WEIGHT[a.priority] - PR_PRIORITY_WEIGHT[b.priority] ||
         SORTERS[sortMode](a, b),
     );
@@ -1531,7 +1595,7 @@ export function MainApp() {
       entries.sort((a, b) => groupWeight(a) - groupWeight(b) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
-  }, [prs, filter, sortMode, groupMode, ready, prioOf, bucketFilter, showMuted, showReviewed]);
+  }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed]);
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
@@ -1627,6 +1691,56 @@ export function MainApp() {
 
   return (
     <div className="main-shell">
+      {orgState && (
+        <div className="org-corner">
+          <button
+            className="org-select"
+            title="Active organization — data, settings, and feeds are per-org. Picking a new org enables it with its own isolated database."
+            aria-haspopup="menu"
+            aria-expanded={orgMenuAt != null}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setOrgMenuAt({ x: r.left, y: r.bottom + 4 });
+            }}
+          >
+            {orgState.active}
+            {(orgState.unread[orgState.active] ?? 0) > 0
+              ? ` · ${orgState.unread[orgState.active]}`
+              : ""}
+          </button>
+          {orgMenuAt && (
+            <ContextMenu
+              x={orgMenuAt.x}
+              y={orgMenuAt.y}
+              onClose={() => setOrgMenuAt(null)}
+              sections={[
+                {
+                  title: "organizations",
+                  items: orgState.enabled.map((o) => ({
+                    label:
+                      (orgState.unread[o] ?? 0) > 0 ? `${o} · ${orgState.unread[o]}` : o,
+                    checked: o === orgState.active,
+                    onClick: () => void chooseOrg(o),
+                  })),
+                },
+                ...(availableOrgs.some((o) => !orgState.enabled.includes(o.login))
+                  ? [
+                      {
+                        title: "enable…",
+                        items: availableOrgs
+                          .filter((o) => !orgState.enabled.includes(o.login))
+                          .map((o) => ({
+                            label: o.personal ? `${o.login} (personal)` : o.login,
+                            onClick: () => void chooseOrg(o.login),
+                          })),
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          )}
+        </div>
+      )}
       <nav className="rail" style={{ width: rail.width }}>
         {selected && railView === "files" ? (
           <PrFilesRail pr={selected} onBack={() => setRailView("list")} onOpenFile={openFile} />
@@ -1968,6 +2082,14 @@ export function MainApp() {
                     ],
                   },
                   {
+                    title: `@${menu.pr.author} priority (all their PRs)`,
+                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
+                      label: p,
+                      checked: authorPrioOf(menu.pr.author) === p,
+                      onClick: () => void setAuthorPriority(menu.pr.author, p),
+                    })),
+                  },
+                  {
                     title: `${menu.pr.repo} priority`,
                     items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
                       label: p,
@@ -2057,7 +2179,7 @@ function HotkeysHelp({ onClose }: { onClose: () => void }) {
     ["/", "focus the filter"],
     ["esc", "close menus, drawers, this help"],
     ["?", "toggle this help"],
-    ["right-click a PR", "analyze, priority, mute, untrack, repo priority"],
+    ["right-click a PR", "analyze, PR/author/repo priority, mute, untrack"],
     ["click a node", "drill into the architecture · diff at code level"],
   ];
   return (

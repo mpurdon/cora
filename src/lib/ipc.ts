@@ -20,6 +20,8 @@ import type { PrChangedEvent } from "../bindings/PrChangedEvent";
 import type { ReviewMark } from "../bindings/ReviewMark";
 import type { Settings } from "../bindings/Settings";
 import type { TrackedPr } from "../bindings/TrackedPr";
+import type { GithubOrg } from "../bindings/GithubOrg";
+import type { OrgState } from "../bindings/OrgState";
 
 export const events = {
   prsSnapshot: "prs:snapshot",
@@ -30,11 +32,16 @@ export const events = {
   analysisComplete: "analysis:complete",
   analysisError: "analysis:error",
   chatEvent: "chat:event",
+  orgChanged: "org:changed",
 } as const;
 
 export const ipc = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
+  listGithubOrgs: () => invoke<GithubOrg[]>("list_github_orgs"),
+  getOrgState: () => invoke<OrgState>("get_org_state"),
+  setActiveOrg: (login: string) => invoke<void>("set_active_org", { login }),
+  setEnabledOrgs: (logins: string[]) => invoke<string[]>("set_enabled_orgs", { logins }),
   setGithubPat: (token: string) => invoke<void>("set_github_pat", { token }),
   githubPatPresent: () => invoke<boolean>("github_pat_present"),
   clearGithubPat: () => invoke<void>("clear_github_pat"),
@@ -63,6 +70,8 @@ export const ipc = {
     invoke<void>("set_pr_priority", { id, priority }),
   setRepoPriority: (repo: string, priority: RepoPriority) =>
     invoke<void>("set_repo_priority", { repo, priority }),
+  setAuthorPriority: (author: string, priority: RepoPriority) =>
+    invoke<void>("set_author_priority", { author, priority }),
   getAuditLog: () => invoke<AuditEntry[]>("get_audit_log"),
   undoAudit: (id: number) => invoke<void>("undo_audit", { id }),
   getActivity: () => invoke<ActivityItem[]>("get_activity"),

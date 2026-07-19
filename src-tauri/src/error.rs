@@ -4,6 +4,8 @@ use serde::Serialize;
 pub enum AppError {
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
+    #[error("filesystem error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("keychain error: {0}")]
     Keyring(#[from] keyring::Error),
     #[error("network error: {0}")]

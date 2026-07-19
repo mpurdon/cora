@@ -19,6 +19,8 @@ interface ChatState {
   send: (prId: string, text: string) => Promise<void>;
   confirm: (prId: string, approve: boolean) => Promise<void>;
   clear: (prId: string) => Promise<void>;
+  /** Org switch: drop every session view. */
+  reset: () => void;
 }
 
 let initialized = false;
@@ -63,4 +65,6 @@ export const useChatStore = create<ChatState>((set) => ({
     await ipc.chatClear(prId);
     set((s) => ({ sessions: { ...s.sessions, [prId]: EMPTY } }));
   },
+
+  reset: () => set({ sessions: {} }),
 }));

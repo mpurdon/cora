@@ -18,6 +18,7 @@ import {
   IconSparkle,
   IconXCircle,
 } from "../components/icons";
+import { ContextMenu } from "../components/ContextMenu";
 import { ipc } from "../lib/ipc";
 import { usePrStore } from "../state/prStore";
 
@@ -251,6 +252,8 @@ export function CalloutApp() {
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [menu, setMenu] = useState<{ x: number; y: number; item: ActivityItem } | null>(null);
   const [celebrating, setCelebrating] = useState(false);
+  const [orgState, setOrgState] = useState<import("../bindings/OrgState").OrgState | null>(null);
+  const [orgMenuAt, setOrgMenuAt] = useState<{ x: number; y: number } | null>(null);
   // Which "analysis ready" rows we've already seen — a genuinely new one
   // launches the fireworks. Seeded silently on first load so reopening the
   // callout doesn't re-celebrate old news.
@@ -276,8 +279,22 @@ export function CalloutApp() {
     document.body.classList.add("callout");
     void init();
     refresh();
-    const un = listen("activity:changed", refresh);
-    return () => void un.then((fn) => fn());
+    const refreshOrg = () => void ipc.getOrgState().then(setOrgState).catch(() => {});
+    refreshOrg();
+    const un = listen("activity:changed", () => {
+      refresh();
+      refreshOrg(); // unread badges track the feed
+    });
+    // Org switch (from any window): the feed and tiles become the new org's.
+    const unOrg = listen("org:changed", () => {
+      seenAnalysis.current = null; // don't celebrate the new org's backlog
+      refresh();
+      refreshOrg();
+    });
+    return () => {
+      void un.then((fn) => fn());
+      void unOrg.then((fn) => fn());
+    };
   }, [init]);
 
   useEffect(() => {
@@ -371,6 +388,43 @@ export function CalloutApp() {
         </div>
       ) : (
         <>
+          {orgState && orgState.enabled.length > 1 && (
+            <>
+              <button
+                className="org-select org-bar"
+                title="Active organization — the feed and tiles below are this org's"
+                aria-haspopup="menu"
+                aria-expanded={orgMenuAt != null}
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  setOrgMenuAt({ x: r.left, y: r.bottom + 4 });
+                }}
+              >
+                {orgState.active}
+                {(orgState.unread[orgState.active] ?? 0) > 0
+                  ? ` · ${orgState.unread[orgState.active]}`
+                  : ""}
+              </button>
+              {orgMenuAt && (
+                <ContextMenu
+                  x={orgMenuAt.x}
+                  y={orgMenuAt.y}
+                  onClose={() => setOrgMenuAt(null)}
+                  sections={[
+                    {
+                      title: "organizations",
+                      items: orgState.enabled.map((o) => ({
+                        label:
+                          (orgState.unread[o] ?? 0) > 0 ? `${o} · ${orgState.unread[o]}` : o,
+                        checked: o === orgState.active,
+                        onClick: () => void ipc.setActiveOrg(o),
+                      })),
+                    },
+                  ]}
+                />
+              )}
+            </>
+          )}
           <div className="stat-grid">
             {ACTION_ORDER.map((kind) => (
               <Tile
