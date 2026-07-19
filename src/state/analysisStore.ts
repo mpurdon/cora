@@ -42,24 +42,15 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
     if (initialized) return;
     initialized = true;
     await onAnalysisProgress((p) => {
-      // Progress events don't carry the focus id, so fan out to every run of
-      // this (pr, level) that is currently running (there's at most one).
-      const prefix = `${p.prId}:${p.level}:`;
+      const key = analysisKey(p.prId, p.level, p.focus || undefined);
       const step = { at: new Date().toISOString(), message: p.message };
       set((s) => {
-        const next = { ...s.runs };
-        let matched = false;
-        for (const key of Object.keys(next)) {
-          if (key.startsWith(prefix) && next[key].status === "running") {
-            next[key] = { ...next[key], progress: [...next[key].progress.slice(-400), step] };
-            matched = true;
-          }
-        }
-        if (!matched) {
-          const key = analysisKey(p.prId, p.level);
-          next[key] = { status: "running", progress: [step] };
-        }
-        return { runs: next };
+        const run = s.runs[key];
+        const next =
+          run && run.status === "running"
+            ? { ...run, progress: [...run.progress.slice(-400), step] }
+            : { status: "running" as const, progress: [step] };
+        return { runs: { ...s.runs, [key]: next } };
       });
     });
     await onAnalysisComplete((r) => {
@@ -74,28 +65,13 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
       }));
     });
     await onAnalysisError((e) => {
-      // Like progress, error events lack the focus id — fail every running
-      // run of this (pr, level).
-      const prefix = `${e.prId}:${e.level}:`;
-      set((s) => {
-        const next = { ...s.runs };
-        let matched = false;
-        for (const key of Object.keys(next)) {
-          if (key.startsWith(prefix) && next[key].status === "running") {
-            next[key] = { status: "error", progress: [], error: e.error, errorKind: e.kind };
-            matched = true;
-          }
-        }
-        if (!matched) {
-          next[analysisKey(e.prId, e.level)] = {
-            status: "error",
-            progress: [],
-            error: e.error,
-            errorKind: e.kind,
-          };
-        }
-        return { runs: next };
-      });
+      const key = analysisKey(e.prId, e.level, e.focus || undefined);
+      set((s) => ({
+        runs: {
+          ...s.runs,
+          [key]: { status: "error", progress: [], error: e.error, errorKind: e.kind },
+        },
+      }));
     });
   },
 

@@ -221,6 +221,26 @@ pub struct ReviewVerdict {
     pub url: String,
 }
 
+/// One commit in a PR's history tab.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct PrCommit {
+    pub sha: String,
+    pub short_sha: String,
+    /// Headline only; full message stays on GitHub.
+    pub message: String,
+    pub author: String,
+    pub at: String,
+    #[ts(type = "number")]
+    pub additions: i64,
+    #[ts(type = "number")]
+    pub deletions: i64,
+    /// SUCCESS | FAILURE | ERROR | PENDING | EXPECTED — of this commit's checks.
+    pub ci_status: Option<String>,
+    pub url: String,
+}
+
 /// Per-repo attention weighting. Ignored repos are never tracked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -506,6 +526,13 @@ pub mod events {
     /// Review/thread state changed (resolve, new diff comment, submitted
     /// review, refresh): the approve gate should refetch. No payload.
     pub const REVIEWS_CHANGED: &str = "reviews:changed";
+}
+
+/// The login-only half of bot detection (GitHub App logins end in "[bot]").
+/// Callers with the author's GraphQL `__typename` in hand should OR this
+/// with a `== "Bot"` check, which also catches suffix-less bots.
+pub fn is_bot_login(login: &str) -> bool {
+    login.ends_with("[bot]")
 }
 
 /// A review comment that opens a thread but shouldn't demand resolution:

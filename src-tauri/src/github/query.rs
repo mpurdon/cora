@@ -154,8 +154,19 @@ impl GraphQlClient {
     }
 }
 
-/// The viewer's latest review per PR: state, submittedAt, re-requested.
-pub type ViewerReviews = HashMap<String, (Option<String>, Option<String>, bool)>;
+/// Per-PR review context fetched in cheap chunks: the viewer's own latest
+/// review, plus the newest opinionated review (approve / request changes)
+/// by anyone — the actor behind a review-state change.
+#[derive(Debug, Clone, Default)]
+pub struct ViewerReviewInfo {
+    pub my_state: Option<String>,
+    pub my_at: Option<String>,
+    pub rerequested: bool,
+    /// (author, state) of the most recent APPROVED / CHANGES_REQUESTED review.
+    pub last_opinion: Option<(String, String)>,
+}
+
+pub type ViewerReviews = HashMap<String, ViewerReviewInfo>;
 
 /// viewer-scoped review fields are computed per-viewer per-PR on GitHub's
 /// side — batching them into the main ~140-node poll pushes the query past
@@ -169,6 +180,7 @@ pub async fn fetch_viewer_reviews(
         id
         viewerLatestReview { state submittedAt }
         viewerLatestReviewRequest { id }
+        latestOpinionatedReviews(last: 1) { nodes { author { login } state } }
     } } }";
     let mut out = HashMap::new();
     for chunk in ids.chunks(40) {
@@ -176,19 +188,31 @@ pub async fn fetch_viewer_reviews(
         let Some(nodes) = data.pointer("/nodes").and_then(Value::as_array) else { continue };
         for n in nodes {
             let Some(id) = n.get("id").and_then(Value::as_str) else { continue };
+            let last_opinion = n
+                .pointer("/latestOpinionatedReviews/nodes/0")
+                .and_then(|r| {
+                    Some((
+                        r.pointer("/author/login")?.as_str()?.to_string(),
+                        r.get("state")?.as_str()?.to_string(),
+                    ))
+                });
             out.insert(
                 id.to_string(),
-                (
-                    n.pointer("/viewerLatestReview/state")
+                ViewerReviewInfo {
+                    my_state: n
+                        .pointer("/viewerLatestReview/state")
                         .and_then(Value::as_str)
                         .map(String::from),
-                    n.pointer("/viewerLatestReview/submittedAt")
+                    my_at: n
+                        .pointer("/viewerLatestReview/submittedAt")
                         .and_then(Value::as_str)
                         .map(String::from),
-                    n.pointer("/viewerLatestReviewRequest/id")
+                    rerequested: n
+                        .pointer("/viewerLatestReviewRequest/id")
                         .and_then(Value::as_str)
                         .is_some(),
-                ),
+                    last_opinion,
+                },
             );
         }
     }

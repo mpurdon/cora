@@ -3,6 +3,13 @@ import type { C4Node } from "../../bindings/C4Node";
 import { ipc } from "../../lib/ipc";
 import { DiffJump, parseDiff, type DiffFile } from "./DiffView";
 
+/** Lowercase with separators stripped, so naming conventions stop mattering:
+ *  "Document Viewer Panel", "document-viewer-panel" and
+ *  DocumentViewerPanel.tsx all reduce to the same token run. */
+function squash(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 /** Best-effort mapping from a C4 node to the diff files it concerns.
  *  Node ids follow "code:<path>#<symbol>" / "component:<path>" conventions,
  *  but models drift — so fall back to name matching against paths and
@@ -14,20 +21,47 @@ export function matchFiles(files: DiffFile[], node: C4Node): DiffFile[] {
     .trim()
     .toLowerCase();
   const name = node.name.replace(/\(\)$/, "").trim();
+  const idSquash = squash(idPath);
+  const nameSquash = squash(name);
 
   const byPath = files.filter((f) => {
     const p = f.path.toLowerCase();
-    return idPath.length > 2 && (p.includes(idPath) || idPath.includes(p));
+    if (idPath.length > 2 && (p.includes(idPath) || idPath.includes(p))) return true;
+    return idSquash.length > 4 && squash(f.path).includes(idSquash);
   });
   if (byPath.length > 0) return byPath;
 
-  if (name.length > 2) {
-    const byName = files.filter(
-      (f) =>
-        f.path.toLowerCase().includes(name.toLowerCase()) ||
-        f.lines.some((l) => l.kind !== "ctx" && l.text.includes(name)),
-    );
+  if (nameSquash.length > 4) {
+    const byName = files.filter((f) => squash(f.path).includes(nameSquash));
     if (byName.length > 0) return byName;
+  }
+
+  // No file carries the whole name — take the file(s) whose path hits the
+  // most of its words ("Documents BFF Router" → documents/router.ts), but
+  // only when a majority land; one shared word proves nothing.
+  const tokens = [...new Set(name.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3))];
+  if (tokens.length >= 2) {
+    const need = Math.max(2, Math.ceil(tokens.length / 2));
+    const hits = files.map((f) => {
+      const p = squash(f.path);
+      return tokens.filter((t) => p.includes(t)).length;
+    });
+    const best = Math.max(0, ...hits);
+    if (best >= need) return files.filter((_, i) => hits[i] === best);
+  }
+
+  if (name.length > 2) {
+    // Last resort: the name (or its identifier form) in changed lines —
+    // catches `import { DocumentViewerPanel }` style references.
+    const ident = name.replace(/\s+/g, "");
+    const byLine = files.filter((f) =>
+      f.lines.some(
+        (l) =>
+          l.kind !== "ctx" &&
+          (l.text.includes(name) || (ident.length > 4 && l.text.includes(ident))),
+      ),
+    );
+    if (byLine.length > 0) return byLine;
   }
   return [];
 }

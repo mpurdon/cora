@@ -18,4 +18,10 @@ trace: Array<TraceStep>, usage: AnalysisUsage,
 /**
  * Second-stage line-anchored findings (context level only).
  */
-codeFindings: Array<CodeFinding>, };
+codeFindings: Array<CodeFinding>, 
+/**
+ * How the code pass ended: "ok" | "failed: <reason>" | "off". None on
+ * analyses that predate the field or on drilled levels — an empty
+ * findings list is only trustworthy when this says "ok".
+ */
+codePass: string | null, };

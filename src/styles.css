@@ -13,6 +13,7 @@
   --bad: #e5534b;
   --idle: #3d4754;
   --chat: #9d8cff;
+  --merge: #a78bfa;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
 }
@@ -429,22 +430,65 @@ input:focus-visible {
 }
 
 .feed-group {
-  padding: 10px 8px 4px;
+  margin: 8px 0 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
   color: var(--muted);
 }
 
 .feed-group.featured-label {
   color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+/* Compact one-line rows as table columns:
+   dot · time · icon · repo#num + text (flex) · actor (fixed).
+   The feed is a size container — when the callout gets narrow, the actor
+   column drops out instead of crushing the middle (Spotify-style). */
+.activity-feed {
+  container-type: inline-size;
 }
 
 .feed-item {
   width: 100%;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 5px 42px 14px minmax(0, 1fr) 112px;
+  align-items: center;
+  gap: 6px;
+  padding: 2.5px 6px;
+  border-radius: 6px;
   text-align: left;
+}
+
+@container (max-width: 355px) {
+  .feed-item {
+    grid-template-columns: 5px 42px 14px minmax(0, 1fr);
+  }
+  .feed-actor {
+    display: none;
+  }
+}
+
+.feed-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.feed-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.feed-item.unread .feed-text {
+  color: var(--text);
 }
 
 .feed-item:hover {
@@ -453,10 +497,9 @@ input:focus-visible {
 
 .feed-dot {
   flex: none;
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  margin-top: 5px;
   background: transparent;
 }
 
@@ -468,63 +511,80 @@ input:focus-visible {
   background: var(--warn);
 }
 
-.feed-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.feed-line {
-  display: block;
-  font-size: 11.5px;
-  line-height: 1.4;
+.feed-time {
+  font-size: 9.5px;
   color: var(--muted);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
 }
 
-.feed-item.unread .feed-line {
+.feed-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--muted);
+}
+
+.feed-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.feed-icon.ok {
+  color: var(--ok);
+}
+.feed-icon.bad {
+  color: var(--bad);
+}
+.feed-icon.chat {
+  color: var(--chat);
+}
+.feed-icon.merged {
+  color: var(--merge);
+}
+
+.feed-item.unread .feed-icon.neutral {
   color: var(--text);
 }
 
 .feed-actor {
+  min-width: 0;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
   font-weight: 650;
+  color: var(--muted);
 }
 
-.feed-meta {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 9.5px;
-  color: var(--idle);
-  margin-top: 2px;
+.feed-item.unread .feed-actor {
+  color: var(--text);
 }
 
 .feed-flag {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border-radius: 4px;
-  padding: 1px 5px;
+  margin-right: 5px;
+  font-size: 10px;
 }
 
 .feed-flag.must-review {
-  background: color-mix(in srgb, var(--bad) 22%, transparent);
   color: var(--bad);
 }
 
 .feed-flag.follow-up {
-  background: color-mix(in srgb, var(--warn) 22%, transparent);
   color: var(--warn);
 }
 
-.feed-time {
+.feed-repo {
   flex: none;
-  font-size: 9.5px;
+  max-width: 75cqw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
   color: var(--muted);
-  margin-top: 2px;
+}
+
+.feed-item.unread .feed-repo {
+  color: var(--text);
 }
 
 .feed-menu {
@@ -1139,6 +1199,11 @@ body.col-resizing * {
 
 .detail {
   padding: 26px 32px;
+  /* Column that fills the scroll viewport, so live states (the analysis
+     progress log) can flex into the leftover space below the header. */
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
 }
 
 .detail .crumbs {
@@ -1203,30 +1268,92 @@ body.col-resizing * {
   flex: 1;
 }
 
-.merge-group {
+/* GitHub-style split button: the primary half names the chosen method,
+   the caret half picks another. Deliberately quiet — Approve is the row's
+   one accent. */
+.merge-split {
+  position: relative;
   display: inline-flex;
   align-items: stretch;
 }
 
-/* Merge is deliberately quiet — Approve is the row's one accent. */
-.merge-btn {
+/* Outrank the later .action-btn base rule so the halves actually join.
+   Merge wears purple — distinct from approve's green and danger's red. */
+.merge-split .merge-btn {
   border-radius: 6px 0 0 6px;
   border-right: none;
+  color: var(--merge);
+  border-color: color-mix(in srgb, var(--merge) 40%, transparent);
 }
 
-.merge-btn:hover {
-  color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 10%, transparent);
-}
-
-.merge-method {
-  background: var(--ink-1);
-  border: 1px solid var(--line);
+.merge-split .merge-caret {
   border-radius: 0 6px 6px 0;
-  color: var(--muted);
-  font-family: var(--mono);
+  border-left: 1px solid color-mix(in srgb, var(--merge) 40%, transparent);
+  padding: 0 8px;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--merge);
+  border-color: color-mix(in srgb, var(--merge) 40%, transparent);
+  display: inline-flex;
+  align-items: center;
+}
+
+.merge-split .merge-btn:hover,
+.merge-split .merge-caret:hover {
+  background: color-mix(in srgb, var(--merge) 12%, transparent);
+}
+
+/* ---------- history tab (commit list) ---------- */
+
+.history-view {
+  max-width: 780px;
+}
+
+.history-view > .eyebrow {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.commit-row {
+  display: grid;
+  grid-template-columns: 10px 62px minmax(0, 1fr) auto auto 70px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 7px;
+}
+
+.commit-row:hover {
+  background: var(--ink-1);
+}
+
+.commit-sha {
+  text-align: left;
+  font-size: 11px;
+  color: var(--chat);
+}
+
+.commit-sha:hover {
+  text-decoration: underline;
+}
+
+.commit-msg {
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.commit-author,
+.commit-stat,
+.commit-ago {
   font-size: 10px;
-  padding: 0 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.commit-ago {
+  text-align: right;
 }
 
 .confirm-danger {
@@ -1237,15 +1364,6 @@ body.col-resizing * {
 
 .confirm-danger:hover {
   background: color-mix(in srgb, var(--warn) 14%, transparent);
-}
-
-.approve-btn {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
-}
-
-.approve-btn:hover {
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
 /* Serious-but-secondary verbs (request changes): neutral at rest, danger on
@@ -1345,6 +1463,25 @@ body.col-resizing * {
 .action-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* Semantic tones for action buttons — colors follow the active theme. */
+.action-btn.btn-ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+}
+
+.action-btn.btn-ok:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.action-btn.btn-danger {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
+
+.action-btn.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
 }
 
 .action-btn:disabled:hover {
@@ -1652,22 +1789,64 @@ body.col-resizing * {
   margin-top: 12px;
 }
 
-.analysis-running {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  text-align: left;
+/* Analysis-ready fireworks overlay in the callout. */
+.fireworks-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 200;
 }
 
-.progress-ticker {
+/* Live strip above a sketch canvas: the drill responds instantly with a
+   diff-derived sketch while the scoped analysis enriches it. */
+.sketch-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 7px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.sketch-strip .sketch-label {
+  flex: none;
+}
+
+.sketch-strip .sketch-progress {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--idle);
+  text-align: right;
+}
+
+.sketch-strip.error {
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+}
+
+.progress-log {
+  flex: 1;
+  min-height: 220px;
+  overflow-y: auto;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 18px 22px;
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.9;
   color: var(--idle);
-  overflow: hidden;
+  text-align: left;
 }
 
-.progress-ticker .current {
+.progress-log .current {
   color: var(--text);
 }
 
@@ -1853,6 +2032,11 @@ body.col-resizing * {
 .crumb-level.level-context {
   color: var(--ok);
   border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.crumb-level.level-container {
+  color: var(--merge);
+  border-color: color-mix(in srgb, var(--merge) 45%, transparent);
 }
 
 .crumb-level.level-component {
@@ -3173,7 +3357,24 @@ button.diff-file-header:hover {
   font-family: var(--sans);
   position: relative;
   overflow: hidden;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
 }
+
+/* Hover: make the node under the pointer unmistakable — clicks navigate,
+   so hovering should read as "this is what you'd drill into". */
+.c4-node:hover {
+  border-color: color-mix(in srgb, var(--text) 45%, var(--line));
+  background: color-mix(in srgb, var(--text) 4%, var(--ink-1));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+/* Edges brighten under the pointer too, so relationships are traceable. */
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 2.75;
+  filter: brightness(1.35);
+}
+
 
 .c4-node::before {
   content: "";
@@ -3228,6 +3429,9 @@ button.diff-file-header:hover {
 }
 
 .c4-kind {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.06em;
@@ -3236,6 +3440,29 @@ button.diff-file-header:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.c4-kind-icon {
+  flex: none;
+  display: inline-flex;
+}
+
+.c4-kind-icon svg {
+  width: 11px;
+  height: 11px;
+}
+
+.c4-node.kind-person .c4-kind-icon {
+  color: var(--chat);
+}
+
+.c4-node.kind-external-system .c4-kind-icon {
+  color: var(--warn);
+}
+
+.c4-node.kind-data-store .c4-kind-icon,
+.c4-node.kind-queue .c4-kind-icon {
+  color: var(--ok);
 }
 
 .c4-change-tag {
@@ -3283,6 +3510,17 @@ button.diff-file-header:hover {
 .c4-handle {
   opacity: 0;
   pointer-events: none;
+}
+
+.c4-edge-label {
+  position: absolute;
+  font-size: 10px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--ink-0) 90%, transparent);
+  padding: 1px 5px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .c4-minimap {
@@ -4008,13 +4246,43 @@ button.diff-file-header:hover {
   flex: none;
   border-top: 1px solid var(--line);
   padding: 10px;
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
+  position: relative;
+}
+
+/* Compact send affordance inside the textarea's corner — Enter sends, so
+   this mostly exists as a visual cue and a mouse target. */
+.chat-send {
+  position: absolute;
+  right: 16px;
+  bottom: 18px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--chat);
+  color: var(--ink-0);
+  border: none;
+}
+
+.chat-send svg {
+  width: 13px;
+  height: 13px;
+}
+
+.chat-send:disabled {
+  background: var(--ink-2);
+  color: var(--muted);
+}
+
+.chat-send:not(:disabled):hover {
+  filter: brightness(1.15);
 }
 
 .chat-composer textarea {
-  flex: 1;
+  display: block;
+  width: 100%;
   min-height: 54px;
   max-height: 160px;
   resize: vertical;
@@ -4024,7 +4292,7 @@ button.diff-file-header:hover {
   color: var(--text);
   font-size: 12px;
   line-height: 1.5;
-  padding: 8px 10px;
+  padding: 8px 34px 8px 10px;
   user-select: text;
 }
 
@@ -4206,10 +4474,42 @@ button.diff-file-header:hover {
 }
 
 /* Poll-interval ladder slider */
+/* Fully custom slider: the native control mispositions its thumb under CSS
+   zoom (never reaches the end). --fill is set inline from the value. */
 .interval-slider {
+  -webkit-appearance: none;
+  appearance: none;
   width: 100%;
   max-width: 420px;
-  accent-color: var(--ok);
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.interval-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(
+    to right,
+    var(--ok) var(--fill, 0%),
+    var(--ink-2) var(--fill, 0%)
+  );
+}
+
+.interval-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: none;
+  background: var(--text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  margin-top: -4.5px;
+}
+
+.interval-slider:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid color-mix(in srgb, var(--ok) 60%, transparent);
+  outline-offset: 2px;
 }
 
 .interval-scale {
@@ -4222,6 +4522,16 @@ button.diff-file-header:hover {
 }
 
 /* ---------- code findings (assessment second stage) ---------- */
+
+.code-pass-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.code-pass-note.bad {
+  color: var(--warn);
+}
 
 .code-file-group {
   margin-bottom: 14px;

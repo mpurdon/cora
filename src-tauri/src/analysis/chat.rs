@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::analysis::engine::{
-    bedrock_client, converse_once, describe_tool_call, document_to_value, tool_result,
+    bedrock_client, converse_once, describe_tool_call, document_to_value, strip_trailing_reasoning,
+    tool_result,
 };
 use crate::analysis::tools::RepoTools;
 use crate::analysis::types::{
@@ -663,7 +664,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
             }
         }
 
-        with_session(app, pr_id, |s| s.messages.push(message))?;
+        with_session(app, pr_id, |s| s.messages.push(strip_trailing_reasoning(message)))?;
 
         let mut results: Vec<ContentBlock> = Vec::new();
         if !research.is_empty() {
