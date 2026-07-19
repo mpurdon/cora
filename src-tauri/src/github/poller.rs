@@ -21,6 +21,8 @@ pub struct PollTrigger(pub Arc<Notify>);
 const MAX_BACKOFF_SECS: u64 = 300;
 const LOW_RATE_LIMIT: i64 = 100;
 
+use crate::store::MECHANICAL_KINDS;
+
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let trigger = app.state::<PollTrigger>().0.clone();
@@ -153,13 +155,36 @@ fn record_activity(
     settings: &crate::models::Settings,
     pr: &crate::models::TrackedPr,
     changes: &[ChangeKind],
+    last_opinion: Option<&(String, String)>,
     now: &str,
 ) -> bool {
+    // Bot-authored PRs (dependabot, renovate) churn constantly; their noise
+    // stays out of the feed. The tiles and main list still track them.
+    if crate::models::is_bot_login(&pr.info.author) {
+        return false;
+    }
     let important = pr.sources.contains(&PrSource::Authored)
         || pr.priority == crate::models::PrPriority::High
         || settings.repo_priorities.get(&pr.info.repo) == Some(&RepoPriority::High);
+    // A poll delta has no per-event timestamps, so impose causal order on
+    // same-cycle rows: setup → work → verdicts → terminal state. Insertion
+    // order is the feed's tie-breaker for identical timestamps.
+    let causal_rank = |c: &ChangeKind| match c {
+        ChangeKind::New => 0,
+        ChangeKind::DraftChanged => 1,
+        ChangeKind::NewCommits => 2,
+        ChangeKind::CiChanged => 3,
+        ChangeKind::NewComments => 4,
+        ChangeKind::ReviewChanged => 5,
+        ChangeKind::Reopened => 6,
+        ChangeKind::TitleChanged => 7,
+        ChangeKind::Closed => 8,
+        ChangeKind::Merged => 9,
+    };
+    let mut ordered: Vec<&ChangeKind> = changes.iter().collect();
+    ordered.sort_by_key(|c| causal_rank(c));
     let mut wrote = false;
-    for change in changes {
+    for change in ordered {
         let (kind, actor, summary, comment_id) = match change {
             ChangeKind::NewComments => {
                 let Some(c) = crate::models::latest_human_comment(&pr.info.recent_comments, 5)
@@ -174,7 +199,13 @@ fn record_activity(
                     Some("CHANGES_REQUESTED") => "changes requested",
                     _ => "review state changed",
                 };
-                ("review", String::new(), state.to_string(), String::new())
+                // Attribute the verdict when the newest opinionated review
+                // matches the decision (it flipped it, or agrees with it).
+                let actor = match (pr.info.review_decision.as_deref(), last_opinion) {
+                    (Some(d), Some((author, review_state))) if d == review_state => author.clone(),
+                    _ => String::new(),
+                };
+                ("review", actor, state.to_string(), String::new())
             }
             ChangeKind::NewCommits => {
                 ("commits", pr.info.author.clone(), "pushed new commits".into(), String::new())
@@ -183,7 +214,11 @@ fn record_activity(
                 Some("FAILURE") | Some("ERROR") => {
                     ("ci", String::new(), "CI went red".into(), String::new())
                 }
-                Some("SUCCESS") => ("ci", String::new(), "CI is green".into(), String::new()),
+                Some("SUCCESS") => {
+                    // Green isn't news — but it does make an unread red moot.
+                    let _ = store.supersede_activity(&pr.info.id, &["ci"]);
+                    continue;
+                }
                 _ => continue, // pending flapping is noise
             },
             ChangeKind::Merged => ("merged", String::new(), "merged".into(), String::new()),
@@ -204,12 +239,31 @@ fn record_activity(
             // Title edits and draft flips into draft are noise.
             _ => continue,
         };
+        // A newer event marks the unread rows it makes moot as read — never
+        // flagged rows, never comments (see supersede_activity). Terminal
+        // states retire everything mechanical; repeatable kinds retire their
+        // own older siblings.
+        let superseded: &[&str] = match kind {
+            "merged" | "closed" | "reopened" => MECHANICAL_KINDS,
+            "commits" | "ci" | "review" => &[kind],
+            _ => &[],
+        };
+        let _ = store.supersede_activity(&pr.info.id, superseded);
+        // A red CI on someone else's PR is their problem — record it for the
+        // history but arrive pre-read. On your own PRs it demands attention.
+        let pre_read = kind == "ci" && !pr.sources.contains(&PrSource::Authored);
         if store
-            .add_activity(now, &pr.info, kind, &actor, &summary, &comment_id, important)
+            .add_activity(now, &pr.info, kind, &actor, &summary, &comment_id, important, pre_read)
             .is_ok()
         {
             wrote = true;
         }
+    }
+    // Once YOU have reviewed (and nobody re-requested), the "review
+    // requested" row has served its purpose. Someone else's review never
+    // retires it — they still want yours.
+    if pr.info.my_review_state.is_some() && !pr.info.my_review_rerequested {
+        let _ = store.supersede_activity(&pr.info.id, &["new"]);
     }
     wrote
 }
@@ -328,10 +382,10 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
     };
     for (id, (info, _)) in merged.iter_mut() {
         match viewer_reviews.get(id) {
-            Some((state, at, rereq)) => {
-                info.my_review_state = state.clone();
-                info.my_reviewed_at = at.clone();
-                info.my_review_rerequested = *rereq;
+            Some(v) => {
+                info.my_review_state = v.my_state.clone();
+                info.my_reviewed_at = v.my_at.clone();
+                info.my_review_rerequested = v.rerequested;
             }
             None => {
                 if let Some(prev) = existing.get(id) {
@@ -356,8 +410,10 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
             Some(prev) => compute_changes(&prev.info, info),
             None => {
                 // GitHub's search index lags: a just-merged/closed PR can keep
-                // matching `is:open` for a while. Don't resurrect it as new.
+                // matching `is:open` for a while. Don't resurrect it as new —
+                // but do retire any stale unread feed rows it left behind.
                 if info.state != "OPEN" {
+                    let _ = store.supersede_activity(id, MECHANICAL_KINDS);
                     continue;
                 }
                 vec![ChangeKind::New]
@@ -368,6 +424,11 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
             store.invalidate_analyses(id)?;
         }
         let stored = store.upsert_pr(info, sources, &changes, &now)?;
+        if stored.info.state != "OPEN" {
+            // Backstop for rows written before (or without) the terminal
+            // event: a non-open PR never has live mechanical feed rows.
+            let _ = store.supersede_activity(id, MECHANICAL_KINDS);
+        }
         // Merged/closed PRs whose changes were already acknowledged drop off.
         if stored.info.state != "OPEN" && stored.unread.is_empty() {
             store.untrack(id)?;
@@ -390,12 +451,17 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
             maybe_prewarm(app, &store, &settings, &stored.info, head_moved);
         }
         if !changes.is_empty() && !stored.muted {
-            if record_activity(&store, &settings, &stored, &changes, &now) {
+            let last_opinion = viewer_reviews.get(id).and_then(|v| v.last_opinion.as_ref());
+            if record_activity(&store, &settings, &stored, &changes, last_opinion, &now) {
                 activity_written = true;
             }
             notify_for_changes(app, &stored, &changes);
             let _ = app.emit(events::PR_CHANGED, PrChangedEvent { pr: stored, changes });
         }
+    }
+    // Once-per-cycle feed hygiene (get_activity is a pure read).
+    if store.reconcile_activity().unwrap_or(0) > 0 {
+        activity_written = true;
     }
     if activity_written {
         let _ = app.emit(events::ACTIVITY_CHANGED, ());

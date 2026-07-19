@@ -8,6 +8,7 @@ import type { AuditEntry } from "../bindings/AuditEntry";
 import type { ChangeKind } from "../bindings/ChangeKind";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { LogEntry } from "../bindings/LogEntry";
+import type { PrCommit } from "../bindings/PrCommit";
 import type { PrConversation } from "../bindings/PrConversation";
 import type { PrReviews } from "../bindings/PrReviews";
 import type { PrPriority } from "../bindings/PrPriority";
@@ -69,6 +70,7 @@ export const ipc = {
     invoke<void>("mark_activity_read", { ids, read }),
   setActivityFlag: (id: number, flag: string) => invoke<void>("set_activity_flag", { id, flag }),
   getPrComments: (prId: string) => invoke<PrConversation>("get_pr_comments", { prId }),
+  getPrCommits: (prId: string) => invoke<PrCommit[]>("get_pr_commits", { prId }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),
   getPrReviews: (prId: string) => invoke<PrReviews>("get_pr_reviews", { prId }),
   mergePr: (prId: string, method: "squash" | "merge" | "rebase") =>

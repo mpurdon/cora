@@ -91,15 +91,23 @@ function WaFindingRow({
   );
 }
 
+/** The failure reason from a `code_pass` value ("ok" | "failed: …" | "off"),
+ *  or null when it didn't fail — the one place that string format is parsed. */
+export function codePassFailure(codePass: string | null | undefined): string | null {
+  return codePass?.startsWith("failed") ? codePass.replace(/^failed:\s*/, "") : null;
+}
+
 export function AssessmentView({
   assessment,
   codeFindings,
+  codePass,
   onFocusNodes,
   onCommentFinding,
   onCommentCode,
 }: {
   assessment: Assessment;
   codeFindings: CodeFinding[];
+  codePass: string | null;
   onFocusNodes: (nodeIds: string[]) => void;
   onCommentFinding: (seed: string, nodeIds: string[]) => void;
   onCommentCode: (finding: CodeFinding) => void;
@@ -167,6 +175,22 @@ export function AssessmentView({
         </section>
       )}
 
+      {/* Empty is only meaningful when the pass actually ran — say which. */}
+      {codeByFile.size === 0 && codePassFailure(codePass) != null && (
+        <section>
+          <span className="eyebrow">Code findings — defects &amp; reuse</span>
+          <p className="code-pass-note bad">
+            The code-level pass failed — this section may be missing findings. Re-analyze to
+            retry. ({codePassFailure(codePass)})
+          </p>
+        </section>
+      )}
+      {codeByFile.size === 0 && codePass === "ok" && (
+        <section>
+          <span className="eyebrow">Code findings — defects &amp; reuse</span>
+          <p className="code-pass-note">None — the code pass ran clean.</p>
+        </section>
+      )}
       {codeByFile.size > 0 && (
         <section>
           <span className="eyebrow">Code findings — defects &amp; reuse</span>

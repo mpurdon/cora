@@ -58,8 +58,8 @@ export function parseTitle(title: string): { type: string; clean: string } {
 
 export type DotTone = "ok" | "bad" | "warn" | "idle";
 
-export function ciTone(pr: TrackedPr): DotTone {
-  switch (pr.ciStatus) {
+export function ciStatusTone(status: string | null | undefined): DotTone {
+  switch (status) {
     case "SUCCESS":
       return "ok";
     case "FAILURE":
@@ -71,6 +71,10 @@ export function ciTone(pr: TrackedPr): DotTone {
     default:
       return "idle";
   }
+}
+
+export function ciTone(pr: TrackedPr): DotTone {
+  return ciStatusTone(pr.ciStatus);
 }
 
 export function reviewTone(pr: TrackedPr): DotTone {
