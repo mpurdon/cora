@@ -142,6 +142,11 @@ pub fn untrack_pr(app: AppHandle, store: State<'_, Arc<Store>>, id: String) -> A
     let label = pr_label(&store, &id);
     store.untrack(&id)?;
     store.add_audit("untracked", &id, &label, "tracked", "untracked")?;
+    // Untracking strands this PR's mechanical feed rows — retire them now
+    // rather than waiting for the next poll cycle.
+    if store.reconcile_activity().unwrap_or(0) > 0 {
+        let _ = app.emit(events::ACTIVITY_CHANGED, ());
+    }
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
@@ -190,6 +195,7 @@ pub fn get_audit_log(store: State<'_, Arc<Store>>) -> AppResult<Vec<crate::model
 pub fn get_activity(
     store: State<'_, Arc<Store>>,
 ) -> AppResult<Vec<crate::models::ActivityItem>> {
+    // Pure read — feed hygiene runs once per poll cycle and on untrack.
     store.list_activity(300)
 }
 
@@ -383,31 +389,55 @@ pub fn spawn_analysis_task(
         }
         match outcome {
             Ok(result) => {
-                // External-boundary findings are the product's highest signal
-                // — worth a native ping when the window isn't focused.
-                let externals = result
-                    .assessment
-                    .boundary_impacts
-                    .iter()
-                    .filter(|i| i.kind == crate::analysis::types::ImpactKind::External)
-                    .count();
-                if externals > 0 {
-                    if let Ok(Some(pr)) = app.state::<Arc<Store>>().get_pr(&result.pr_id) {
+                // A finished context-level analysis is the "this PR is ready
+                // for you" moment: native ping (external-boundary impacts are
+                // the headline when present) plus a featured feed row. Drills
+                // stay quiet — they're sub-steps and often prefetched.
+                if level == AnalysisLevel::Context {
+                    let store = app.state::<Arc<Store>>().inner().clone();
+                    if let Ok(Some(pr)) = store.get_pr(&result.pr_id) {
+                        let externals = result
+                            .assessment
+                            .boundary_impacts
+                            .iter()
+                            .filter(|i| i.kind == crate::analysis::types::ImpactKind::External)
+                            .count();
+                        let repo_short =
+                            pr.info.repo.split('/').nth(1).unwrap_or(&pr.info.repo).to_string();
+                        let title = if externals > 0 {
+                            format!(
+                                "{externals} external-boundary impact{} in {repo_short}#{}",
+                                if externals == 1 { "" } else { "s" },
+                                pr.info.number
+                            )
+                        } else {
+                            format!("analysis ready · {repo_short}#{}", pr.info.number)
+                        };
                         crate::notify::send(
                             &app,
-                            &format!(
-                                "{} external-boundary impact{} in {}#{}",
-                                externals,
-                                if externals == 1 { "" } else { "s" },
-                                pr.info.repo.split('/').nth(1).unwrap_or(&pr.info.repo),
-                                pr.info.number
-                            ),
+                            &title,
                             &result.assessment.summary,
                             Some(crate::notify::FocusTarget {
                                 pr_id: result.pr_id.clone(),
                                 comment_id: None,
                             }),
                         );
+                        // One live "analysis ready" row per PR — a re-run
+                        // retires the previous one like any state tracker.
+                        let summary = if externals > 0 {
+                            format!(
+                                "analysis ready — {externals} external impact{}",
+                                if externals == 1 { "" } else { "s" }
+                            )
+                        } else {
+                            "analysis ready".to_string()
+                        };
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let _ = store.supersede_activity(&pr.info.id, &["analysis"]);
+                        let _ = store.add_activity(
+                            &now, &pr.info, "analysis", "", &summary, "", true, false,
+                        );
+                        let _ = app.emit(events::ACTIVITY_CHANGED, ());
                     }
                 }
                 let _ = app.emit(analysis_events::ANALYSIS_COMPLETE, result);
@@ -419,6 +449,7 @@ pub fn spawn_analysis_task(
                     crate::analysis::types::AnalysisError {
                         pr_id,
                         level,
+                        focus: focus.clone().unwrap_or_default(),
                         kind: crate::analysis::types::classify_error(&error),
                         error,
                     },
@@ -483,20 +514,30 @@ async fn execute_analysis(
     // Second stage: line-anchored defect/reuse findings over the review
     // plan's significant files. Best-effort — its failure never sinks the
     // architecture result.
-    if level == AnalysisLevel::Context && settings.code_findings_pass {
-        match crate::analysis::engine::code_findings(
-            app,
-            &settings,
-            &token,
-            &pr,
-            &result.assessment.review_plan,
-        )
-        .await
-        {
-            Ok(findings) => result.code_findings = findings,
-            Err(e) => {
-                crate::devlog::warn(app, "code-pass", format!("code findings pass failed: {e}"))
+    if level == AnalysisLevel::Context {
+        if settings.code_findings_pass {
+            match crate::analysis::engine::code_findings(
+                app,
+                &settings,
+                &token,
+                &pr,
+                &result.assessment.review_plan,
+            )
+            .await
+            {
+                Ok(findings) => {
+                    result.code_findings = findings;
+                    result.code_pass = Some("ok".into());
+                }
+                Err(e) => {
+                    crate::devlog::warn(app, "code-pass", format!("code findings pass failed: {e}"));
+                    // Failure stays visible on the result — an empty findings
+                    // list must be distinguishable from a crashed pass.
+                    result.code_pass = Some(format!("failed: {e}"));
+                }
             }
+        } else {
+            result.code_pass = Some("off".into());
         }
     }
 
@@ -1053,7 +1094,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
             .to_string();
         let is_bot = v.pointer("/author/__typename").and_then(serde_json::Value::as_str)
             == Some("Bot")
-            || author.ends_with("[bot]");
+            || crate::models::is_bot_login(&author);
         let reactions = v
             .get("reactionGroups")
             .and_then(serde_json::Value::as_array)
@@ -1156,6 +1197,84 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
         .unwrap_or_default();
 
     Ok(PrConversation { comments, threads, reviews })
+}
+
+/// Commit history for the PR's History tab, oldest first.
+#[tauri::command]
+pub async fn get_pr_commits(
+    app: AppHandle,
+    pr_id: String,
+) -> AppResult<Vec<crate::models::PrCommit>> {
+    let store = app.state::<Arc<Store>>().inner().clone();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let (owner, name) = pr.info.repo.split_once('/').unwrap();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+
+    let doc = "query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          commits(first: 250) {
+            nodes { commit {
+              oid abbreviatedOid messageHeadline committedDate additions deletions url
+              author { name user { login } }
+              statusCheckRollup { state }
+            } }
+          }
+        }
+      }
+    }";
+    let data = client
+        .run(doc, &serde_json::json!({ "owner": owner, "name": name, "number": pr.info.number }))
+        .await?;
+
+    Ok(data
+        .pointer("/repository/pullRequest/commits/nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| {
+                    let c = n.get("commit")?;
+                    Some(crate::models::PrCommit {
+                        sha: c.get("oid")?.as_str()?.to_string(),
+                        short_sha: c
+                            .get("abbreviatedOid")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        message: c
+                            .get("messageHeadline")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        author: c
+                            .pointer("/author/user/login")
+                            .or_else(|| c.pointer("/author/name"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        at: c
+                            .get("committedDate")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        additions: c.get("additions").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                        deletions: c.get("deletions").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                        ci_status: c
+                            .pointer("/statusCheckRollup/state")
+                            .and_then(serde_json::Value::as_str)
+                            .map(String::from),
+                        url: c.get("url").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// Full file contents at the PR head, for the comment code drawer.

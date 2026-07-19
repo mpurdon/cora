@@ -4,4 +4,9 @@ import type { AnalysisLevel } from "./AnalysisLevel";
 /**
  * Streaming progress for the UI ("reading src/payments/…").
  */
-export type AnalysisProgress = { prId: string, level: AnalysisLevel, message: string, };
+export type AnalysisProgress = { prId: string, level: AnalysisLevel, 
+/**
+ * Drill focus node id; empty for the root run. Lets the UI key
+ * concurrent runs of the same level precisely.
+ */
+focus: string, message: string, };

@@ -2,4 +2,8 @@
 import type { AnalysisErrorKind } from "./AnalysisErrorKind";
 import type { AnalysisLevel } from "./AnalysisLevel";
 
-export type AnalysisError = { prId: string, level: AnalysisLevel, error: string, kind: AnalysisErrorKind, };
+export type AnalysisError = { prId: string, level: AnalysisLevel, 
+/**
+ * Drill focus node id; empty for the root run.
+ */
+focus: string, error: string, kind: AnalysisErrorKind, };

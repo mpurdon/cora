@@ -5,6 +5,7 @@ import { useChatStore } from "../../state/chatStore";
 import { CommentBody } from "./CommentsView";
 import { FileInsights } from "./FileInsights";
 import { formatTokens, TraceSteps } from "./TraceSteps";
+import { IconArrowUp } from "../icons";
 
 /** Right-hand assistant panel: the analysis run's activity plus a
  *  conversation grounded in it. Mutating actions surface as confirm cards.
@@ -194,7 +195,7 @@ export function AssistantPanel({
             )}
             <div className="row">
               <button
-                className="action-btn approve-btn"
+                className="action-btn btn-ok"
                 onClick={() => void confirm(pr.id, true)}
               >
                 Run it
@@ -211,9 +212,7 @@ export function AssistantPanel({
         {sendError && <div className="settings-error">{sendError}</div>}
         <textarea
           placeholder={
-            session?.pending
-              ? "Confirm the action above first…"
-              : "Ask about this PR…  (Enter to send)"
+            session?.pending ? "Confirm the action above first…" : "Ask about this PR…"
           }
           value={draft}
           disabled={!!session?.pending}
@@ -225,8 +224,13 @@ export function AssistantPanel({
             }
           }}
         />
-        <button className="action-btn" disabled={!canSend} onClick={submit}>
-          Send
+        <button
+          className="chat-send"
+          disabled={!canSend}
+          title="Send  (Enter — Shift+Enter for a new line)"
+          onClick={submit}
+        >
+          <IconArrowUp />
         </button>
       </div>
         </>

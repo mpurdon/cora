@@ -291,6 +291,11 @@ pub struct AnalysisResult {
     /// Second-stage line-anchored findings (context level only).
     #[serde(default)]
     pub code_findings: Vec<CodeFinding>,
+    /// How the code pass ended: "ok" | "failed: <reason>" | "off". None on
+    /// analyses that predate the field or on drilled levels — an empty
+    /// findings list is only trustworthy when this says "ok".
+    #[serde(default)]
+    pub code_pass: Option<String>,
 }
 
 /// Streaming progress for the UI ("reading src/payments/…").
@@ -300,6 +305,9 @@ pub struct AnalysisResult {
 pub struct AnalysisProgress {
     pub pr_id: String,
     pub level: AnalysisLevel,
+    /// Drill focus node id; empty for the root run. Lets the UI key
+    /// concurrent runs of the same level precisely.
+    pub focus: String,
     pub message: String,
 }
 
@@ -338,6 +346,8 @@ pub fn classify_error(message: &str) -> AnalysisErrorKind {
 pub struct AnalysisError {
     pub pr_id: String,
     pub level: AnalysisLevel,
+    /// Drill focus node id; empty for the root run.
+    pub focus: String,
     pub error: String,
     pub kind: AnalysisErrorKind,
 }

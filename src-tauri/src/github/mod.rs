@@ -63,7 +63,7 @@ pub fn parse_pr(v: &Value) -> Option<PrInfo> {
                         let login = c.pointer("/author/login").and_then(Value::as_str)?;
                         let is_bot = c.pointer("/author/__typename").and_then(Value::as_str)
                             == Some("Bot")
-                            || login.ends_with("[bot]");
+                            || crate::models::is_bot_login(login);
                         let body = c.get("body").and_then(Value::as_str).unwrap_or("");
                         Some(crate::models::RecentComment {
                             id: c.get("id")?.as_str()?.to_string(),

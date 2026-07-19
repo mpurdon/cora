@@ -124,6 +124,18 @@ impl RepoTools {
                 "List recently merged PRs in this repo (titles), to see how this area has been changing.",
                 json!({"type": "object", "properties": {}, "required": []}),
             ),
+            (
+                "list_commits",
+                "List this PR's commits in order (sha, author, date, first message line) — how the change was built up.",
+                json!({"type": "object", "properties": {}, "required": []}),
+            ),
+            (
+                "get_commit_diff",
+                "One commit's full message and per-file diff, by sha from list_commits. Use to review commit-by-commit or to see when something changed.",
+                json!({"type": "object", "properties": {
+                    "sha": {"type": "string", "description": "Commit sha (full or abbreviated)"}
+                }, "required": ["sha"]}),
+            ),
         ]
     }
 
@@ -151,11 +163,21 @@ impl RepoTools {
             }
             "get_readme_and_docs" => self.readme_and_docs().await,
             "list_recent_prs" => self.recent_prs().await,
+            "list_commits" => self.commits().await,
+            "get_commit_diff" => {
+                let sha = input
+                    .get("sha")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| AppError::Other("get_commit_diff: missing sha".into()))?;
+                self.commit_diff(sha).await
+            }
             other => Err(AppError::Other(format!("unknown tool: {other}"))),
         }
     }
 
-    async fn pr_diff(&self) -> AppResult<String> {
+    /// Truncated-with-notice diff — the same view the get_pr_diff tool
+    /// serves; also embedded in drill kickoffs.
+    pub(crate) async fn pr_diff(&self) -> AppResult<String> {
         let mut text = self.pr_diff_full().await?;
         if text.len() > MAX_DIFF_CHARS {
             text.truncate(MAX_DIFF_CHARS);
@@ -400,6 +422,83 @@ impl RepoTools {
         };
         let docs = self.tree("docs").await.unwrap_or_else(|_| "(no docs/ directory)".into());
         Ok(format!("# README\n{readme}\n\n# docs/ listing\n{docs}"))
+    }
+
+    async fn commits(&self) -> AppResult<String> {
+        let mut lines: Vec<String> = Vec::new();
+        for page in 1..=3 {
+            let resp = self
+                .get(
+                    &format!(
+                        "repos/{}/pulls/{}/commits?per_page=100&page={page}",
+                        self.repo, self.number
+                    ),
+                    "application/vnd.github+json",
+                )
+                .await?;
+            let body: Value = resp.json().await?;
+            let Some(arr) = body.as_array() else { break };
+            for c in arr {
+                let sha = c.get("sha").and_then(Value::as_str).unwrap_or("");
+                let author = c
+                    .pointer("/author/login")
+                    .and_then(Value::as_str)
+                    .or_else(|| c.pointer("/commit/author/name").and_then(Value::as_str))
+                    .unwrap_or("?");
+                let date = c
+                    .pointer("/commit/author/date")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let subject = c
+                    .pointer("/commit/message")
+                    .and_then(Value::as_str)
+                    .and_then(|m| m.lines().next())
+                    .unwrap_or("");
+                lines.push(format!("{} {date} {author} — {subject}", &sha[..sha.len().min(10)]));
+            }
+            if arr.len() < 100 {
+                break;
+            }
+        }
+        Ok(if lines.is_empty() { "(no commits)".into() } else { lines.join("\n") })
+    }
+
+    async fn commit_diff(&self, sha: &str) -> AppResult<String> {
+        // The JSON commit endpoint carries message and per-file patches in
+        // one response — no second diff-media fetch needed.
+        let resp = self
+            .get(
+                &format!("repos/{}/commits/{sha}", self.repo),
+                "application/vnd.github+json",
+            )
+            .await?;
+        let c: Value = resp.json().await?;
+        let mut out = format!(
+            "commit {}\nAuthor: {} · {}\n\n{}\n",
+            c.get("sha").and_then(Value::as_str).unwrap_or(sha),
+            c.pointer("/commit/author/name").and_then(Value::as_str).unwrap_or("?"),
+            c.pointer("/commit/author/date").and_then(Value::as_str).unwrap_or(""),
+            c.pointer("/commit/message").and_then(Value::as_str).unwrap_or(""),
+        );
+        for f in c.get("files").and_then(Value::as_array).into_iter().flatten() {
+            let path = f.get("filename").and_then(Value::as_str).unwrap_or("?");
+            let status = f.get("status").and_then(Value::as_str).unwrap_or("");
+            let add = f.get("additions").and_then(Value::as_i64).unwrap_or(0);
+            let del = f.get("deletions").and_then(Value::as_i64).unwrap_or(0);
+            out.push_str(&format!("\n--- {path} ({status}, +{add} −{del})\n"));
+            match f.get("patch").and_then(Value::as_str) {
+                Some(p) => {
+                    out.push_str(p);
+                    out.push('\n');
+                }
+                None => out.push_str("(patch omitted by GitHub — too large or binary)\n"),
+            }
+        }
+        if out.len() > MAX_DIFF_CHARS {
+            out.truncate(MAX_DIFF_CHARS);
+            out.push_str("\n\n[commit diff truncated]");
+        }
+        Ok(out)
     }
 
     async fn recent_prs(&self) -> AppResult<String> {

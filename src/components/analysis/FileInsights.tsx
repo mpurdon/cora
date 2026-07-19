@@ -1,6 +1,7 @@
 import type { CodeFinding } from "../../bindings/CodeFinding";
 import type { TrackedPr } from "../../bindings/TrackedPr";
 import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
+import { codePassFailure } from "./AssessmentView";
 import { useDiffStore } from "../../state/diffStore";
 import { parseDiffCached } from "./DiffView";
 
@@ -73,7 +74,14 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
       {result && (
         <div className="insights-findings">
           <span className="eyebrow">Code findings</span>
-          {findings.length === 0 && <p className="insights-reason muted">None for this file.</p>}
+          {findings.length === 0 &&
+            (codePassFailure(result.codePass) != null ? (
+              <p className="insights-reason muted">
+                Code pass failed — findings may be missing. Re-analyze to retry.
+              </p>
+            ) : (
+              <p className="insights-reason muted">None for this file.</p>
+            ))}
           {findings.map((f, i) => (
             <div key={i} className="code-finding-row">
               <span className={`sev sev-${f.severity}`}>{f.severity}</span>

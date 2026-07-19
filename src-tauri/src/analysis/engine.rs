@@ -19,7 +19,10 @@ use crate::error::{AppError, AppResult};
 use crate::models::{Settings, TrackedPr};
 
 const MAX_TURNS: usize = 30;
-const MAX_OUTPUT_TOKENS: i32 = 8192;
+/// Submissions carry a whole graph + assessment in one tool call — an 8k
+/// ceiling truncated them mid-JSON on big PRs (the "missing assessment"
+/// failures: the tail of the payload is what gets cut).
+const MAX_OUTPUT_TOKENS: i32 = 16384;
 
 pub const SYSTEM_PROMPT: &str = r#"You are a principal engineer reviewing a pull request. Your job is to understand the change in relation to the whole system and explain it to a reviewer who lacks full context. Style preferences (naming, ternaries vs if, .reduce vs loops, formatting) are NOT your job — but code-level DEFECTS with real consequences are never "just style": wrong or referentially-unstable hook/memo dependencies, unhandled error or empty states, loosened tests, races, and leaks are material findings when you encounter them.
 
@@ -60,7 +63,7 @@ pub(crate) fn conventions_section(settings: &Settings) -> String {
 
 fn level_instructions(level: AnalysisLevel, focus: Option<&str>) -> String {
     match level {
-        AnalysisLevel::Context => "Requested C4 level: CONTEXT + CONTAINER. Show the system in its environment (people, external systems) and the affected containers. This is the default view — keep it at architecture altitude.".into(),
+        AnalysisLevel::Context => "Requested C4 level: CONTEXT + CONTAINER. Show the system in its environment (people, external systems) and the affected containers. One container per deployable or distinct-technology unit: a web app and its BFF/API layer are SEPARATE containers even when they live in one repo or directory — never merge different tech stacks into one container node. This is the default view — keep it at architecture altitude.".into(),
         AnalysisLevel::Component => format!(
             "Requested C4 level: COMPONENT. The user drilled into node '{}'. Anchor everything in the PR diff: deep-dive the components the diff touches, their responsibility shifts, dependency-direction violations, and pattern consistency. Include untouched components only as thin context (mark them unchanged), never as the subject. Carry over the wider environment: the people, external systems, and sibling containers this element serves or calls stay on the diagram as unchanged periphery nodes.",
             focus.unwrap_or("(unspecified)")
@@ -343,19 +346,54 @@ pub(crate) fn with_message_cache_points(messages: &[Message]) -> Vec<Message> {
         .collect()
 }
 
-fn progress(app: &AppHandle, pr_id: &str, level: AnalysisLevel, message: impl Into<String>) {
+/// Bedrock rejects replayed history when an assistant message's final
+/// content block is reasoning ("cannot be `thinking`") — the shape a
+/// max-tokens truncation leaves behind. Trim trailing reasoning blocks
+/// before a message enters history.
+pub(crate) fn strip_trailing_reasoning(message: Message) -> Message {
+    let mut content = message.content().to_vec();
+    while matches!(content.last(), Some(ContentBlock::ReasoningContent(_))) {
+        content.pop();
+    }
+    if content.len() == message.content().len() {
+        return message;
+    }
+    if content.is_empty() {
+        content.push(ContentBlock::Text("…".into()));
+    }
+    Message::builder()
+        .role(message.role().clone())
+        .set_content(Some(content))
+        .build()
+        .unwrap_or(message)
+}
+
+fn progress(
+    app: &AppHandle,
+    pr_id: &str,
+    level: AnalysisLevel,
+    focus: &str,
+    message: impl Into<String>,
+) {
     let _ = app.emit(
         events::ANALYSIS_PROGRESS,
-        AnalysisProgress { pr_id: pr_id.to_string(), level, message: message.into() },
+        AnalysisProgress {
+            pr_id: pr_id.to_string(),
+            level,
+            focus: focus.to_string(),
+            message: message.into(),
+        },
     );
 }
 
 /// Emit progress to the UI and record it in the persistent trace.
+#[allow(clippy::too_many_arguments)]
 fn note(
     app: &AppHandle,
     trace: &mut Vec<TraceStep>,
     pr_id: &str,
     level: AnalysisLevel,
+    focus: &str,
     kind: &str,
     message: impl Into<String>,
 ) {
@@ -365,7 +403,7 @@ fn note(
         kind: kind.to_string(),
         message: message.clone(),
     });
-    progress(app, pr_id, level, message);
+    progress(app, pr_id, level, focus, message);
 }
 
 pub(crate) fn describe_tool_call(name: &str, input: &Value) -> String {
@@ -385,6 +423,15 @@ pub(crate) fn describe_tool_call(name: &str, input: &Value) -> String {
         ),
         "get_readme_and_docs" => "reading README and docs".into(),
         "list_recent_prs" => "checking recent PRs".into(),
+        "list_commits" => "listing the PR's commits".into(),
+        "get_commit_diff" => format!(
+            "reading commit {}",
+            input
+                .get("sha")
+                .and_then(Value::as_str)
+                .map(|s| &s[..s.len().min(10)])
+                .unwrap_or("?")
+        ),
         "submit_analysis" => "assembling the assessment".into(),
         "mark_files_viewed" => {
             let all = input.get("all").and_then(Value::as_bool).unwrap_or(false);
@@ -411,7 +458,8 @@ pub async fn run(
     parent_context: Option<String>,
 ) -> AppResult<AnalysisResult> {
     let pr_id = pr.info.id.clone();
-    progress(app, &pr_id, level, "connecting to Bedrock");
+    let focus_key = focus_node_id.clone().unwrap_or_default();
+    progress(app, &pr_id, level, &focus_key, "connecting to Bedrock");
     devlog::info(
         app,
         "analysis",
@@ -481,17 +529,49 @@ pub async fn run(
         s
     };
 
+    // Drills anchor on the diff — hand it over in the kickoff so the run
+    // opens with the changed code in hand instead of spending turns
+    // re-fetching what the context pass already read. (The context run keeps
+    // fetching it as a tool call: its system prompt narrates that flow.)
+    let kickoff_diff = if level == AnalysisLevel::Context {
+        String::new()
+    } else {
+        match tools.pr_diff().await {
+            Ok(d) => {
+                format!("\n\n## Full PR diff (already fetched — do NOT call get_pr_diff)\n{d}")
+            }
+            Err(e) => {
+                devlog::warn(app, "analysis", format!("kickoff diff unavailable: {e}"));
+                String::new()
+            }
+        }
+    };
+
+    // The parent's assessment doubles as a salvage value: a drill whose
+    // submission has a good graph but a broken/missing assessment ships with
+    // this instead of sinking the whole run.
+    let parent_assessment: Option<Assessment> = parent_context
+        .as_ref()
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        .and_then(|v| v.get("assessment").cloned())
+        .and_then(|a| serde_json::from_value(a).ok());
+
     // Drilled runs inherit the higher-level result so the model doesn't
     // re-derive (and re-fetch) the system map it already built.
     let parent_section = match &parent_context {
         Some(json) => format!(
-            "\n\nA higher-level analysis of this PR was already completed. Its result is below — trust it as your system map, do NOT re-explore what it already covers, and keep your node ids consistent with it. Focus your exploration budget on the drill target only.\n<previous_analysis>\n{json}\n</previous_analysis>"
+            "\n\nA higher-level analysis of this PR was already completed. Its result is below — trust it as your system map, do NOT re-explore what it already covers, and keep your node ids consistent with it. Focus your exploration budget on the drill target only. Your submit_analysis call must still include BOTH a complete graph and a complete assessment for the requested level — never omit or abbreviate either because this higher-level result exists.\n<previous_analysis>\n{json}\n</previous_analysis>"
         ),
         None => String::new(),
     };
 
+    let closing = if kickoff_diff.is_empty() {
+        "Start by getting the diff and whatever repository context you need."
+    } else {
+        "The diff is included below — read only the extra repository context you still need, then submit."
+    };
     let kickoff = format!(
-        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}\n\n{}{}{}\n\nStart by getting the diff and whatever repository context you need.",
+        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}\n\n{}{}{}\n\n{closing}{kickoff_diff}",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -519,7 +599,7 @@ pub async fn run(
     let mut resubmits = 0u32;
     let (mut total_in, mut total_out) = (0i32, 0i32);
     let mut trace: Vec<TraceStep> = Vec::new();
-    note(app, &mut trace, &pr_id, level, "status", "starting exploration");
+    note(app, &mut trace, &pr_id, level, &focus_key, "status", "starting exploration");
 
     let specs = analysis_specs();
     for turn in 0..MAX_TURNS {
@@ -567,7 +647,7 @@ pub async fn run(
                 ContentBlock::Text(t) => {
                     let snippet: String = t.chars().take(400).collect();
                     if !snippet.trim().is_empty() {
-                        note(app, &mut trace, &pr_id, level, "thought", snippet);
+                        note(app, &mut trace, &pr_id, level, &focus_key, "thought", snippet);
                     }
                 }
                 ContentBlock::ToolUse(tu) => {
@@ -577,6 +657,7 @@ pub async fn run(
                         &mut trace,
                         &pr_id,
                         level,
+                        &focus_key,
                         "tool",
                         describe_tool_call(tu.name(), &input),
                     );
@@ -641,7 +722,7 @@ pub async fn run(
                             turn + 1
                         ),
                     );
-                    note(app, &mut trace, &pr_id, level, "status", "assessment assembled");
+                    note(app, &mut trace, &pr_id, level, &focus_key, "status", "assessment assembled");
                     let usage = AnalysisUsage {
                         input_tokens: total_in as i64,
                         output_tokens: total_out as i64,
@@ -653,28 +734,85 @@ pub async fn run(
                     // Don't waste the whole run on a malformed submission —
                     // bounce the validation error back and let it fix itself.
                     resubmits += 1;
-                    devlog::warn(app, "analysis", format!("invalid submission ({e}) — asking model to resubmit"));
+                    let truncated = matches!(resp.stop_reason(), StopReason::MaxTokens);
+                    let keys = payload
+                        .as_object()
+                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                        .unwrap_or_else(|| "(non-object)".into());
+                    devlog::warn(
+                        app,
+                        "analysis",
+                        format!(
+                            "invalid submission ({e}) — keys: [{keys}]{} — asking model to resubmit",
+                            if truncated { ", output truncated at max tokens" } else { "" }
+                        ),
+                    );
                     note(
                         app,
                         &mut trace,
                         &pr_id,
                         level,
+                        &focus_key,
                         "status",
                         format!("submission incomplete ({e}) — retrying"),
                     );
-                    tool_results.push(tool_result(
-                        &submit_id,
+                    let feedback = if truncated {
+                        format!(
+                            "Submission rejected: {e}. Your submission was CUT OFF by the output-token limit. Resubmit the complete payload but much tighter: descriptions and reasons in a few words each, no prose, and only the nodes/files that matter. Every required field must still be present."
+                        )
+                    } else {
                         format!(
                             "Submission rejected: {e}. Call submit_analysis again with EVERY field present (empty arrays where nothing applies)."
-                        ),
-                        true,
-                    )?);
+                        )
+                    };
+                    tool_results.push(tool_result(&submit_id, feedback, true)?);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Retries exhausted. A drill's product is the graph — if
+                    // that part parsed, ship it with the parent's assessment
+                    // rather than sinking the run on the missing half.
+                    let salvaged_graph = payload
+                        .get("graph")
+                        .cloned()
+                        .and_then(|g| serde_json::from_value::<C4Graph>(g).ok());
+                    if let (Some(graph), Some(assessment)) =
+                        (salvaged_graph, parent_assessment.clone())
+                    {
+                        devlog::warn(
+                            app,
+                            "analysis",
+                            format!("salvaging drill submission ({e}): graph kept, assessment inherited"),
+                        );
+                        note(
+                            app,
+                            &mut trace,
+                            &pr_id,
+                            level,
+                            &focus_key,
+                            "status",
+                            "assessment omitted by the model — inherited from the parent level",
+                        );
+                        let usage = AnalysisUsage {
+                            input_tokens: total_in as i64,
+                            output_tokens: total_out as i64,
+                            turns: (turn + 1) as i64,
+                        };
+                        return Ok(build_result(
+                            pr,
+                            level,
+                            focus_node_id,
+                            graph,
+                            assessment,
+                            trace,
+                            usage,
+                        ));
+                    }
+                    return Err(e);
+                }
             }
         }
 
-        messages.push(message);
+        messages.push(strip_trailing_reasoning(message));
 
         if !tool_results.is_empty() {
             messages.push(
@@ -717,7 +855,7 @@ pub async fn run(
 const CODE_PASS_PROMPT: &str = r#"You are doing the code-level pass of a pull request review. An architecture review already ran — do not repeat it. Hunt for exactly two classes of finding:
 
 1. DEFECTS — code-level problems with real consequences: wrong or referentially-unstable hook/memo/effect dependencies, unhandled error or empty states, loosened or weakened tests, race conditions, resource leaks, incorrect boundary conditions, state machines that can skip states.
-2. REUSE — new code that re-implements something that already exists in this repository or its shared packages/design system. Use search_code and list_tree to check before accepting new utilities or UI primitives; report the existing equivalent by name/path.
+2. REUSE — new code that re-implements something that already exists in this repository or its shared packages/design system. Use search_code and list_tree to check before accepting new utilities or UI primitives; report the existing equivalent by name/path. The most common real-world miss: a component defines a local formatting/derivation helper (formatX, getY, toZ) that a shared utility module (lib/utils, format.ts, *-utils.ts, helpers) or the design system already provides — when the diff ADDS such a helper or inlines that logic, spend a search on the helper's concept (e.g. "formatRating") before accepting it.
 
 Explicitly NOT your job: style preferences — naming, ternaries vs if, .reduce vs loops, enum tastes, formatting. If a finding is a preference rather than a consequence, drop it.
 
@@ -794,7 +932,7 @@ pub async fn code_findings(
 ) -> AppResult<Vec<crate::analysis::types::CodeFinding>> {
     let pr_id = pr.info.id.clone();
     let level = AnalysisLevel::Context;
-    progress(app, &pr_id, level, "code pass: starting");
+    progress(app, &pr_id, level, "", "code pass: starting");
 
     let focus_paths: Vec<&str> = review_plan
         .iter()
@@ -877,6 +1015,7 @@ pub async fn code_findings(
                     app,
                     &pr_id,
                     level,
+                    "",
                     format!("code pass: {}", describe_tool_call(tu.name(), &input)),
                 );
                 if tu.name() == "submit_code_findings" {
@@ -914,23 +1053,32 @@ pub async fn code_findings(
                         "code-pass",
                         format!("complete — {} finding(s)", findings.len()),
                     );
-                    progress(app, &pr_id, level, "code pass: done");
+                    progress(app, &pr_id, level, "", "code pass: done");
                     return Ok(findings);
                 }
                 Err(e) if resubmits < 2 => {
                     resubmits += 1;
-                    devlog::warn(app, "code-pass", format!("invalid submission ({e}) — retrying"));
-                    tool_results.push(tool_result(
-                        &submit_id,
-                        format!("Submission rejected: {e}. Call submit_code_findings again with every required field present."),
-                        true,
-                    )?);
+                    let truncated = matches!(resp.stop_reason(), StopReason::MaxTokens);
+                    devlog::warn(
+                        app,
+                        "code-pass",
+                        format!(
+                            "invalid submission ({e}){} — retrying",
+                            if truncated { ", output truncated at max tokens" } else { "" }
+                        ),
+                    );
+                    let feedback = if truncated {
+                        format!("Submission rejected: {e}. Your submission was CUT OFF by the output-token limit. Resubmit complete but tighter: keep only the strongest findings, one short sentence each.")
+                    } else {
+                        format!("Submission rejected: {e}. Call submit_code_findings again with every required field present.")
+                    };
+                    tool_results.push(tool_result(&submit_id, feedback, true)?);
                 }
                 Err(e) => return Err(e),
             }
         }
 
-        messages.push(message);
+        messages.push(strip_trailing_reasoning(message));
         if !tool_results.is_empty() {
             messages.push(
                 Message::builder()
@@ -966,10 +1114,74 @@ pub async fn code_findings(
 /// genuinely broken payloads. Returns a description of each coercion applied.
 fn sanitize_payload(payload: &mut Value) -> Vec<String> {
     let mut notes = Vec::new();
+    // The entire payload occasionally arrives as one JSON-encoded string.
+    if let Some(s) = payload.as_str() {
+        let parsed = serde_json::from_str::<Value>(s)
+            .ok()
+            .or_else(|| serde_json::from_str::<Value>(&drop_spurious_closers(s)).ok());
+        if let Some(v) = parsed.filter(Value::is_object) {
+            notes.push("whole payload arrived as a JSON string; unwrapped".into());
+            *payload = v;
+        }
+    }
+    // {"submission": {graph, assessment}} — the real payload one wrapper
+    // key down.
+    if payload.get("graph").is_none() && payload.get("assessment").is_none() {
+        let inner = payload
+            .as_object()
+            .filter(|o| o.len() == 1)
+            .and_then(|o| o.values().next())
+            .filter(|v| v.get("graph").is_some() || v.get("assessment").is_some())
+            .cloned();
+        if let Some(v) = inner {
+            notes.push("payload unwrapped from a wrapper key".into());
+            *payload = v;
+        }
+    }
     // A whole sub-struct occasionally arrives JSON-encoded as a string —
     // unwrap first so the coercions below see real objects.
     unwrap_stringified(payload, "graph", &mut notes);
     unwrap_stringified(payload, "assessment", &mut notes);
+    // Flattened graph: nodes/edges emitted at the top level instead of
+    // under "graph".
+    if payload.get("graph").is_none() && payload.get("nodes").is_some() {
+        if let Some(obj) = payload.as_object_mut() {
+            let nodes = obj.remove("nodes").unwrap_or_else(|| json!([]));
+            let edges = obj.remove("edges").unwrap_or_else(|| json!([]));
+            obj.insert("graph".into(), json!({ "nodes": nodes, "edges": edges }));
+            notes.push("graph assembled from top-level nodes/edges".into());
+        }
+    }
+    // Assessment tucked inside the graph object.
+    if payload.get("assessment").is_none() {
+        if let Some(a) = payload.pointer_mut("/graph/assessment").map(Value::take) {
+            if a.is_object() {
+                notes.push("assessment lifted out of the graph object".into());
+                payload["assessment"] = a;
+            }
+        }
+    }
+    // Flattened assessment: its fields emitted at the top level instead of
+    // under "assessment". Drain everything but the graph into it — no field
+    // list to keep in sync with the Assessment struct; serde ignores strays
+    // and camelize_keys below handles snake_case.
+    if payload.get("assessment").is_none() {
+        if let Some(obj) = payload.as_object_mut() {
+            if obj.contains_key("summary") || obj.contains_key("detail") || obj.contains_key("fit")
+            {
+                let keys: Vec<String> =
+                    obj.keys().filter(|k| *k != "graph").cloned().collect();
+                let mut a = serde_json::Map::new();
+                for k in keys {
+                    if let Some(v) = obj.remove(&k) {
+                        a.insert(k, v);
+                    }
+                }
+                obj.insert("assessment".into(), Value::Object(a));
+                notes.push("assessment assembled from top-level fields".into());
+            }
+        }
+    }
     camelize_keys(payload);
 
     const NODE_KIND: &[(&str, &str)] = &[
@@ -1410,6 +1622,7 @@ fn build_result(
         trace,
         usage,
         code_findings: Vec::new(),
+        code_pass: None,
     }
 }
 
@@ -1488,6 +1701,54 @@ mod tests {
         let notes = sanitize_payload(&mut payload);
         assert!(notes.is_empty(), "no coercions expected, got: {notes:?}");
         parse_payload(&payload).expect("valid payload parses");
+    }
+
+    #[test]
+    fn sanitize_recovers_missing_graph_shapes() {
+        let graph = json!({
+            "nodes": [{"id": "c:api", "name": "API", "kind": "container", "change": "modified"}],
+            "edges": []
+        });
+        let assessment = json!({
+            "summary": "s", "detail": "d", "fit": "fits", "fitRationale": "r",
+            "boundaryImpacts": [], "wellArchitected": [], "contextNotes": [], "reviewPlan": []
+        });
+
+        // Real payload one wrapper key down.
+        let mut wrapped = json!({ "submission": { "graph": graph, "assessment": assessment } });
+        sanitize_payload(&mut wrapped);
+        parse_payload(&wrapped).expect("wrapper key unwrapped");
+
+        // nodes/edges flattened to the top level instead of under "graph".
+        let mut flat = json!({
+            "nodes": graph["nodes"], "edges": graph["edges"], "assessment": assessment
+        });
+        sanitize_payload(&mut flat);
+        parse_payload(&flat).expect("graph assembled from top-level nodes/edges");
+
+        // The whole payload as one JSON-encoded string.
+        let mut stringified =
+            Value::String(json!({ "graph": graph, "assessment": assessment }).to_string());
+        sanitize_payload(&mut stringified);
+        parse_payload(&stringified).expect("whole-string payload unwrapped");
+
+        // Assessment fields flattened to the top level next to the graph.
+        let mut flat_assessment = json!({
+            "graph": graph,
+            "summary": "s", "detail": "d", "fit": "fits", "fitRationale": "r",
+            "boundaryImpacts": [], "wellArchitected": [], "contextNotes": [], "reviewPlan": []
+        });
+        sanitize_payload(&mut flat_assessment);
+        parse_payload(&flat_assessment).expect("assessment assembled from top-level fields");
+
+        // Assessment tucked inside the graph object.
+        let mut nested = json!({
+            "graph": {
+                "nodes": graph["nodes"], "edges": graph["edges"], "assessment": assessment
+            }
+        });
+        sanitize_payload(&mut nested);
+        parse_payload(&nested).expect("assessment lifted out of the graph");
     }
 
     #[test]

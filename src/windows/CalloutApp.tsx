@@ -1,10 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ActivityItem } from "../bindings/ActivityItem";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import { ACTION_META, ACTION_ORDER, inBucket, type ActionKind } from "../lib/actions";
+import {
+  IconAlertTriangle,
+  IconChat,
+  IconCheckCircle,
+  IconEllipsis,
+  IconEye,
+  IconGitCommit,
+  IconGitMerge,
+  IconGitPr,
+  IconRefresh,
+  IconSparkle,
+  IconXCircle,
+} from "../components/icons";
 import { ipc } from "../lib/ipc";
 import { usePrStore } from "../state/prStore";
 
@@ -57,13 +70,46 @@ function groupLabel(at: string): string {
 }
 
 function itemTime(at: string): string {
-  const d = new Date(at);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  return sameDay
-    ? time
-    : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
+  return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/** The verb as a glyph. Review verdicts split by outcome; everything else
+ *  maps straight from the activity kind. */
+function verbIcon(item: ActivityItem): { el: React.ReactElement; cls: string } {
+  switch (item.kind) {
+    case "comment":
+      return { el: <IconChat />, cls: "neutral" };
+    case "commits":
+      return { el: <IconGitCommit />, cls: "neutral" };
+    case "ci":
+      return { el: <IconAlertTriangle />, cls: "bad" };
+    case "merged":
+      return { el: <IconGitMerge />, cls: "merged" };
+    case "closed":
+      return { el: <IconXCircle />, cls: "bad" };
+    case "reopened":
+      return { el: <IconRefresh />, cls: "ok" };
+    case "new":
+      return { el: <IconEye />, cls: "chat" };
+    case "ready":
+      return { el: <IconGitPr />, cls: "ok" };
+    case "review":
+      if (item.summary === "review approved") return { el: <IconCheckCircle />, cls: "ok" };
+      if (item.summary === "changes requested") return { el: <IconXCircle />, cls: "bad" };
+      return { el: <IconEye />, cls: "neutral" };
+    case "analysis":
+      return { el: <IconSparkle />, cls: "chat" };
+    default:
+      return { el: <IconEllipsis />, cls: "neutral" };
+  }
+}
+
+/** Icon carries the verb; only words with information of their own remain
+ *  (comment snippets, analysis-ready notices). */
+function lineText(item: ActivityItem): string {
+  if (item.kind === "comment") return item.summary.replace(/^commented:\s*/, "");
+  if (item.kind === "analysis") return item.summary;
+  return "";
 }
 
 function Row({
@@ -75,35 +121,156 @@ function Row({
   onOpen: (item: ActivityItem) => void;
   onMenu: (e: React.MouseEvent, item: ActivityItem) => void;
 }) {
+  const icon = verbIcon(item);
   return (
     <button
       className={`feed-item${item.read ? "" : " unread"}${item.important ? " important" : ""}`}
       onClick={() => onOpen(item)}
       onContextMenu={(e) => onMenu(e, item)}
-      title={`${item.repo}#${item.number} — ${item.prTitle}\nclick to open · right-click to flag`}
+      title={`${item.actor ? `@${item.actor} ` : ""}${item.summary}\n${item.repo}#${item.number} — ${item.prTitle}\nclick to open · right-click to flag`}
     >
       <span className="feed-dot" />
-      <span className="feed-body">
-        <span className="feed-line">
-          {item.actor && <span className="feed-actor">@{item.actor}</span>}{" "}
-          <span className="feed-summary">{item.summary}</span>
-        </span>
-        <span className="feed-meta mono">
-          {item.repo.split("/")[1] ?? item.repo}#{item.number}
-          {item.flag && <span className={`feed-flag ${item.flag}`}>{FLAG_LABEL[item.flag]}</span>}
-        </span>
-      </span>
       <span className="feed-time mono">{itemTime(item.at)}</span>
+      <span className={`feed-icon ${icon.cls}`}>{icon.el}</span>
+      <span className="feed-main">
+        {item.flag && <span className={`feed-flag ${item.flag}`}>⚑</span>}
+        <span className="feed-repo mono">
+          {item.repo.split("/")[1] ?? item.repo}#{item.number}
+        </span>
+        {lineText(item) && <span className="feed-text">{lineText(item)}</span>}
+      </span>
+      <span className="feed-actor">{item.actor ? `@${item.actor}` : ""}</span>
     </button>
   );
+}
+
+/** Canvas fireworks over the callout — the "your analysis is ready" moment
+ *  deserves more than a feed row. Staggered bursts in the theme accents,
+ *  gravity and fade, gone in ~3 seconds. */
+function Fireworks({ onDone }: { onDone: () => void }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const done = useRef(onDone);
+  done.current = onDone;
+
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+
+    const css = getComputedStyle(document.documentElement);
+    const palette = ["--ok", "--warn", "--chat", "--merge"].map(
+      (v) => css.getPropertyValue(v).trim() || "#e8c268",
+    );
+
+    interface Spark {
+      x: number;
+      y: number;
+      vx: number;
+      vy: number;
+      life: number;
+      max: number;
+      color: string;
+      size: number;
+    }
+    let sparks: Spark[] = [];
+    const burst = (x: number, y: number, color: string) => {
+      const n = 34;
+      for (let i = 0; i < n; i++) {
+        const a = (Math.PI * 2 * i) / n + Math.random() * 0.25;
+        const speed = 1.1 + Math.random() * 2.7;
+        sparks.push({
+          x,
+          y,
+          vx: Math.cos(a) * speed,
+          vy: Math.sin(a) * speed - 0.4,
+          life: 0,
+          max: 55 + Math.random() * 30,
+          color,
+          size: 1 + Math.random() * 1.6,
+        });
+      }
+    };
+    const timers = [0, 300, 620, 950].map((t, i) =>
+      setTimeout(
+        () =>
+          burst(
+            w * (0.15 + Math.random() * 0.7),
+            h * (0.15 + Math.random() * 0.45),
+            palette[i % palette.length],
+          ),
+        t,
+      ),
+    );
+
+    let raf = 0;
+    let frames = 0;
+    const tick = () => {
+      frames++;
+      ctx.clearRect(0, 0, w, h);
+      sparks = sparks.filter((s) => s.life < s.max);
+      for (const s of sparks) {
+        s.life++;
+        s.x += s.vx;
+        s.y += s.vy;
+        s.vy += 0.05;
+        s.vx *= 0.985;
+        s.vy *= 0.985;
+        const t = 1 - s.life / s.max;
+        ctx.globalAlpha = Math.max(0, t);
+        ctx.fillStyle = s.color;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.size * (0.5 + t), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      if (frames < 300 && (sparks.length > 0 || frames < 70)) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        done.current();
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      timers.forEach(clearTimeout);
+    };
+  }, []);
+
+  return <canvas ref={ref} className="fireworks-canvas" />;
 }
 
 export function CalloutApp() {
   const { prs, pollStatus, recentlyChanged, init } = usePrStore();
   const [items, setItems] = useState<ActivityItem[]>([]);
   const [menu, setMenu] = useState<{ x: number; y: number; item: ActivityItem } | null>(null);
+  const [celebrating, setCelebrating] = useState(false);
+  // Which "analysis ready" rows we've already seen — a genuinely new one
+  // launches the fireworks. Seeded silently on first load so reopening the
+  // callout doesn't re-celebrate old news.
+  const seenAnalysis = useRef<Set<number> | null>(null);
 
   const refresh = () => void ipc.getActivity().then(setItems).catch(() => {});
+
+  useEffect(() => {
+    const fresh = items.filter((i) => i.kind === "analysis" && !i.read).map((i) => i.id);
+    if (seenAnalysis.current == null) {
+      seenAnalysis.current = new Set(fresh);
+      return;
+    }
+    const news = fresh.filter((id) => !seenAnalysis.current!.has(id));
+    if (news.length === 0) return;
+    for (const id of news) seenAnalysis.current.add(id);
+    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setCelebrating(true);
+    }
+  }, [items]);
 
   useEffect(() => {
     document.body.classList.add("callout");
@@ -131,12 +298,6 @@ export function CalloutApp() {
     }
     return counts;
   }, [prs]);
-
-  const attention = new Set(
-    ACTION_ORDER.filter((k) => k !== "new" && k !== "comments").flatMap((k) =>
-      (buckets.get(k) ?? []).map((p) => p.id),
-    ),
-  ).size;
 
   // Featured: anything you flagged, plus unread activity on important PRs
   // (your own PRs, high-priority repos/PRs).
@@ -170,13 +331,11 @@ export function CalloutApp() {
 
   return (
     <div className="callout-shell">
+      {celebrating && <Fireworks onDone={() => setCelebrating(false)} />}
       <header className="callout-header" data-tauri-drag-region>
         <span className={`sync-dot ${syncClass}`} title={pollStatus?.message ?? "syncing"} />
         <span className="title" data-tauri-drag-region>
           CORA
-        </span>
-        <span className="eyebrow" data-tauri-drag-region>
-          {attention === 0 ? "all clear" : `${attention} need${attention === 1 ? "s" : ""} you`}
         </span>
         <span className="spacer" data-tauri-drag-region />
         {unreadCount > 0 && (

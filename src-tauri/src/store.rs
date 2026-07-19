@@ -8,6 +8,12 @@ use crate::models::{ChangeKind, PrInfo, PrSource, ReviewMark, Settings, TrackedP
 
 /// SQLite-backed app state. Connection is behind a Mutex; all access is
 /// short-lived synchronous work so contention is negligible at our scale.
+/// Activity kinds that track PR state rather than human words — these are
+/// superseded/retired automatically; comments and flagged rows never are.
+/// Owned here because the read/flag semantics live in this layer; the poller
+/// consumes it.
+pub const MECHANICAL_KINDS: &[&str] = &["new", "ready", "commits", "ci", "review", "analysis"];
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -83,8 +89,12 @@ impl Store {
         // Additive migration; harmless error when the column already exists.
         let _ = conn.execute("ALTER TABLE prs ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'", []);
         // Cleanup for a fixed bug: untracked-but-still-searchable PRs spammed
-        // "now tracking" rows every poll cycle.
-        let _ = conn.execute("DELETE FROM activity WHERE summary = 'now tracking'", []);
+        // "now tracking" rows every poll cycle. "CI is green" rows are no
+        // longer recorded (green isn't news); drop the historical ones too.
+        let _ = conn.execute(
+            "DELETE FROM activity WHERE summary IN ('now tracking', 'CI is green')",
+            [],
+        );
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -493,12 +503,13 @@ impl Store {
         summary: &str,
         comment_id: &str,
         important: bool,
+        read: bool,
     ) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO activity (at, pr_id, repo, number, pr_title, kind, actor, summary, comment_id, important)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![at, pr.id, pr.repo, pr.number, pr.title, kind, actor, summary, comment_id, important],
+            "INSERT INTO activity (at, pr_id, repo, number, pr_title, kind, actor, summary, comment_id, important, read)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![at, pr.id, pr.repo, pr.number, pr.title, kind, actor, summary, comment_id, important, read],
         )?;
         conn.execute(
             "DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT 500)",
@@ -511,7 +522,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, at, pr_id, repo, number, pr_title, kind, actor, summary, comment_id, important, read, flag
-             FROM activity ORDER BY id DESC LIMIT ?1",
+             FROM activity ORDER BY at DESC, id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| {
             Ok(crate::models::ActivityItem {
@@ -531,6 +542,65 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// A newer event makes older unread ones moot (a merge supersedes the
+    /// unread "review requested"; fresh commits supersede the last push).
+    /// Marks them read — but never flagged rows (the user pinned those) and
+    /// never comments (words deserve reading even after a merge).
+    pub fn supersede_activity(&self, pr_id: &str, kinds: &[&str]) -> AppResult<()> {
+        if kinds.is_empty() {
+            return Ok(());
+        }
+        // Kinds are internal constants ("ci", "commits", …), never user input.
+        let list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!(
+                "UPDATE activity SET read = 1
+                 WHERE pr_id = ?1 AND read = 0 AND flag = '' AND kind IN ({list})"
+            ),
+            params![pr_id],
+        )?;
+        Ok(())
+    }
+
+    /// Feed hygiene: a mechanical row (commits, CI, review state…) for a PR
+    /// that is no longer open-and-tracked is stale by definition — the PR
+    /// merged, closed, or dropped off. Flags and comments are untouched, as
+    /// everywhere else. Returns how many rows were retired so callers can
+    /// skip the feed-changed event when nothing moved.
+    pub fn reconcile_activity(&self) -> AppResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        // Open-and-tracked ids from parsed state — not from matching serde's
+        // output formatting with LIKE.
+        let mut stmt = conn.prepare("SELECT id, data FROM prs WHERE tracked = 1")?;
+        let open_ids: Vec<String> = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .filter_map(Result::ok)
+            .filter(|(_, data)| {
+                serde_json::from_str::<serde_json::Value>(data)
+                    .ok()
+                    .is_some_and(|v| v.get("state").is_some_and(|s| s == "OPEN"))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let kinds =
+            MECHANICAL_KINDS.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+        let ids = open_ids
+            .iter()
+            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let not_open = if ids.is_empty() { String::new() } else { format!(" AND pr_id NOT IN ({ids})") };
+        let n = conn.execute(
+            &format!(
+                "UPDATE activity SET read = 1
+                 WHERE read = 0 AND flag = '' AND kind IN ({kinds}){not_open}"
+            ),
+            [],
+        )?;
+        Ok(n)
     }
 
     /// Empty `ids` means mark everything.

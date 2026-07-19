@@ -12,7 +12,10 @@ import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
 import { DiffPeek, resolveFindingFile } from "../components/analysis/DiffPeek";
-import { DiffView, fileDigest, parseDiffCached } from "../components/analysis/DiffView";
+import { DiffView, fileDigest, parseDiffCached, type DiffFile } from "../components/analysis/DiffView";
+import { codeSkeleton, componentSkeleton, filterGraph } from "../components/analysis/skeleton";
+import type { C4Graph } from "../bindings/C4Graph";
+import { HistoryView } from "../components/analysis/HistoryView";
 import type { MarkViewedEvent } from "../bindings/MarkViewedEvent";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { listen } from "@tauri-apps/api/event";
@@ -26,9 +29,11 @@ import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
 import {
   IconChat,
+  IconCheck,
   IconClipboard,
   IconEllipsis,
   IconExternal,
+  IconLink,
   IconRefresh,
 } from "../components/icons";
 import { PrFilesRail } from "../components/PrFilesRail";
@@ -226,19 +231,43 @@ function ReviewStrip({ reviews }: { reviews: PrReviews | null }) {
 /** Approve / request changes, with the review comment GitHub expects.
  *  Locks after you've reviewed, until the PR moves: new commits, your review
  *  re-requested, or (for changes-requested) all threads resolved. */
+/** ReviewActions and PrControls each own a pending flow (approve composer,
+ *  confirm-merge/close). Only one may be open at a time — Detail holds the
+ *  active owner; each component stands down when the other takes it. */
+type FlowOwner = "review" | "controls" | null;
+
 function ReviewActions({
   pr,
   reviews,
+  flow,
+  setFlow,
   onDone,
 }: {
   pr: TrackedPr;
   reviews: PrReviews | null;
+  flow: FlowOwner;
+  setFlow: (f: FlowOwner) => void;
   onDone: () => void;
 }) {
   const [mode, setMode] = useState<"approve" | "request-changes" | null>(null);
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A half-written review for one PR must not follow you to the next.
+  useEffect(() => {
+    setMode(null);
+    setBody("");
+    setError(null);
+  }, [pr.id]);
+
+  useEffect(() => {
+    if (flow !== "review") setMode(null);
+  }, [flow]);
+  const openMode = (m: "approve" | "request-changes") => {
+    setFlow("review");
+    setMode(m);
+  };
 
   if (pr.state !== "OPEN") return null;
 
@@ -302,13 +331,13 @@ function ReviewActions({
         {error && <div className="settings-error">{error}</div>}
         <div className="row">
           <button
-            className={`action-btn ${mode === "approve" ? "merge-btn" : "confirm-danger"}`}
+            className={`action-btn ${mode === "approve" ? "btn-ok" : "confirm-danger"}`}
             disabled={busy || (mode === "request-changes" && !body.trim())}
             onClick={() => void submit()}
           >
             {busy ? "Submitting…" : mode === "approve" ? "Submit approval" : "Submit request"}
           </button>
-          <button className="action-btn" disabled={busy} onClick={() => setMode(null)}>
+          <button className="action-btn btn-danger" disabled={busy} onClick={() => setMode(null)}>
             Cancel
           </button>
         </div>
@@ -322,18 +351,18 @@ function ReviewActions({
   return (
     <>
       <button
-        className="action-btn approve-btn"
+        className="action-btn btn-ok"
         disabled={myOpen > 0}
         title={
           myOpen > 0
             ? `You have ${myOpen} unresolved review thread${myOpen === 1 ? "" : "s"} — resolve ${myOpen === 1 ? "it" : "them"} before approving. (Comments starting with praise:, note:, or fyi:, or marked (non-blocking), don't count.)`
             : undefined
         }
-        onClick={() => setMode("approve")}
+        onClick={() => openMode("approve")}
       >
         ✓ Approve
       </button>
-      <button className="action-btn quiet-danger" onClick={() => setMode("request-changes")}>
+      <button className="action-btn quiet-danger" onClick={() => openMode("request-changes")}>
         ± Request changes
       </button>
     </>
@@ -343,16 +372,56 @@ function ReviewActions({
 /** Merge / close / reopen with a two-step confirm — no accidental merges.
  *  Close lives in the ⋯ overflow menu; a bump of `closeRequested` starts its
  *  confirm step here so the busy/error handling stays in one place. */
-function PrControls({ pr, closeRequested }: { pr: TrackedPr; closeRequested: number }) {
+/** GitHub's button labels, keyed by our merge-method values. */
+const MERGE_LABEL = {
+  squash: "Squash and merge",
+  merge: "Merge pull request",
+  rebase: "Rebase and merge",
+} as const;
+
+function PrControls({
+  pr,
+  closeRequested,
+  flow,
+  setFlow,
+}: {
+  pr: TrackedPr;
+  closeRequested: number;
+  flow: FlowOwner;
+  setFlow: (f: FlowOwner) => void;
+}) {
   const [method, setMethod] = useState<"squash" | "merge" | "rebase">(
     () => (localStorage.getItem("cora.mergeMethod") as "squash" | "merge" | "rebase") ?? "squash",
   );
   const [confirming, setConfirming] = useState<"merge" | "close" | null>(null);
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Confirm flows are per-PR conversations — never carry one across a switch.
   useEffect(() => {
-    if (closeRequested > 0 && pr.state === "OPEN") setConfirming("close");
+    setConfirming(null);
+    setMenuAt(null);
+    setError(null);
+  }, [pr.id]);
+
+  useEffect(() => {
+    if (flow !== "controls") {
+      setConfirming(null);
+      setMenuAt(null);
+    }
+  }, [flow]);
+  const openConfirm = (what: "merge" | "close") => {
+    setFlow("controls");
+    setConfirming(what);
+  };
+
+  useEffect(() => {
+    if (closeRequested > 0 && pr.state === "OPEN") {
+      setFlow("controls");
+      setConfirming("close");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [closeRequested, pr.state]);
 
   const act = async (fn: () => Promise<void>) => {
@@ -389,7 +458,11 @@ function PrControls({ pr, closeRequested }: { pr: TrackedPr; closeRequested: num
           >
             {busy ? "Merging…" : `Confirm ${method} merge`}
           </button>
-          <button className="action-btn" disabled={busy} onClick={() => setConfirming(null)}>
+          <button
+            className="action-btn btn-danger"
+            disabled={busy}
+            onClick={() => setConfirming(null)}
+          >
             Cancel
           </button>
         </>
@@ -402,33 +475,73 @@ function PrControls({ pr, closeRequested }: { pr: TrackedPr; closeRequested: num
           >
             {busy ? "Closing…" : "Confirm close"}
           </button>
-          <button className="action-btn" disabled={busy} onClick={() => setConfirming(null)}>
+          <button
+            className="action-btn btn-danger"
+            disabled={busy}
+            onClick={() => setConfirming(null)}
+          >
             Cancel
           </button>
         </>
       ) : (
-        <span className="merge-group">
-          <button className="action-btn merge-btn" onClick={() => setConfirming("merge")}>
-            Merge
+        <span className="merge-split">
+          <button className="action-btn merge-btn" onClick={() => openConfirm("merge")}>
+            {MERGE_LABEL[method]}
           </button>
-          <select
-            className="merge-method"
-            value={method}
-            title="Merge method"
-            onChange={(e) => {
-              const m = e.target.value as typeof method;
-              setMethod(m);
-              localStorage.setItem("cora.mergeMethod", m);
+          <button
+            className="action-btn merge-caret"
+            aria-haspopup="menu"
+            aria-expanded={menuAt != null}
+            title="Choose merge method"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setMenuAt({ x: r.left, y: r.bottom + 4 });
             }}
           >
-            <option value="squash">squash</option>
-            <option value="merge">merge</option>
-            <option value="rebase">rebase</option>
-          </select>
+            ▾
+          </button>
+          {menuAt && (
+            <ContextMenu
+              x={menuAt.x}
+              y={menuAt.y}
+              onClose={() => setMenuAt(null)}
+              sections={[
+                {
+                  items: (Object.keys(MERGE_LABEL) as (keyof typeof MERGE_LABEL)[]).map((m) => ({
+                    label: MERGE_LABEL[m],
+                    checked: m === method,
+                    onClick: () => {
+                      setMethod(m);
+                      localStorage.setItem("cora.mergeMethod", m);
+                    },
+                  })),
+                },
+              ]}
+            />
+          )}
         </span>
       )}
       {error && <span className="settings-error">{error}</span>}
     </>
+  );
+}
+
+/** Copy the PR's GitHub URL for sharing, with a brief ✓ acknowledgment. */
+function CopyLinkButton({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="icon-btn"
+      title={copied ? "Copied!" : "Copy PR link"}
+      onClick={() => {
+        void navigator.clipboard.writeText(url).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+    >
+      {copied ? <IconCheck /> : <IconLink />}
+    </button>
   );
 }
 
@@ -483,33 +596,70 @@ function TrackPrInput({ onDone }: { onDone: () => void }) {
   );
 }
 
-type Tab = "assessment" | "c4" | "diff" | "comments";
+type Tab = "assessment" | "c4" | "diff" | "comments" | "history";
 const TAB_ORDER: [Tab, string][] = [
   ["assessment", "Assessment"],
   ["c4", "Architecture"],
   ["diff", "Diff"],
   ["comments", "Comments"],
+  ["history", "History"],
 ];
 
-/** C4 drill state: which level we're viewing and the path down to it. */
+/** C4 drill state: which UI level we're viewing and the path down to it.
+ *  The four C4 rungs map to two kinds of frame: "container" is free
+ *  navigation (it re-scopes the context result client-side — drilling a
+ *  system never costs a model run), while component and code are scoped
+ *  agentic runs that enrich an instant diff-derived sketch. */
+type UiLevel = "context" | "container" | "component" | "code";
+
 interface DrillFrame {
-  level: AnalysisLevel;
+  level: UiLevel;
   focus?: string;
   label: string;
+  /** The clicked node — scopes the sketch graph while the run enriches. */
+  node?: C4Node;
 }
 
 const ROOT_FRAME: DrillFrame = { level: "context", label: "System" };
-const LEVEL_DEPTH: Record<AnalysisLevel, number> = { context: 0, component: 1, code: 2 };
+const UI_DEPTH: Record<UiLevel, number> = { context: 0, container: 1, component: 2, code: 3 };
+/** The analysis level backing each UI level. */
+const ANALYSIS_OF: Record<UiLevel, AnalysisLevel> = {
+  context: "context",
+  container: "context",
+  component: "component",
+  code: "code",
+};
 
-function nextDrillLevel(kind: C4NodeKind, current: AnalysisLevel): AnalysisLevel | null {
-  const next: AnalysisLevel | null =
-    kind === "system" || kind === "container"
-      ? "component"
-      : kind === "component"
-        ? "code"
-        : null;
-  if (!next || LEVEL_DEPTH[next] <= LEVEL_DEPTH[current]) return null;
+function nextDrillLevel(kind: C4NodeKind, current: UiLevel): UiLevel | null {
+  const next: UiLevel | null =
+    kind === "system"
+      ? "container"
+      : kind === "container"
+        ? "component"
+        : kind === "component"
+          ? "code"
+          : null;
+  if (!next || UI_DEPTH[next] <= UI_DEPTH[current]) return null;
   return next;
+}
+
+/** The full analysis trace while a run is live — fills the panel and stays
+ *  pinned to the newest step, so a long run reads as progress, not a stall. */
+function ProgressLog({ steps }: { steps: { message: string }[] }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [steps.length]);
+  return (
+    <div className="progress-log" ref={ref}>
+      {steps.map((p, i) => (
+        <div key={i} className={i === steps.length - 1 ? "current" : ""}>
+          {p.message}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** Assessment + C4 tabs share one analysis run per (PR head, drill frame). */
@@ -530,35 +680,98 @@ function AnalysisPanel({
   useEffect(() => setStack([ROOT_FRAME]), [pr.id]);
 
   const frame = stack[stack.length - 1];
-  const run = runs[analysisKey(pr.id, frame.level, frame.focus)];
+  const aLevel = ANALYSIS_OF[frame.level];
+  // The container view reuses the root context run — no focus of its own.
+  const aFocus = frame.level === "container" ? undefined : frame.focus;
+  const run = runs[analysisKey(pr.id, aLevel, aFocus)];
+  const contextRun = runs[analysisKey(pr.id, "context")];
+  const contextResult = contextRun?.status === "done" ? contextRun.result : undefined;
 
   useEffect(() => {
     // Drilled levels auto-run on arrival; the root level waits for the user.
-    void init().then(() => ensure(pr.id, frame.level, frame.focus, stack.length > 1));
-  }, [pr.id, pr.headSha, frame.level, frame.focus, stack.length, init, ensure]);
+    void init().then(() => ensure(pr.id, aLevel, aFocus, stack.length > 1));
+  }, [pr.id, pr.headSha, aLevel, aFocus, stack.length, init, ensure]);
+
+  // Entering a system pre-warms its changed containers' component runs, so
+  // the next drill usually lands on a finished graph.
+  useEffect(() => {
+    if (frame.level !== "container" || !frame.focus || !contextResult) return;
+    for (const n of contextResult.graph.nodes) {
+      if (n.kind === "container" && n.boundary === frame.focus && n.change !== "unchanged") {
+        void ensure(pr.id, "component", n.id, true);
+      }
+    }
+  }, [frame, contextResult, pr.id, ensure]);
+
+  // Diff file list feeds the instant sketch graphs at component/code depth.
+  const [diffFiles, setDiffFiles] = useState<DiffFile[]>([]);
+  useEffect(() => {
+    if (UI_DEPTH[frame.level] < 2) return;
+    let live = true;
+    void useDiffStore
+      .getState()
+      .ensure(pr.id, pr.headSha)
+      .then(() => {
+        if (!live) return;
+        const entry = useDiffStore.getState().entries[pr.id];
+        setDiffFiles(entry?.raw ? parseDiffCached(entry.raw) : []);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [pr.id, pr.headSha, frame.level]);
+
+  // Instant stand-in while the scoped run works (or after it fails): the
+  // drilled node's diff files grouped into modules. No edges — those are
+  // what the analysis adds.
+  const sketch = useMemo(() => {
+    if (!contextResult || !frame.node) return null;
+    if (frame.level === "component") return componentSkeleton(frame.node, contextResult, diffFiles);
+    if (frame.level === "code") return codeSkeleton(frame.node, contextResult, diffFiles);
+    return null;
+  }, [contextResult, frame, diffFiles]);
 
   const [pendingDrill, setPendingDrill] = useState<C4Node | null>(null);
   const [diffPeek, setDiffPeek] = useState<C4Node | null>(null);
 
-  const pushDrill = (node: C4Node, next: AnalysisLevel) => {
+  const pushDrill = (node: C4Node, next: UiLevel) => {
     setPendingDrill(null);
-    setStack((s) => [...s, { level: next, focus: node.id, label: node.name }]);
+    setStack((s) => [...s, { level: next, focus: node.id, label: node.name, node }]);
   };
 
   const drillInto = (node: C4Node) => {
     const next = nextDrillLevel(node.kind, frame.level);
     if (!next) return;
-    // Analyses are about the diff — drilling into an untouched node costs a
-    // full agentic run for context only, so make that deliberate.
-    if (node.change === "unchanged") {
+    // The container view is free navigation; deeper levels cost an agentic
+    // run — drilling an untouched node for context only should be deliberate.
+    if (next !== "container" && node.change === "unchanged") {
       setPendingDrill(node);
       return;
     }
     pushDrill(node, next);
   };
 
-  const LEVEL_NAME: Record<AnalysisLevel, string> = {
+  const canvasFor = (graph: C4Graph) => (
+    <C4Canvas
+      graph={graph}
+      highlightIds={highlight}
+      isDrillable={(node) => nextDrillLevel(node.kind, frame.level) !== null}
+      onDrill={drillInto}
+      onPeek={(node) => {
+        // Diffs only surface at the code level — higher levels are for
+        // navigating the architecture, not reading patches. People and
+        // external systems have nothing to peek at anywhere.
+        if (frame.level !== "code") return;
+        if (node.kind === "person" || node.kind === "external-system") return;
+        setDiffPeek(node);
+      }}
+    />
+  );
+
+  const LEVEL_NAME: Record<UiLevel, string> = {
     context: "context",
+    container: "container",
     component: "component",
     code: "code",
   };
@@ -584,7 +797,7 @@ function AnalysisPanel({
     </nav>
   );
 
-  const retry = () => void start(pr.id, frame.level, frame.focus);
+  const retry = () => void start(pr.id, aLevel, aFocus);
 
   // "± comment" on a finding: anchor a pre-filled composer in the diff.
   // A PR-level conversation comment is the last resort, only when nothing
@@ -618,6 +831,28 @@ function AnalysisPanel({
   };
 
   if (!run || run.status === "idle") {
+    // A drilled frame lands here for the beat between the click and
+    // ensure() flipping the run to running — show the sketch (or at least
+    // a live pulse) instead of flashing the analyze placeholder.
+    if (stack.length > 1) {
+      return (
+        <>
+          <div className="panel-meta">
+            {crumbs}
+            <span className="spacer" />
+          </div>
+          <div className="sketch-strip">
+            <span className="sync-dot live" />
+            <span className="sketch-label">starting analysis…</span>
+          </div>
+          {tab === "c4" && sketch ? (
+            canvasFor(sketch)
+          ) : (
+            <div className="canvas-loading">preparing…</div>
+          )}
+        </>
+      );
+    }
     return (
       <div className="placeholder">
         <p>
@@ -632,23 +867,37 @@ function AnalysisPanel({
   }
 
   if (run.status === "running") {
-    const recent = run.progress.slice(-8);
+    // Drilled C4 frames show the instant diff-derived sketch — the run
+    // enriches it in the background and swaps in when it lands.
+    if (tab === "c4" && sketch) {
+      const last = run.progress[run.progress.length - 1];
+      return (
+        <>
+          <div className="panel-meta">
+            {crumbs}
+            <span className="spacer" />
+          </div>
+          <div className="sketch-strip">
+            <span className="sync-dot live" />
+            <span className="sketch-label">
+              sketch — modules from the diff; relationships arrive with the analysis
+            </span>
+            <span className="mono sketch-progress">{last?.message}</span>
+          </div>
+          {canvasFor(sketch)}
+          {diffPeek && (
+            <DiffPeek prId={pr.id} node={diffPeek} onClose={() => setDiffPeek(null)} />
+          )}
+        </>
+      );
+    }
     return (
       <>
         <div className="panel-meta">
           {crumbs}
           <span className="spacer" />
         </div>
-        <div className="placeholder analysis-running">
-          <span className="sync-dot live" />
-          <div className="progress-ticker">
-            {recent.map((p, i) => (
-              <div key={i} className={i === recent.length - 1 ? "current" : ""}>
-                {p.message}
-              </div>
-            ))}
-          </div>
-        </div>
+        <ProgressLog steps={run.progress} />
       </>
     );
   }
@@ -674,6 +923,30 @@ function AnalysisPanel({
             </button>
           </div>
         </div>
+      );
+    }
+    // A failed drill degrades to the sketch, not a dead end.
+    if (tab === "c4" && sketch) {
+      return (
+        <>
+          <div className="panel-meta">
+            {crumbs}
+            <span className="spacer" />
+          </div>
+          <div className="sketch-strip error" title={run.error}>
+            <span className="lamp bad" />
+            <span className="sketch-label">
+              analysis failed — showing the diff-derived sketch
+            </span>
+            <button className="action-btn" onClick={retry}>
+              Retry
+            </button>
+          </div>
+          {canvasFor(sketch)}
+          {diffPeek && (
+            <DiffPeek prId={pr.id} node={diffPeek} onClose={() => setDiffPeek(null)} />
+          )}
+        </>
       );
     }
     return (
@@ -740,26 +1013,23 @@ function AnalysisPanel({
         <AssessmentView
           assessment={result.assessment}
           codeFindings={result.codeFindings}
+          codePass={result.codePass}
           onFocusNodes={onFocusNodes}
           onCommentFinding={commentFinding}
           onCommentCode={commentCode}
         />
       ) : (
         <>
-          {frame.level !== "code" && (
-            <div className="drill-hint eyebrow">double-click a changed node to drill in</div>
+          <div className="drill-hint eyebrow">
+            {frame.level === "code"
+              ? "click a node to see its diff"
+              : "click a node to drill in"}
+          </div>
+          {canvasFor(
+            frame.level === "container" && frame.focus
+              ? filterGraph(result.graph, frame.focus)
+              : result.graph,
           )}
-          <C4Canvas
-            graph={result.graph}
-            highlightIds={highlight}
-            onNodeDoubleClick={drillInto}
-            onNodeClick={(node) => {
-              // Single click peeks at the node's diff; boundary-ish kinds
-              // (people, external systems) have nothing to peek at.
-              if (node.kind === "person" || node.kind === "external-system") return;
-              setDiffPeek(node);
-            }}
-          />
           {diffPeek && (
             <DiffPeek prId={pr.id} node={diffPeek} onClose={() => setDiffPeek(null)} />
           )}
@@ -822,7 +1092,12 @@ function Detail({
   // ⋯ overflow menu (housekeeping actions) + its Close-PR confirm trigger.
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const [closeRequested, setCloseRequested] = useState(0);
+  // Which pending flow (approve composer / confirm-merge-close) is open —
+  // holding it here keeps the two mutually exclusive.
+  const [flow, setFlow] = useState<FlowOwner>(null);
   const { type, clean } = parseTitle(pr.title);
+
+  useEffect(() => setFlow(null), [pr.id]);
 
   useEffect(() => {
     setReviews(null);
@@ -897,10 +1172,17 @@ function Detail({
         ))}
       </div>
       <div className="actions">
-        <ReviewActions pr={pr} reviews={reviews} onDone={() => setReviewBump((n) => n + 1)} />
-        <PrControls pr={pr} closeRequested={closeRequested} />
+        <ReviewActions
+          pr={pr}
+          reviews={reviews}
+          flow={flow}
+          setFlow={setFlow}
+          onDone={() => setReviewBump((n) => n + 1)}
+        />
+        <PrControls pr={pr} closeRequested={closeRequested} flow={flow} setFlow={setFlow} />
         <span className="spacer" />
         <RefreshPrButton prId={pr.id} />
+        <CopyLinkButton url={pr.url} />
         <button className="icon-btn" title="Open on GitHub" onClick={() => void openUrl(pr.url)}>
           <IconExternal />
         </button>
@@ -975,6 +1257,7 @@ function Detail({
         <AnalysisPanel pr={pr} tab={tab} highlight={highlight} onFocusNodes={focusNodes} />
       )}
       {tab === "diff" && <DiffView prId={pr.id} headSha={pr.headSha} />}
+      {tab === "history" && <HistoryView prId={pr.id} headSha={pr.headSha} />}
       {tab === "comments" && (
         <CommentsView
           prId={pr.id}
@@ -1091,7 +1374,7 @@ export function MainApp() {
   const assistant = useResizableWidth("cora.assistantWidth", 300, 900, 400, -1);
   const filterRef = useRef<HTMLInputElement>(null);
   const [menu, setMenu] = useState<
-    | { x: number; y: number; kind: "pr"; pr: TrackedPr }
+    | { x: number; y: number; kind: "pr"; pr: TrackedPr; analyzed?: boolean }
     | { x: number; y: number; kind: "repo"; repo: string }
     | null
   >(null);
@@ -1509,6 +1792,15 @@ export function MainApp() {
                           onContextMenu={(e) => {
                             e.preventDefault();
                             setMenu({ x: e.clientX, y: e.clientY, kind: "pr", pr });
+                            // Cheap cache lookup decides whether the menu
+                            // offers "Analyze" — only for un-analyzed heads.
+                            void ipc.getAnalysis(pr.id, "context").then((cached) =>
+                              setMenu((m) =>
+                                m && m.kind === "pr" && m.pr.id === pr.id
+                                  ? { ...m, analyzed: !!cached }
+                                  : m,
+                              ),
+                            );
                           }}
                           title={`${pr.repo}#${pr.number} — ${pr.title}`}
                         >
@@ -1645,6 +1937,17 @@ export function MainApp() {
                   },
                   {
                     items: [
+                      ...(menu.analyzed === false
+                        ? [
+                            {
+                              label: "Analyze architecture",
+                              onClick: () => {
+                                const s = useAnalysisStore.getState();
+                                void s.init().then(() => s.ensure(menu.pr.id, "context", undefined, true));
+                              },
+                            },
+                          ]
+                        : []),
                       {
                         label: menu.pr.muted ? "Unmute" : "Mute",
                         onClick: () => void ipc.setPrMuted(menu.pr.id, !menu.pr.muted),
@@ -1754,8 +2057,8 @@ function HotkeysHelp({ onClose }: { onClose: () => void }) {
     ["/", "focus the filter"],
     ["esc", "close menus, drawers, this help"],
     ["?", "toggle this help"],
-    ["right-click a PR", "priority, mute, untrack, repo priority"],
-    ["double-click a node", "drill into the architecture"],
+    ["right-click a PR", "analyze, priority, mute, untrack, repo priority"],
+    ["click a node", "drill into the architecture · diff at code level"],
   ];
   return (
     <>

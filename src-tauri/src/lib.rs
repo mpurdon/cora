@@ -119,6 +119,7 @@ pub fn run() {
             commands::set_activity_flag,
             commands::undo_audit,
             commands::get_pr_comments,
+            commands::get_pr_commits,
             commands::get_file_at_head,
             commands::refresh_pr,
             commands::get_pr_reviews,

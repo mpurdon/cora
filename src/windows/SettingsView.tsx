@@ -144,6 +144,11 @@ function nearestAgeIdx(days: number): number {
   return best;
 }
 
+/** Filled-track percentage for the custom slider (see .interval-slider). */
+function sliderFill(idx: number, maxIdx: number): React.CSSProperties {
+  return { "--fill": `${(idx / maxIdx) * 100}%` } as React.CSSProperties;
+}
+
 function Field({
   label,
   hint,
@@ -499,6 +504,7 @@ function GitHubPane({ settings, save }: PaneProps) {
           min={0}
           max={POLL_STEPS.length - 1}
           value={nearestStepIdx(settings.pollIntervalSecs)}
+          style={sliderFill(nearestStepIdx(settings.pollIntervalSecs), POLL_STEPS.length - 1)}
           onChange={(e) => void save({ pollIntervalSecs: POLL_STEPS[Number(e.target.value)] })}
         />
         <div className="interval-scale mono">
@@ -520,6 +526,7 @@ function GitHubPane({ settings, save }: PaneProps) {
           min={0}
           max={AGE_STEPS.length - 1}
           value={nearestAgeIdx(settings.prMaxAgeDays || 365)}
+          style={sliderFill(nearestAgeIdx(settings.prMaxAgeDays || 365), AGE_STEPS.length - 1)}
           onChange={(e) => void save({ prMaxAgeDays: AGE_STEPS[Number(e.target.value)] })}
         />
         <div className="interval-scale mono">
