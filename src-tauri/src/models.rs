@@ -260,6 +260,11 @@ pub struct Settings {
     /// "owner/name" → priority; absent means Normal.
     #[serde(default)]
     pub repo_priorities: std::collections::HashMap<String, RepoPriority>,
+    /// PR author login → priority; absent means Normal. Ignored authors'
+    /// PRs (dependabot…) never enter tracking; High authors' activity is
+    /// always important.
+    #[serde(default)]
+    pub author_priorities: std::collections::HashMap<String, RepoPriority>,
     #[ts(type = "number")]
     pub poll_interval_secs: u64,
     /// Show the always-on-top callout window when the app starts.
@@ -305,6 +310,38 @@ pub struct Settings {
     #[serde(default = "default_pr_max_age_days")]
     #[ts(type = "number")]
     pub pr_max_age_days: u64,
+    /// Poll cadence when this org is NOT the active one in the org selector
+    /// — background awareness at a gentler rate than the active org.
+    #[serde(default = "default_background_poll_secs")]
+    #[ts(type = "number")]
+    pub background_poll_secs: u64,
+}
+
+fn default_background_poll_secs() -> u64 {
+    300
+}
+
+/// A GitHub org (or the viewer's personal account) the PAT can see.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubOrg {
+    pub login: String,
+    pub name: String,
+    /// True for the viewer's own account row.
+    pub personal: bool,
+}
+
+/// Registry snapshot for the org selector: which orgs are on, which is
+/// active, and each org's unread-feed count for dropdown badges.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgState {
+    pub active: String,
+    pub enabled: Vec<String>,
+    #[ts(type = "Record<string, number>")]
+    pub unread: std::collections::HashMap<String, i64>,
 }
 
 fn default_auto_analyze_cap() -> u64 {
@@ -365,6 +402,7 @@ impl Default for Settings {
         Self {
             watched_repos: Vec::new(),
             repo_priorities: std::collections::HashMap::new(),
+            author_priorities: std::collections::HashMap::new(),
             poll_interval_secs: 45,
             show_callout_on_startup: true,
             github_graphql_url: "https://api.github.com/graphql".into(),
@@ -383,6 +421,7 @@ impl Default for Settings {
             review_conventions: String::new(),
             code_findings_pass: true,
             pr_max_age_days: default_pr_max_age_days(),
+            background_poll_secs: default_background_poll_secs(),
         }
     }
 }
@@ -523,6 +562,8 @@ pub mod events {
     /// The activity feed changed (new rows, read/flag updates): no payload —
     /// consumers refetch.
     pub const ACTIVITY_CHANGED: &str = "activity:changed";
+    /// Active org switched — frontend stores reset and refetch.
+    pub const ORG_CHANGED: &str = "org:changed";
     /// Review/thread state changed (resolve, new diff comment, submitted
     /// review, refresh): the approve gate should refetch. No payload.
     pub const REVIEWS_CHANGED: &str = "reviews:changed";

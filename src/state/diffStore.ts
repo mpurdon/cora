@@ -38,6 +38,8 @@ interface DiffState {
   requestCompose: (req: ComposeRequest) => void;
   clearCompose: () => void;
   setVisiblePath: (path: string | null) => void;
+  /** Org switch: drop every cached diff and transient focus state. */
+  reset: () => void;
 }
 
 export const useDiffStore = create<DiffState>((set, get) => ({
@@ -45,6 +47,9 @@ export const useDiffStore = create<DiffState>((set, get) => ({
   focusPath: null,
   composeRequest: null,
   visiblePath: null,
+
+  reset: () =>
+    set({ entries: {}, focusPath: null, composeRequest: null, visiblePath: null }),
 
   ensure: async (prId, headSha) => {
     const existing = get().entries[prId];

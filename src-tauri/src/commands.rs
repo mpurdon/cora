@@ -31,17 +31,19 @@ fn require_main(window: &WebviewWindow) -> AppResult<()> {
 // -- settings ---------------------------------------------------------------
 
 #[tauri::command]
-pub fn get_settings(store: State<'_, Arc<Store>>) -> AppResult<Settings> {
+pub fn get_settings(orgs: State<'_, crate::orgs::Orgs>) -> AppResult<Settings> {
+    let store = orgs.active();
     store.settings()
 }
 
 #[tauri::command]
 pub fn set_settings(
     window: WebviewWindow,
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     trigger: State<'_, PollTrigger>,
     settings: Settings,
 ) -> AppResult<()> {
+    let store = orgs.active();
     require_main(&window)?;
     store.save_settings(&settings)?;
     // Re-emit immediately so settings that shape the visible set (the PR age
@@ -49,8 +51,101 @@ pub fn set_settings(
     let _ = window
         .app_handle()
         .emit(events::PRS_SNAPSHOT, store.visible_prs()?);
-    trigger.0.notify_one();
+    trigger.0.notify_waiters();
     Ok(())
+}
+
+// -- organizations ------------------------------------------------------------
+
+/// Every org bucket the PAT can see: the viewer's own account first, then
+/// their organizations.
+#[tauri::command]
+pub async fn list_github_orgs(app: AppHandle) -> AppResult<Vec<crate::models::GithubOrg>> {
+    let settings = app.state::<crate::orgs::Orgs>().active().settings()?;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let data = client
+        .run(
+            "query { viewer { login name organizations(first: 100) { nodes { login name } } } }",
+            &serde_json::json!({}),
+        )
+        .await?;
+    let mut out = Vec::new();
+    if let Some(login) = data.pointer("/viewer/login").and_then(|v| v.as_str()) {
+        out.push(crate::models::GithubOrg {
+            login: login.to_string(),
+            name: data
+                .pointer("/viewer/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(login)
+                .to_string(),
+            personal: true,
+        });
+    }
+    for node in data
+        .pointer("/viewer/organizations/nodes")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let Some(login) = node.get("login").and_then(|v| v.as_str()) else { continue };
+        out.push(crate::models::GithubOrg {
+            login: login.to_string(),
+            name: node.get("name").and_then(|v| v.as_str()).unwrap_or(login).to_string(),
+            personal: false,
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn get_org_state(orgs: State<'_, crate::orgs::Orgs>) -> AppResult<crate::models::OrgState> {
+    let mut unread = std::collections::HashMap::new();
+    for login in orgs.enabled() {
+        if let Ok(store) = orgs.store(&login) {
+            unread.insert(login.clone(), store.count_unread_activity().unwrap_or(0));
+        }
+    }
+    Ok(crate::models::OrgState { active: orgs.active_login(), enabled: orgs.enabled(), unread })
+}
+
+/// Switch the active org: every window swaps to that org's data. Callable
+/// from any window — the selector lives in the callout too.
+#[tauri::command]
+pub fn set_active_org(
+    app: AppHandle,
+    orgs: State<'_, crate::orgs::Orgs>,
+    trigger: State<'_, PollTrigger>,
+    login: String,
+) -> AppResult<()> {
+    orgs.set_active(&login)?;
+    let store = orgs.active();
+    let _ = app.emit(events::ORG_CHANGED, login);
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
+    let _ = app.emit(events::ACTIVITY_CHANGED, ());
+    // Fresh cycle right away — the new active org polls at full cadence.
+    trigger.0.notify_waiters();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_enabled_orgs(
+    app: AppHandle,
+    window: WebviewWindow,
+    orgs: State<'_, crate::orgs::Orgs>,
+    logins: Vec<String>,
+) -> AppResult<Vec<String>> {
+    require_main(&window)?;
+    let enabled = orgs.set_enabled(logins)?;
+    for login in &enabled {
+        crate::github::poller::spawn_org(app.clone(), login.clone());
+    }
+    let store = orgs.active();
+    let _ = app.emit(events::ORG_CHANGED, orgs.active_login());
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
+    let _ = app.emit(events::ACTIVITY_CHANGED, ());
+    Ok(enabled)
 }
 
 // -- GitHub PAT (token never leaves Rust) ------------------------------------
@@ -67,7 +162,7 @@ pub fn set_github_pat(
         return Err(AppError::Other("token is empty".into()));
     }
     secrets::set_github_pat(token)?;
-    trigger.0.notify_one();
+    trigger.0.notify_waiters();
     Ok(())
 }
 
@@ -85,12 +180,14 @@ pub fn clear_github_pat(window: WebviewWindow) -> AppResult<()> {
 // -- PR list ------------------------------------------------------------------
 
 #[tauri::command]
-pub fn list_prs(store: State<'_, Arc<Store>>) -> AppResult<Vec<TrackedPr>> {
+pub fn list_prs(orgs: State<'_, crate::orgs::Orgs>) -> AppResult<Vec<TrackedPr>> {
+    let store = orgs.active();
     store.visible_prs()
 }
 
 #[tauri::command]
-pub fn mark_pr_read(app: AppHandle, store: State<'_, Arc<Store>>, id: String) -> AppResult<()> {
+pub fn mark_pr_read(app: AppHandle, orgs: State<'_, crate::orgs::Orgs>, id: String) -> AppResult<()> {
+    let store = orgs.active();
     store.mark_read(&id)?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
@@ -99,10 +196,11 @@ pub fn mark_pr_read(app: AppHandle, store: State<'_, Arc<Store>>, id: String) ->
 #[tauri::command]
 pub fn mark_pr_read_kinds(
     app: AppHandle,
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     id: String,
     kinds: Vec<ChangeKind>,
 ) -> AppResult<()> {
+    let store = orgs.active();
     store.mark_read_kinds(&id, &kinds)?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
@@ -120,10 +218,11 @@ pub(crate) fn pr_label(store: &Store, id: &str) -> String {
 #[tauri::command]
 pub fn set_pr_muted(
     app: AppHandle,
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     id: String,
     muted: bool,
 ) -> AppResult<()> {
+    let store = orgs.active();
     let label = pr_label(&store, &id);
     store.set_muted(&id, muted)?;
     store.add_audit(
@@ -138,7 +237,8 @@ pub fn set_pr_muted(
 }
 
 #[tauri::command]
-pub fn untrack_pr(app: AppHandle, store: State<'_, Arc<Store>>, id: String) -> AppResult<()> {
+pub fn untrack_pr(app: AppHandle, orgs: State<'_, crate::orgs::Orgs>, id: String) -> AppResult<()> {
+    let store = orgs.active();
     let label = pr_label(&store, &id);
     store.untrack(&id)?;
     store.add_audit("untracked", &id, &label, "tracked", "untracked")?;
@@ -155,11 +255,12 @@ pub fn untrack_pr(app: AppHandle, store: State<'_, Arc<Store>>, id: String) -> A
 #[tauri::command]
 pub fn set_repo_priority(
     app: AppHandle,
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     trigger: State<'_, PollTrigger>,
     repo: String,
     priority: crate::models::RepoPriority,
 ) -> AppResult<()> {
+    let store = orgs.active();
     let mut settings = store.settings()?;
     let old = settings
         .repo_priorities
@@ -179,13 +280,55 @@ pub fn set_repo_priority(
         &format!("{old:?}").to_lowercase(),
         &format!("{priority:?}").to_lowercase(),
     )?;
-    trigger.0.notify_one();
+    trigger.0.notify_waiters();
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
+    Ok(())
+}
+
+/// Author priority as a first-class, audited action — high for the people
+/// whose PRs always matter, ignored for the bots whose never do.
+#[tauri::command]
+pub fn set_author_priority(
+    app: AppHandle,
+    orgs: State<'_, crate::orgs::Orgs>,
+    trigger: State<'_, PollTrigger>,
+    author: String,
+    priority: crate::models::RepoPriority,
+) -> AppResult<()> {
+    let store = orgs.active();
+    let mut settings = store.settings()?;
+    let old = settings
+        .author_priorities
+        .get(&author)
+        .copied()
+        .unwrap_or(crate::models::RepoPriority::Normal);
+    if priority == crate::models::RepoPriority::Normal {
+        settings.author_priorities.remove(&author);
+    } else {
+        settings.author_priorities.insert(author.clone(), priority);
+    }
+    store.save_settings(&settings)?;
+    store.add_audit(
+        "author-priority",
+        &format!("author:{author}"),
+        &format!("@{author}"),
+        &format!("{old:?}").to_lowercase(),
+        &format!("{priority:?}").to_lowercase(),
+    )?;
+    // Ignoring takes effect immediately — untrack + scrub the feed rather
+    // than waiting a poll cycle.
+    if priority == crate::models::RepoPriority::Ignored {
+        let _ = store.purge_author(&author);
+        let _ = app.emit(events::ACTIVITY_CHANGED, ());
+    }
+    trigger.0.notify_waiters();
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_audit_log(store: State<'_, Arc<Store>>) -> AppResult<Vec<crate::models::AuditEntry>> {
+pub fn get_audit_log(orgs: State<'_, crate::orgs::Orgs>) -> AppResult<Vec<crate::models::AuditEntry>> {
+    let store = orgs.active();
     store.list_audit(200)
 }
 
@@ -193,8 +336,9 @@ pub fn get_audit_log(store: State<'_, Arc<Store>>) -> AppResult<Vec<crate::model
 
 #[tauri::command]
 pub fn get_activity(
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
 ) -> AppResult<Vec<crate::models::ActivityItem>> {
+    let store = orgs.active();
     // Pure read — feed hygiene runs once per poll cycle and on untrack.
     store.list_activity(300)
 }
@@ -203,10 +347,11 @@ pub fn get_activity(
 #[tauri::command]
 pub fn mark_activity_read(
     app: AppHandle,
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     ids: Vec<i64>,
     read: bool,
 ) -> AppResult<()> {
+    let store = orgs.active();
     store.mark_activity_read(&ids, read)?;
     let _ = app.emit(crate::models::events::ACTIVITY_CHANGED, ());
     Ok(())
@@ -215,10 +360,11 @@ pub fn mark_activity_read(
 #[tauri::command]
 pub fn set_activity_flag(
     app: AppHandle,
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     id: i64,
     flag: String,
 ) -> AppResult<()> {
+    let store = orgs.active();
     store.set_activity_flag(id, &flag)?;
     let _ = app.emit(crate::models::events::ACTIVITY_CHANGED, ());
     Ok(())
@@ -228,10 +374,11 @@ pub fn set_activity_flag(
 #[tauri::command]
 pub fn undo_audit(
     app: AppHandle,
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     trigger: State<'_, PollTrigger>,
     id: i64,
 ) -> AppResult<()> {
+    let store = orgs.active();
     let entry = store
         .get_audit(id)?
         .ok_or_else(|| AppError::Other("audit entry not found".into()))?;
@@ -266,7 +413,27 @@ pub fn undo_audit(
                 }
             }
             store.save_settings(&settings)?;
-            trigger.0.notify_one();
+            trigger.0.notify_waiters();
+        }
+        "author-priority" => {
+            let mut settings = store.settings()?;
+            let login = entry.subject_id.strip_prefix("author:").unwrap_or(&entry.subject_id);
+            let old = match entry.old_value.as_str() {
+                "high" => Some(crate::models::RepoPriority::High),
+                "low" => Some(crate::models::RepoPriority::Low),
+                "ignored" => Some(crate::models::RepoPriority::Ignored),
+                _ => None,
+            };
+            match old {
+                Some(p) => {
+                    settings.author_priorities.insert(login.to_string(), p);
+                }
+                None => {
+                    settings.author_priorities.remove(login);
+                }
+            }
+            store.save_settings(&settings)?;
+            trigger.0.notify_waiters();
         }
         other => return Err(AppError::Other(format!("cannot undo action: {other}"))),
     }
@@ -289,7 +456,7 @@ pub async fn track_pr_url(
 
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let settings = store.settings()?;
     let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
     let doc = format!(
@@ -332,11 +499,12 @@ fn analysis_key(pr_id: &str, level: AnalysisLevel, focus: &Option<String>) -> St
 
 #[tauri::command]
 pub fn get_analysis(
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     pr_id: String,
     level: AnalysisLevel,
     focus: Option<String>,
 ) -> AppResult<Option<AnalysisResult>> {
+    let store = orgs.active();
     let Some(pr) = store.get_pr(&pr_id)? else {
         return Ok(None);
     };
@@ -361,13 +529,17 @@ pub fn run_analysis(
     force: Option<bool>,
 ) -> AppResult<()> {
     require_main(&window)?;
-    spawn_analysis_task(app, pr_id, level, focus, force.unwrap_or(false));
+    let org = app.state::<crate::orgs::Orgs>().active_login();
+    spawn_analysis_task(app, org, pr_id, level, focus, force.unwrap_or(false));
     Ok(())
 }
 
-/// Shared by the Analyze button and the poller's pre-warm path.
+/// Shared by the Analyze button and the poller's pre-warm path. `org` names
+/// which org's store the run reads/writes — the poller passes its own loop's
+/// org so background analyses never touch another org's data.
 pub fn spawn_analysis_task(
     app: AppHandle,
+    org: String,
     pr_id: String,
     level: AnalysisLevel,
     focus: Option<String>,
@@ -382,7 +554,12 @@ pub fn spawn_analysis_task(
         }
     }
     tauri::async_runtime::spawn(async move {
-        let outcome = execute_analysis(&app, &pr_id, level, focus.clone(), force).await;
+        let Ok(store) = app.state::<crate::orgs::Orgs>().store(&org) else {
+            let runs = app.state::<AnalysisRuns>();
+            runs.0.lock().unwrap().remove(&key);
+            return;
+        };
+        let outcome = execute_analysis(&app, &store, &pr_id, level, focus.clone(), force).await;
         {
             let runs = app.state::<AnalysisRuns>();
             runs.0.lock().unwrap().remove(&key);
@@ -394,7 +571,7 @@ pub fn spawn_analysis_task(
                 // the headline when present) plus a featured feed row. Drills
                 // stay quiet — they're sub-steps and often prefetched.
                 if level == AnalysisLevel::Context {
-                    let store = app.state::<Arc<Store>>().inner().clone();
+                    let org_active = app.state::<crate::orgs::Orgs>().is_active(&org);
                     if let Ok(Some(pr)) = store.get_pr(&result.pr_id) {
                         let externals = result
                             .assessment
@@ -404,7 +581,7 @@ pub fn spawn_analysis_task(
                             .count();
                         let repo_short =
                             pr.info.repo.split('/').nth(1).unwrap_or(&pr.info.repo).to_string();
-                        let title = if externals > 0 {
+                        let mut title = if externals > 0 {
                             format!(
                                 "{externals} external-boundary impact{} in {repo_short}#{}",
                                 if externals == 1 { "" } else { "s" },
@@ -413,6 +590,11 @@ pub fn spawn_analysis_task(
                         } else {
                             format!("analysis ready · {repo_short}#{}", pr.info.number)
                         };
+                        // Background-org completions still ping — awareness —
+                        // but say whose news it is.
+                        if !org_active {
+                            title = format!("[{org}] {title}");
+                        }
                         crate::notify::send(
                             &app,
                             &title,
@@ -437,7 +619,11 @@ pub fn spawn_analysis_task(
                         let _ = store.add_activity(
                             &now, &pr.info, "analysis", "", &summary, "", true, false,
                         );
-                        let _ = app.emit(events::ACTIVITY_CHANGED, ());
+                        // The feed shows the active org — only its writes
+                        // should nudge the callout to refresh.
+                        if org_active {
+                            let _ = app.emit(events::ACTIVITY_CHANGED, ());
+                        }
                     }
                 }
                 let _ = app.emit(analysis_events::ANALYSIS_COMPLETE, result);
@@ -461,12 +647,12 @@ pub fn spawn_analysis_task(
 
 async fn execute_analysis(
     app: &AppHandle,
+    store: &Arc<Store>,
     pr_id: &str,
     level: AnalysisLevel,
     focus: Option<String>,
     force: bool,
 ) -> AppResult<AnalysisResult> {
-    let store = app.state::<Arc<Store>>().inner().clone();
     let pr = store
         .get_pr(pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -555,10 +741,11 @@ async fn execute_analysis(
 #[tauri::command]
 pub fn set_pr_priority(
     app: AppHandle,
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     id: String,
     priority: crate::models::PrPriority,
 ) -> AppResult<()> {
+    let store = orgs.active();
     let label = pr_label(&store, &id);
     let old = store
         .get_pr(&id)?
@@ -579,7 +766,7 @@ pub async fn refresh_pr(app: AppHandle, pr_id: String) -> AppResult<TrackedPr> {
 async fn refresh_pr_inner(app: &AppHandle, pr_id: &str) -> AppResult<TrackedPr> {
     let app = app.clone();
     let pr_id = pr_id.to_string();
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let existing = store
         .get_pr(&pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -622,7 +809,7 @@ pub async fn add_pr_comment(app: AppHandle, pr_id: String, body: String) -> AppR
     if body.trim().is_empty() {
         return Err(AppError::Other("comment is empty".into()));
     }
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
@@ -644,7 +831,7 @@ pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) ->
     if body.trim().is_empty() {
         return Err(AppError::Other("reply is empty".into()));
     }
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
@@ -665,7 +852,7 @@ pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) ->
 /// Requested reviewers + latest review states, for the detail header strip.
 #[tauri::command]
 pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::models::PrReviews> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let pr = store
         .get_pr(&pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -794,7 +981,7 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
 /// Resolve or unresolve a review thread.
 #[tauri::command]
 pub async fn resolve_thread(app: AppHandle, thread_id: String, resolve: bool) -> AppResult<()> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
@@ -821,7 +1008,7 @@ pub async fn submit_review(
     event: String,
     body: String,
 ) -> AppResult<()> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
@@ -863,7 +1050,7 @@ pub async fn submit_review(
 /// Merge / close / reopen — the PR lifecycle controls. All audited.
 #[tauri::command]
 pub async fn merge_pr(app: AppHandle, pr_id: String, method: String) -> AppResult<()> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
@@ -889,7 +1076,7 @@ pub async fn merge_pr(app: AppHandle, pr_id: String, method: String) -> AppResul
 
 #[tauri::command]
 pub async fn close_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
@@ -910,7 +1097,7 @@ pub async fn close_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
 
 #[tauri::command]
 pub async fn reopen_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
@@ -967,7 +1154,7 @@ fn repo_tools_for(
     app: &AppHandle,
     pr_id: &str,
 ) -> AppResult<(crate::analysis::tools::RepoTools, TrackedPr)> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let pr = store
         .get_pr(pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -1023,7 +1210,7 @@ pub async fn toggle_reaction(
     content: String,
     remove: bool,
 ) -> AppResult<()> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
@@ -1046,7 +1233,7 @@ pub async fn toggle_reaction(
 /// Conversation + review threads for the Comments tab.
 #[tauri::command]
 pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConversation> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let pr = store
         .get_pr(&pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -1205,7 +1392,7 @@ pub async fn get_pr_commits(
     app: AppHandle,
     pr_id: String,
 ) -> AppResult<Vec<crate::models::PrCommit>> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let pr = store
         .get_pr(&pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -1298,7 +1485,8 @@ pub async fn get_pr_diff(app: AppHandle, pr_id: String) -> AppResult<String> {
 /// Where the reviewer left off — created at the current head on first ask, so
 /// every surface shares one planting rule and one stored timestamp.
 #[tauri::command]
-pub fn ensure_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult<ReviewMark> {
+pub fn ensure_review_mark(orgs: State<'_, crate::orgs::Orgs>, pr_id: String) -> AppResult<ReviewMark> {
+    let store = orgs.active();
     if let Some(mark) = store.review_mark(&pr_id)? {
         return Ok(mark);
     }
@@ -1310,7 +1498,8 @@ pub fn ensure_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppRes
 
 /// Record "I'm caught up here" at the PR's current head.
 #[tauri::command]
-pub fn set_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult<ReviewMark> {
+pub fn set_review_mark(orgs: State<'_, crate::orgs::Orgs>, pr_id: String) -> AppResult<ReviewMark> {
+    let store = orgs.active();
     let pr = store
         .get_pr(&pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -1320,7 +1509,7 @@ pub fn set_review_mark(store: State<'_, Arc<Store>>, pr_id: String) -> AppResult
 /// Diff of only the commits pushed since the review mark.
 #[tauri::command]
 pub async fn get_diff_since(app: AppHandle, pr_id: String) -> AppResult<String> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let mark = store
         .review_mark(&pr_id)?
         .ok_or_else(|| AppError::Other("no review mark for this PR".into()))?;
@@ -1354,9 +1543,10 @@ pub struct ViewedFile {
 
 #[tauri::command]
 pub fn get_viewed_files(
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     pr_id: String,
 ) -> AppResult<Vec<ViewedFile>> {
+    let store = orgs.active();
     Ok(store
         .viewed_files(&pr_id)?
         .into_iter()
@@ -1366,12 +1556,13 @@ pub fn get_viewed_files(
 
 #[tauri::command]
 pub fn set_file_viewed(
-    store: State<'_, Arc<Store>>,
+    orgs: State<'_, crate::orgs::Orgs>,
     pr_id: String,
     path: String,
     digest: String,
     viewed: bool,
 ) -> AppResult<()> {
+    let store = orgs.active();
     store.set_file_viewed(&pr_id, &path, &digest, viewed)
 }
 
@@ -1503,7 +1694,7 @@ pub async fn check_aws(profile: String, region: String) -> AppResult<String> {
 
 #[tauri::command]
 pub fn poll_now(trigger: State<'_, PollTrigger>) {
-    trigger.0.notify_one();
+    trigger.0.notify_waiters();
 }
 
 /// Callout rows call this: surface the main window on a specific PR.

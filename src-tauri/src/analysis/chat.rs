@@ -5,7 +5,7 @@
 //! steps taken in the review, whoever typed them.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message, StopReason};
 use serde_json::{json, Value};
@@ -23,7 +23,6 @@ use crate::devlog;
 use crate::error::{AppError, AppResult};
 use crate::models::{Settings, TrackedPr};
 use crate::secrets;
-use crate::store::Store;
 
 const MAX_CHAT_TURNS: usize = 12;
 const MAX_OUTPUT_TOKENS: i32 = 4096;
@@ -188,7 +187,7 @@ fn build_system(pr: &TrackedPr, analysis: Option<&AnalysisResult>, settings: &Se
 
 /// Create the session if absent; refresh its context when the head moved.
 fn ensure_session(app: &AppHandle, pr_id: &str) -> AppResult<()> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let pr = store
         .get_pr(pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
@@ -361,7 +360,7 @@ fn describe_action(name: &str, input: &Value) -> ChatPendingAction {
 /// Execute a confirmed action through the app's command layer, and audit the
 /// ones that aren't already audited there — the history reads as the user's.
 async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) -> AppResult<String> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let label = crate::commands::pr_label(&store, pr_id);
     let input = &action.input;
     match action.name.as_str() {
@@ -592,7 +591,7 @@ async fn drive(app: &AppHandle, pr_id: &str) {
 }
 
 async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().active();
     let settings = store.settings()?;
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;

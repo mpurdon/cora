@@ -31,12 +31,16 @@ interface AnalysisState {
   /** Load from cache; if absent and start=true, kick off a run. */
   ensure: (prId: string, level: AnalysisLevel, focus?: string, start?: boolean) => Promise<void>;
   start: (prId: string, level: AnalysisLevel, focus?: string) => Promise<void>;
+  /** Org switch: drop every cached run view. */
+  reset: () => void;
 }
 
 let initialized = false;
 
 export const useAnalysisStore = create<AnalysisState>((set, get) => ({
   runs: {},
+
+  reset: () => set({ runs: {} }),
 
   init: async () => {
     if (initialized) return;

@@ -5,6 +5,7 @@ mod error;
 mod github;
 mod models;
 mod notify;
+mod orgs;
 mod secrets;
 mod store;
 
@@ -16,7 +17,6 @@ use tauri::Manager;
 use tokio::sync::Notify;
 
 use github::poller::PollTrigger;
-use store::Store;
 
 /// Persist window geometry — never visibility; our own setting governs
 /// whether the callout shows at launch.
@@ -43,9 +43,11 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let store = Arc::new(Store::open(&data_dir.join("cora.sqlite"))?);
-            app.manage(store);
+            // Per-org isolated stores; opening runs the one-time legacy
+            // split migration on first launch with org support.
+            app.manage(orgs::Orgs::open(&data_dir)?);
             app.manage(PollTrigger(Arc::new(Notify::new())));
+            app.manage(github::poller::OrgLoops::default());
             app.manage(commands::AnalysisRuns(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )));
@@ -55,7 +57,8 @@ pub fn run() {
 
             // Respect the "open callout at launch" preference.
             let show_callout = app
-                .state::<Arc<Store>>()
+                .state::<orgs::Orgs>()
+                .active()
                 .settings()
                 .map(|s| s.show_callout_on_startup)
                 .unwrap_or(true);
@@ -66,7 +69,7 @@ pub fn run() {
             }
 
             setup_tray(app.handle())?;
-            github::poller::spawn(app.handle().clone());
+            github::poller::spawn_all(app.handle().clone());
 
             // Closing the main window hides it (tray app); callout stays up.
             if let Some(main) = app.get_webview_window("main") {
@@ -104,6 +107,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::set_settings,
+            commands::list_github_orgs,
+            commands::get_org_state,
+            commands::set_active_org,
+            commands::set_enabled_orgs,
             commands::set_github_pat,
             commands::github_pat_present,
             commands::clear_github_pat,
@@ -113,6 +120,7 @@ pub fn run() {
             commands::set_pr_muted,
             commands::set_pr_priority,
             commands::set_repo_priority,
+            commands::set_author_priority,
             commands::get_audit_log,
             commands::get_activity,
             commands::mark_activity_read,
@@ -189,7 +197,7 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 let _ = commands::show_main_window(app.clone(), None);
             }
             "poll-now" => {
-                app.state::<PollTrigger>().0.notify_one();
+                app.state::<PollTrigger>().0.notify_waiters();
             }
             "quit" => {
                 // Tray quit bypasses window close events — flush positions

@@ -171,21 +171,46 @@ impl Store {
     /// the settings window. Every snapshot sent to the frontend goes through
     /// this; `list_prs` stays unfiltered for internal reconciliation.
     pub fn visible_prs(&self) -> AppResult<Vec<TrackedPr>> {
-        let max_days = self.settings()?.pr_max_age_days;
+        let settings = self.settings()?;
+        let max_days = settings.pr_max_age_days;
         let prs = self.list_prs()?;
-        if max_days == 0 {
-            return Ok(prs);
-        }
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_days as i64);
+        let cutoff = (max_days > 0)
+            .then(|| chrono::Utc::now() - chrono::Duration::days(max_days as i64));
         Ok(prs
             .into_iter()
+            // Ignored authors never surface, even if a poll cycle hasn't
+            // untracked their PRs yet.
             .filter(|p| {
+                settings.author_priorities.get(&p.info.author)
+                    != Some(&crate::models::RepoPriority::Ignored)
+            })
+            .filter(|p| {
+                let Some(cutoff) = cutoff else { return true };
                 chrono::DateTime::parse_from_rfc3339(&p.info.updated_at)
                     .map(|t| t >= cutoff)
                     // Unparseable timestamp: keep — hiding must be deliberate.
                     .unwrap_or(true)
             })
             .collect())
+    }
+
+    /// Ignoring an author scrubs their presence now, not next poll cycle:
+    /// their PRs untrack and their feed rows drop. Bot noise isn't precious
+    /// — this is the one path that deletes activity rather than retiring it.
+    pub fn purge_author(&self, author: &str) -> AppResult<usize> {
+        let ids: Vec<String> = self
+            .list_prs()?
+            .iter()
+            .filter(|p| p.info.author == author)
+            .map(|p| p.info.id.clone())
+            .collect();
+        let mut removed = 0;
+        for id in &ids {
+            self.untrack(id)?;
+            let conn = self.conn.lock().unwrap();
+            removed += conn.execute("DELETE FROM activity WHERE pr_id = ?1", params![id])?;
+        }
+        Ok(removed)
     }
 
     pub fn set_pr_priority(&self, id: &str, priority: crate::models::PrPriority) -> AppResult<()> {
@@ -544,6 +569,39 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Org isolation invariant: remove every row that doesn't belong to
+    /// `org` (repo owner mismatch, plus everything keyed to those PRs).
+    /// Idempotent and cheap — runs on every per-org DB open, so a database
+    /// seeded by copying the pre-org backup ends up holding only its own
+    /// org's data, and can never accumulate foreign rows.
+    pub fn prune_to_org(&self, org: &str) -> AppResult<()> {
+        let prefix = format!("{org}/%");
+        let conn = self.conn.lock().unwrap();
+        // prs keeps the repo inside its data JSON; activity has a column.
+        conn.execute(
+            "DELETE FROM prs WHERE COALESCE(json_extract(data, '$.repo'), '') NOT LIKE ?1",
+            params![prefix],
+        )?;
+        conn.execute("DELETE FROM activity WHERE repo NOT LIKE ?1", params![prefix])?;
+        for table in ["analyses", "review_marks", "viewed_files"] {
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE pr_id NOT IN (SELECT id FROM prs)"),
+                [],
+            )?;
+        }
+        // Audit subjects are PR ids, "owner/repo" strings (repo-priority
+        // entries), or "author:<login>" rows. Author priorities are org-local
+        // settings — keep them; keep own-org repos; drop the rest.
+        conn.execute(
+            "DELETE FROM audit WHERE
+               subject_id NOT LIKE 'author:%'
+               AND ((instr(subject_id, '/') > 0 AND subject_id NOT LIKE ?1)
+                    OR (instr(subject_id, '/') = 0 AND subject_id NOT IN (SELECT id FROM prs)))",
+            params![prefix],
+        )?;
+        Ok(())
+    }
+
     /// A newer event makes older unread ones moot (a merge supersedes the
     /// unread "review requested"; fresh commits supersede the last push).
     /// Marks them read — but never flagged rows (the user pinned those) and
@@ -601,6 +659,12 @@ impl Store {
             [],
         )?;
         Ok(n)
+    }
+
+    /// Unread feed rows — the org dropdown's badge number.
+    pub fn count_unread_activity(&self) -> AppResult<i64> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row("SELECT COUNT(*) FROM activity WHERE read = 0", [], |r| r.get(0))?)
     }
 
     /// Empty `ids` means mark everything.
@@ -701,6 +765,34 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".into(),
             labels: vec![],
         }
+    }
+
+    #[test]
+    fn prune_to_org_removes_every_foreign_row() {
+        let store = Store::open_in_memory().unwrap();
+        let mut ours = pr("PR_ours");
+        ours.repo = "team-and-tech/portal".into();
+        let mut theirs = pr("PR_theirs");
+        theirs.repo = "mpurdon/side-project".into();
+        let now = "2026-01-01T00:00:00Z";
+        store.upsert_pr(&ours, &[PrSource::Authored], &[ChangeKind::New], now).unwrap();
+        store.upsert_pr(&theirs, &[PrSource::Authored], &[ChangeKind::New], now).unwrap();
+        store.add_activity(now, &ours, "commits", "a", "s", "", false, false).unwrap();
+        store.add_activity(now, &theirs, "commits", "a", "s", "", false, false).unwrap();
+        store.put_analysis("PR_ours", "context", "", "abc", "{}", now).unwrap();
+        store.put_analysis("PR_theirs", "context", "", "abc", "{}", now).unwrap();
+        store.add_audit("commented", "PR_ours", "l", "", "").unwrap();
+        store.add_audit("commented", "PR_theirs", "l", "", "").unwrap();
+
+        store.prune_to_org("team-and-tech").unwrap();
+
+        let prs = store.list_prs().unwrap();
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].info.id, "PR_ours");
+        let activity = store.list_activity(100).unwrap();
+        assert!(activity.iter().all(|a| a.pr_id == "PR_ours"));
+        assert!(store.get_analysis("PR_ours", "context", "", "abc").unwrap().is_some());
+        assert!(store.get_analysis("PR_theirs", "context", "", "abc").unwrap().is_none());
     }
 
     #[test]

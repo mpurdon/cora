@@ -861,6 +861,8 @@ Explicitly NOT your job: style preferences — naming, ternaries vs if, .reduce 
 
 Method: get the diff, then read only what you need — the changed hunks' surrounding context via get_file, and targeted search_code for reuse checks. Be economical. search_code is heavily rate-limited: budget 3-4 well-chosen queries per review, issued one at a time — prefer one broad query over several narrow ones.
 
+Writing style: finding and suggestion text gets posted nearly verbatim as review comments the PR AUTHOR reads. One sentence each — finding names the defect and its consequence; suggestion is one imperative sentence naming the fix. No walls of text, no lecture, no restating the code back at them. If the mechanism needs explaining, one tight clause, not a paragraph.
+
 When done, call submit_code_findings exactly once. Anchor each finding to a path from the diff and the new-side line number of the changed line it concerns. An empty findings list is a valid, good result — never invent findings to fill space."#;
 
 fn code_findings_schema() -> Value {

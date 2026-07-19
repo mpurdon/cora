@@ -328,7 +328,7 @@ function FileDiff({
           <span className="diff-gutter">
             {l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}
           </span>
-          {commentable && (
+          {commentable ? (
             <button
               className="line-comment-btn"
               title={`Comment on line ${l.newLine}`}
@@ -339,6 +339,10 @@ function FileDiff({
             >
               +
             </button>
+          ) : (
+            // Same-width spacer so del lines' code aligns with add/context
+            // lines (which carry the comment button).
+            <span className="line-comment-btn ghost" aria-hidden="true" />
           )}
           {l.text}
         </div>

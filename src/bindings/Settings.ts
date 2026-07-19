@@ -5,7 +5,13 @@ export type Settings = { watchedRepos: Array<string>,
 /**
  * "owner/name" → priority; absent means Normal.
  */
-repoPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, 
+repoPriorities: { [key in string]: RepoPriority }, 
+/**
+ * PR author login → priority; absent means Normal. Ignored authors'
+ * PRs (dependabot…) never enter tracking; High authors' activity is
+ * always important.
+ */
+authorPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, 
 /**
  * Show the always-on-top callout window when the app starts.
  */
@@ -56,4 +62,9 @@ codeFindingsPass: boolean,
  * PRs with no activity inside this window are hidden from the list and
  * excluded from search discovery. 0 disables the filter.
  */
-prMaxAgeDays: number, };
+prMaxAgeDays: number, 
+/**
+ * Poll cadence when this org is NOT the active one in the org selector
+ * — background awareness at a gentler rate than the active org.
+ */
+backgroundPollSecs: number, };
