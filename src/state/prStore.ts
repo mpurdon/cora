@@ -9,14 +9,25 @@ interface PrState {
   pollStatus: PollStatus | null;
   recentlyChanged: Set<string>;
   init: () => Promise<void>;
+  /** Org switch: drop every PR — the snapshot for the new org follows. */
+  reset: () => void;
 }
+
+let initialized = false;
 
 export const usePrStore = create<PrState>((set, get) => ({
   prs: [],
   pollStatus: null,
   recentlyChanged: new Set(),
 
+  reset: () => set({ prs: [], pollStatus: null, recentlyChanged: new Set() }),
+
   init: async () => {
+    if (initialized) {
+      set({ prs: await ipc.listPrs() });
+      return;
+    }
+    initialized = true;
     await onPrsSnapshot((prs) => set({ prs }));
     await onPollStatus((pollStatus) => set({ pollStatus }));
     await onPrChanged(({ pr }) => {

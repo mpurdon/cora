@@ -21,6 +21,9 @@ fragment PrFields on PullRequest {
 
 /// The scopes we poll, in priority order. Each becomes an aliased `search`.
 pub struct PollRequest {
+    /// Org login every scope is fenced to (`org:<login>` qualifier) — the
+    /// isolation boundary: one poll request never sees another org's PRs.
+    pub org: String,
     pub watched_repos: Vec<String>,
     pub tracked_ids: Vec<String>,
     /// YYYY-MM-DD; when set, every search scope gains `updated:>=` so PRs
@@ -32,10 +35,16 @@ impl PollRequest {
     /// Build one batched GraphQL document + variables. Aliases for empty
     /// scopes are omitted entirely (GraphQL requires every variable be used).
     pub fn build(&self) -> (String, Value) {
-        let base = match &self.updated_since {
+        let mut base = match &self.updated_since {
             Some(d) => format!("is:pr is:open archived:false updated:>={d}"),
             None => "is:pr is:open archived:false".to_string(),
         };
+        if !self.org.is_empty() {
+            // `user:` matches repos owned by either a user or an organization
+            // (orgs are users in GitHub's model) — `org:` would exclude
+            // personal accounts like a solo login.
+            base.push_str(&format!(" user:{}", self.org));
+        }
         let mut var_defs = vec![
             "$qReview: String!",
             "$qAuthor: String!",
@@ -254,6 +263,7 @@ mod tests {
     #[test]
     fn omits_empty_scopes() {
         let (doc, vars) = PollRequest {
+            org: String::new(),
             watched_repos: vec![],
             tracked_ids: vec![],
             updated_since: None,
@@ -268,6 +278,7 @@ mod tests {
     #[test]
     fn includes_watched_and_tracked() {
         let (doc, vars) = PollRequest {
+            org: String::new(),
             watched_repos: vec!["acme/api".into(), "acme/web".into()],
             tracked_ids: vec!["PR_x".into()],
             updated_since: None,
@@ -282,8 +293,26 @@ mod tests {
     }
 
     #[test]
+    fn org_fences_every_search_scope() {
+        let (_, vars) = PollRequest {
+            org: "team-and-tech".into(),
+            watched_repos: vec!["team-and-tech/api".into()],
+            tracked_ids: vec![],
+            updated_since: None,
+        }
+        .build();
+        for key in ["qReview", "qAuthor", "qInvolves", "qWatched"] {
+            assert!(
+                vars[key].as_str().unwrap().contains("user:team-and-tech"),
+                "{key} missing org fence"
+            );
+        }
+    }
+
+    #[test]
     fn updated_since_qualifies_every_search_scope() {
         let (_, vars) = PollRequest {
+            org: String::new(),
             watched_repos: vec!["acme/api".into()],
             tracked_ids: vec![],
             updated_since: Some("2026-06-16".into()),

@@ -15,33 +15,74 @@ use crate::models::{
 use crate::secrets;
 use crate::store::Store;
 
-/// Wake the poller immediately (settings change, PAT set, manual refresh).
+/// Wake the pollers immediately (settings change, PAT set, manual refresh).
+/// `notify_waiters` wakes every org loop at once.
 pub struct PollTrigger(pub Arc<Notify>);
+
+/// Which org loops are running — lets enabling an org spawn its loop
+/// exactly once; a loop removes itself when its org is disabled.
+#[derive(Default)]
+pub struct OrgLoops(pub std::sync::Mutex<std::collections::HashSet<String>>);
 
 const MAX_BACKOFF_SECS: u64 = 300;
 const LOW_RATE_LIMIT: i64 = 100;
 
 use crate::store::MECHANICAL_KINDS;
 
-pub fn spawn(app: AppHandle) {
+/// One poll loop per enabled org.
+pub fn spawn_all(app: AppHandle) {
+    for login in app.state::<crate::orgs::Orgs>().enabled() {
+        spawn_org(app.clone(), login);
+    }
+}
+
+pub fn spawn_org(app: AppHandle, login: String) {
+    {
+        let loops = app.state::<OrgLoops>();
+        if !loops.0.lock().unwrap().insert(login.clone()) {
+            return; // already running
+        }
+    }
     tauri::async_runtime::spawn(async move {
         let trigger = app.state::<PollTrigger>().0.clone();
         let mut failures: u32 = 0;
         loop {
-            let base_interval = {
-                let store = app.state::<Arc<Store>>();
-                store.settings().map(|s| s.poll_interval_secs.max(5)).unwrap_or(45)
+            let (enabled, active) = {
+                let orgs = app.state::<crate::orgs::Orgs>();
+                (orgs.enabled().iter().any(|o| o == &login), orgs.is_active(&login))
             };
-            emit_syncing(&app);
-            crate::devlog::debug(&app, "poller", "poll cycle starting");
-            let sleep_secs = match poll_once(&app).await {
+            if !enabled {
+                app.state::<OrgLoops>().0.lock().unwrap().remove(&login);
+                crate::devlog::info(&app, "poller", format!("org {login} disabled — loop exiting"));
+                return;
+            }
+            // The active org polls at its normal cadence; background orgs at
+            // their own (slower) per-org interval.
+            let base_interval = app
+                .state::<crate::orgs::Orgs>()
+                .store(&login)
+                .ok()
+                .and_then(|store| store.settings().ok())
+                .map(|s| {
+                    if active {
+                        s.poll_interval_secs.max(5)
+                    } else {
+                        s.background_poll_secs.max(30)
+                    }
+                })
+                .unwrap_or(300);
+            if active {
+                emit_syncing(&app);
+            }
+            crate::devlog::debug(&app, "poller", format!("poll cycle starting ({login})"));
+            let sleep_secs = match poll_once(&app, &login, active).await {
                 Ok(rate_remaining) => {
                     failures = 0;
                     crate::devlog::debug(
                         &app,
                         "poller",
                         format!(
-                            "poll cycle ok — rate remaining {}",
+                            "poll cycle ok ({login}) — rate remaining {}",
                             rate_remaining.map_or("?".into(), |r| r.to_string())
                         ),
                     );
@@ -53,7 +94,11 @@ pub fn spawn(app: AppHandle) {
                 }
                 Err(e) => {
                     failures += 1;
-                    emit_status(&app, false, Some(e.to_string()), None);
+                    if active {
+                        emit_status(&app, false, Some(e.to_string()), None);
+                    } else {
+                        crate::devlog::warn(&app, "poller", format!("({login}) {e}"));
+                    }
                     (base_interval * 2u64.saturating_pow(failures.min(4))).min(MAX_BACKOFF_SECS)
                 }
             };
@@ -108,9 +153,17 @@ fn source_for_alias(alias: &str) -> Option<PrSource> {
 
 /// Native notifications for the changes worth interrupting for: a human
 /// replied, or CI went red on your own PR.
-fn notify_for_changes(app: &AppHandle, pr: &crate::models::TrackedPr, changes: &[ChangeKind]) {
+fn notify_for_changes(
+    app: &AppHandle,
+    pr: &crate::models::TrackedPr,
+    changes: &[ChangeKind],
+    // Set when the change belongs to a background org — the notification
+    // says whose news it is.
+    org_prefix: Option<&str>,
+) {
     let short = format!(
-        "{}#{}",
+        "{}{}#{}",
+        org_prefix.map(|o| format!("[{o}] ")).unwrap_or_default(),
         pr.info.repo.split('/').nth(1).unwrap_or(&pr.info.repo),
         pr.info.number
     );
@@ -165,7 +218,8 @@ fn record_activity(
     }
     let important = pr.sources.contains(&PrSource::Authored)
         || pr.priority == crate::models::PrPriority::High
-        || settings.repo_priorities.get(&pr.info.repo) == Some(&RepoPriority::High);
+        || settings.repo_priorities.get(&pr.info.repo) == Some(&RepoPriority::High)
+        || settings.author_priorities.get(&pr.info.author) == Some(&RepoPriority::High);
     // A poll delta has no per-event timestamps, so impose causal order on
     // same-cycle rows: setup → work → verdicts → terminal state. Insertion
     // order is the feed's tie-breaker for identical timestamps.
@@ -282,6 +336,11 @@ fn maybe_prewarm(
     if !settings.auto_analyze_review_requests {
         return;
     }
+    // Bot PRs (dependabot, renovate) never earn a speculative analysis —
+    // they'd burn the daily budget on version bumps.
+    if crate::models::is_bot_login(&info.author) {
+        return;
+    }
     // Already have a fresh L1 for this head? Nothing to do. (When the head
     // just moved, the poll cycle invalidated the cache — skip the lookup.)
     if !head_moved
@@ -315,6 +374,8 @@ fn maybe_prewarm(
     }
     crate::commands::spawn_analysis_task(
         app.clone(),
+        // The PR's owner names the org whose store this run belongs to.
+        info.repo.split('/').next().unwrap_or_default().to_string(),
         info.id.clone(),
         AnalysisLevel::Context,
         None,
@@ -322,17 +383,27 @@ fn maybe_prewarm(
     );
 }
 
-/// One poll cycle. Returns remaining rate limit on success.
-async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
+/// One poll cycle for one org. Returns remaining rate limit on success.
+/// `active` gates every UI event — background orgs write silently and only
+/// surface through (org-prefixed) native notifications.
+async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Option<i64>> {
     let Some(token) = secrets::github_pat()? else {
-        emit_status(app, false, Some("no GitHub token configured".into()), None);
+        if active {
+            emit_status(app, false, Some("no GitHub token configured".into()), None);
+        }
         return Ok(None);
     };
 
-    let store = app.state::<Arc<Store>>().inner().clone();
+    let store = app.state::<crate::orgs::Orgs>().store(login)?;
     let settings = store.settings()?;
     let request = PollRequest {
-        watched_repos: settings.watched_repos.clone(),
+        org: login.to_string(),
+        watched_repos: settings
+            .watched_repos
+            .iter()
+            .filter(|r| r.starts_with(&format!("{login}/")))
+            .cloned()
+            .collect(),
         tracked_ids: store.tracked_ids()?,
         updated_since: (settings.pr_max_age_days > 0).then(|| {
             (Utc::now() - chrono::Duration::days(settings.pr_max_age_days as i64))
@@ -345,11 +416,17 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
     let data = client.run(&doc, &vars).await?;
 
     // Merge every alias into one map: id → (PrInfo, sources).
+    let owner_prefix = format!("{login}/");
     let mut merged: HashMap<String, (PrInfo, Vec<PrSource>)> = HashMap::new();
     for (alias, nodes) in split_by_alias(&data) {
         let source = source_for_alias(alias);
         for node in &nodes {
             let Some(info) = parse_pr(node) else { continue };
+            // Belt and braces on top of the `user:` search qualifier — a
+            // foreign-org PR must never enter this org's store.
+            if !info.repo.starts_with(&owner_prefix) {
+                continue;
+            }
             let entry = merged
                 .entry(info.id.clone())
                 .or_insert_with(|| (info.clone(), Vec::new()));
@@ -399,8 +476,11 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
 
     let mut activity_written = false;
     for (id, (info, sources)) in &merged {
-        // Ignored repos never enter (or stay in) the tracked set.
-        if settings.repo_priorities.get(&info.repo) == Some(&RepoPriority::Ignored) {
+        // Ignored repos and ignored authors never enter (or stay in) the
+        // tracked set — dependabot with author priority "ignored" vanishes.
+        if settings.repo_priorities.get(&info.repo) == Some(&RepoPriority::Ignored)
+            || settings.author_priorities.get(&info.author) == Some(&RepoPriority::Ignored)
+        {
             if existing.contains_key(id) {
                 store.untrack(id)?;
             }
@@ -455,29 +535,38 @@ async fn poll_once(app: &AppHandle) -> AppResult<Option<i64>> {
             if record_activity(&store, &settings, &stored, &changes, last_opinion, &now) {
                 activity_written = true;
             }
-            notify_for_changes(app, &stored, &changes);
-            let _ = app.emit(events::PR_CHANGED, PrChangedEvent { pr: stored, changes });
+            // Awareness crosses org boundaries; data does not. Background
+            // orgs still ping natively (org-prefixed), but never touch the
+            // active org's UI events.
+            notify_for_changes(app, &stored, &changes, if active { None } else { Some(login) });
+            if active {
+                let _ = app.emit(events::PR_CHANGED, PrChangedEvent { pr: stored, changes });
+            }
         }
     }
     // Once-per-cycle feed hygiene (get_activity is a pure read).
     if store.reconcile_activity().unwrap_or(0) > 0 {
         activity_written = true;
     }
-    if activity_written {
+    if active && activity_written {
         let _ = app.emit(events::ACTIVITY_CHANGED, ());
     }
 
-    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
+    if active {
+        let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
+    }
     let rate = data.pointer("/rateLimit/remaining").and_then(serde_json::Value::as_i64);
     crate::devlog::debug(
         app,
         "poller",
         format!(
-            "cycle complete: {} PRs merged from search, rate limit remaining {}",
+            "cycle complete ({login}): {} PRs merged from search, rate limit remaining {}",
             merged.len(),
             rate.unwrap_or(-1)
         ),
     );
-    emit_status(app, true, None, rate);
+    if active {
+        emit_status(app, true, None, rate);
+    }
     Ok(rate)
 }
