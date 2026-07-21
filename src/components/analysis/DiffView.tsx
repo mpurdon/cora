@@ -648,7 +648,15 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     const next = [...ordered.slice(i + 1), ...ordered.slice(0, Math.max(i, 0))].find(
       (f) => f.path !== file.path && !isViewed(f),
     );
-    useDiffStore.getState().requestFocusFile((next ?? ordered[0]).path);
+    if (next) {
+      useDiffStore.getState().requestFocusFile(next.path);
+      return;
+    }
+    // That was the last unviewed file — there's nothing left to jump to.
+    // Ease back to the top so finishing the review reads as a deliberate
+    // return rather than a jarring snap.
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scroller()?.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
   };
 
   // Unresolved threads grouped per file → line.
