@@ -19,7 +19,8 @@ fragment PrFields on PullRequest {
 }
 ";
 
-/// The scopes we poll, in priority order. Each becomes an aliased `search`.
+/// The scopes we poll, in priority order. Each is issued as its own request
+/// (see `run_poll`), not batched into one document.
 pub struct PollRequest {
     /// Org login every scope is fenced to (`org:<login>` qualifier) — the
     /// isolation boundary: one poll request never sees another org's PRs.
@@ -32,9 +33,9 @@ pub struct PollRequest {
 }
 
 impl PollRequest {
-    /// Build one batched GraphQL document + variables. Aliases for empty
-    /// scopes are omitted entirely (GraphQL requires every variable be used).
-    pub fn build(&self) -> (String, Value) {
+    /// The shared search prefix: open PRs in this org, within the recency
+    /// window. Every scope's query is this plus its own qualifier.
+    fn base(&self) -> String {
         let mut base = match &self.updated_since {
             Some(d) => format!("is:pr is:open archived:false updated:>={d}"),
             None => "is:pr is:open archived:false".to_string(),
@@ -45,48 +46,87 @@ impl PollRequest {
             // personal accounts like a solo login.
             base.push_str(&format!(" user:{}", self.org));
         }
-        let mut var_defs = vec![
-            "$qReview: String!",
-            "$qAuthor: String!",
-            "$qInvolves: String!",
-        ];
-        let mut body = String::from(
-            "
-  reviewRequested: search(query: $qReview, type: ISSUE, first: 30) { nodes { ...PrFields } }
-  authored: search(query: $qAuthor, type: ISSUE, first: 30) { nodes { ...PrFields } }
-  involved: search(query: $qInvolves, type: ISSUE, first: 30) { nodes { ...PrFields } }
-",
-        );
-        let mut vars = json!({
-            "qReview": format!("{base} review-requested:@me"),
-            "qAuthor": format!("{base} author:@me"),
-            "qInvolves": format!("{base} involves:@me"),
-        });
+        base
+    }
 
+    /// The search scopes to issue, as (alias, full query string, page size).
+    /// Each becomes its own request — see `run_poll` for why they aren't
+    /// batched.
+    fn search_scopes(&self) -> Vec<(&'static str, String, u32)> {
+        let base = self.base();
+        let mut scopes = vec![
+            ("reviewRequested", format!("{base} review-requested:@me"), 30),
+            ("authored", format!("{base} author:@me"), 30),
+            ("involved", format!("{base} involves:@me"), 30),
+        ];
         if !self.watched_repos.is_empty() {
-            var_defs.push("$qWatched: String!");
-            body.push_str(
-                "  watched: search(query: $qWatched, type: ISSUE, first: 50) { nodes { ...PrFields } }\n",
-            );
             let repo_quals: Vec<String> =
                 self.watched_repos.iter().map(|r| format!("repo:{r}")).collect();
-            vars["qWatched"] = json!(format!("{base} {}", repo_quals.join(" ")));
+            scopes.push(("watched", format!("{base} {}", repo_quals.join(" ")), 50));
         }
-
-        if !self.tracked_ids.is_empty() {
-            var_defs.push("$trackedIds: [ID!]!");
-            body.push_str("  tracked: nodes(ids: $trackedIds) { ... on PullRequest { ...PrFields } }\n");
-            vars["trackedIds"] = json!(self.tracked_ids);
-        }
-
-        body.push_str("  rateLimit { cost remaining resetAt }\n");
-        let doc = format!("query Poll({}) {{{}}}\n{}", var_defs.join(", "), body, PR_FRAGMENT);
-        (doc, vars)
+        scopes
     }
 }
 
-/// PR nodes per alias, in the response.
-pub const SEARCH_ALIASES: [&str; 4] = ["reviewRequested", "authored", "involved", "watched"];
+/// Fold a response's `rateLimit.remaining` into the running minimum — a poll
+/// now spans several requests, so report the tightest budget we saw.
+fn merge_rate(rate: &mut Option<i64>, data: &Value) {
+    if let Some(r) = data.pointer("/rateLimit/remaining").and_then(Value::as_i64) {
+        *rate = Some(rate.map_or(r, |cur| cur.min(r)));
+    }
+}
+
+/// Fetch every poll scope as its own small request and return alias → raw PR
+/// nodes plus the tightest rate-limit remaining.
+///
+/// The scopes are deliberately NOT batched into one document. The full
+/// `PrFields` fragment (mergeable, status rollup, recent comments, labels)
+/// across four searches plus the tracked-node re-fetch pushes a single query
+/// past GitHub's GraphQL gateway limit — it 502s (or nulls out nodes with a
+/// wall of per-field timeout errors) the large majority of the time. The same
+/// reason `fetch_viewer_reviews` is chunked out. Kept apart, each request
+/// stays cheap and the 502-aware retry in `run` mops up the occasional edge
+/// hiccup.
+pub async fn run_poll(
+    client: &GraphQlClient,
+    request: &PollRequest,
+) -> AppResult<(HashMap<&'static str, Vec<Value>>, Option<i64>)> {
+    let mut aliased: HashMap<&'static str, Vec<Value>> = HashMap::new();
+    let mut rate: Option<i64> = None;
+
+    for (alias, query, first) in request.search_scopes() {
+        let doc = format!(
+            "query($q: String!) {{ search(query: $q, type: ISSUE, first: {first}) \
+             {{ nodes {{ ...PrFields }} }} rateLimit {{ remaining }} }}\n{PR_FRAGMENT}"
+        );
+        let data = client.run(&doc, &json!({ "q": query })).await?;
+        if let Some(nodes) = data.pointer("/search/nodes").and_then(Value::as_array) {
+            aliased.insert(alias, nodes.clone());
+        }
+        merge_rate(&mut rate, &data);
+    }
+
+    // Tracked PRs are re-fetched in small chunks (same reasoning as the viewer
+    // reviews): one `nodes(ids:)` request per chunk stays comfortably cheap.
+    if !request.tracked_ids.is_empty() {
+        let doc = format!(
+            "query($ids: [ID!]!) {{ nodes(ids: $ids) \
+             {{ ... on PullRequest {{ ...PrFields }} }} rateLimit {{ remaining }} }}\n{PR_FRAGMENT}"
+        );
+        let mut tracked: Vec<Value> = Vec::new();
+        for chunk in request.tracked_ids.chunks(30) {
+            let data = client.run(&doc, &json!({ "ids": chunk })).await?;
+            if let Some(nodes) = data.pointer("/nodes").and_then(Value::as_array) {
+                // nodes(ids:) yields nulls for unresolvable ids — drop them.
+                tracked.extend(nodes.iter().filter(|n| !n.is_null()).cloned());
+            }
+            merge_rate(&mut rate, &data);
+        }
+        aliased.insert("tracked", tracked);
+    }
+
+    Ok((aliased, rate))
+}
 
 pub struct GraphQlClient {
     http: reqwest::Client,
@@ -240,88 +280,69 @@ fn is_transient(e: &AppError) -> bool {
     }
 }
 
-/// Extract PR nodes per alias from a poll response.
-/// Returns alias → list of raw PR values.
-pub fn split_by_alias(data: &Value) -> HashMap<&'static str, Vec<Value>> {
-    let mut out = HashMap::new();
-    for alias in SEARCH_ALIASES {
-        if let Some(nodes) = data.pointer(&format!("/{alias}/nodes")).and_then(Value::as_array) {
-            out.insert(alias, nodes.clone());
-        }
-    }
-    if let Some(nodes) = data.pointer("/tracked").and_then(Value::as_array) {
-        // nodes(ids:) yields nulls for unresolvable ids — drop them.
-        out.insert("tracked", nodes.iter().filter(|n| !n.is_null()).cloned().collect());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn scope_map(req: &PollRequest) -> HashMap<&'static str, String> {
+        req.search_scopes().into_iter().map(|(a, q, _)| (a, q)).collect()
+    }
+
     #[test]
-    fn omits_empty_scopes() {
-        let (doc, vars) = PollRequest {
+    fn omits_watched_scope_when_no_repos() {
+        let scopes = scope_map(&PollRequest {
             org: String::new(),
             watched_repos: vec![],
             tracked_ids: vec![],
             updated_since: None,
-        }
-        .build();
-        assert!(!doc.contains("watched:"));
-        assert!(!doc.contains("tracked:"));
-        assert!(doc.contains("reviewRequested:"));
-        assert!(vars.get("qWatched").is_none());
+        });
+        assert!(!scopes.contains_key("watched"));
+        assert!(scopes.contains_key("reviewRequested"));
     }
 
     #[test]
-    fn includes_watched_and_tracked() {
-        let (doc, vars) = PollRequest {
+    fn includes_watched_scope() {
+        let scopes = scope_map(&PollRequest {
             org: String::new(),
             watched_repos: vec!["acme/api".into(), "acme/web".into()],
             tracked_ids: vec!["PR_x".into()],
             updated_since: None,
-        }
-        .build();
-        assert!(doc.contains("watched: search"));
-        assert!(doc.contains("tracked: nodes"));
+        });
         assert_eq!(
-            vars["qWatched"].as_str().unwrap(),
+            scopes["watched"],
             "is:pr is:open archived:false repo:acme/api repo:acme/web"
         );
     }
 
     #[test]
     fn org_fences_every_search_scope() {
-        let (_, vars) = PollRequest {
+        let scopes = scope_map(&PollRequest {
             org: "team-and-tech".into(),
             watched_repos: vec!["team-and-tech/api".into()],
             tracked_ids: vec![],
             updated_since: None,
-        }
-        .build();
-        for key in ["qReview", "qAuthor", "qInvolves", "qWatched"] {
+        });
+        assert_eq!(scopes.len(), 4);
+        for (alias, query) in &scopes {
             assert!(
-                vars[key].as_str().unwrap().contains("user:team-and-tech"),
-                "{key} missing org fence"
+                query.contains("user:team-and-tech"),
+                "{alias} missing org fence"
             );
         }
     }
 
     #[test]
     fn updated_since_qualifies_every_search_scope() {
-        let (_, vars) = PollRequest {
+        let scopes = scope_map(&PollRequest {
             org: String::new(),
             watched_repos: vec!["acme/api".into()],
             tracked_ids: vec![],
             updated_since: Some("2026-06-16".into()),
-        }
-        .build();
-        for key in ["qReview", "qAuthor", "qInvolves", "qWatched"] {
+        });
+        for (alias, query) in &scopes {
             assert!(
-                vars[key].as_str().unwrap().contains("updated:>=2026-06-16"),
-                "{key} missing recency qualifier"
+                query.contains("updated:>=2026-06-16"),
+                "{alias} missing recency qualifier"
             );
         }
     }

@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 
 use crate::error::AppResult;
-use crate::github::{parse_pr, query::{split_by_alias, GraphQlClient, PollRequest}};
+use crate::github::{parse_pr, query::{GraphQlClient, PollRequest}};
 use crate::models::{
     compute_changes, events, ChangeKind, PollStatus, PrChangedEvent, PrInfo, PrSource,
     RepoPriority,
@@ -248,10 +248,15 @@ fn record_activity(
                 ("comment", c.author.clone(), format!("commented: “{}”", c.snippet), c.id.clone())
             }
             ChangeKind::ReviewChanged => {
+                // Only human verdicts are news. Any other `reviewDecision`
+                // transition (null / REVIEW_REQUIRED) is mechanical — reviewers
+                // got assigned, or the PR became ready — and is already implied
+                // by the "review requested" / "marked ready" rows. Skip it
+                // rather than emit an actor-less "review state changed".
                 let state = match pr.info.review_decision.as_deref() {
                     Some("APPROVED") => "review approved",
                     Some("CHANGES_REQUESTED") => "changes requested",
-                    _ => "review state changed",
+                    _ => continue,
                 };
                 // Attribute the verdict when the newest opinionated review
                 // matches the decision (it flipped it, or agrees with it).
@@ -411,14 +416,14 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
                 .to_string()
         }),
     };
-    let (doc, vars) = request.build();
     let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
-    let data = client.run(&doc, &vars).await?;
+    let (aliased, rate_remaining) =
+        crate::github::query::run_poll(&client, &request).await?;
 
     // Merge every alias into one map: id → (PrInfo, sources).
     let owner_prefix = format!("{login}/");
     let mut merged: HashMap<String, (PrInfo, Vec<PrSource>)> = HashMap::new();
-    for (alias, nodes) in split_by_alias(&data) {
+    for (alias, nodes) in aliased {
         let source = source_for_alias(alias);
         for node in &nodes {
             let Some(info) = parse_pr(node) else { continue };
@@ -555,18 +560,17 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
     if active {
         let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     }
-    let rate = data.pointer("/rateLimit/remaining").and_then(serde_json::Value::as_i64);
     crate::devlog::debug(
         app,
         "poller",
         format!(
             "cycle complete ({login}): {} PRs merged from search, rate limit remaining {}",
             merged.len(),
-            rate.unwrap_or(-1)
+            rate_remaining.unwrap_or(-1)
         ),
     );
     if active {
-        emit_status(app, true, None, rate);
+        emit_status(app, true, None, rate_remaining);
     }
-    Ok(rate)
+    Ok(rate_remaining)
 }
