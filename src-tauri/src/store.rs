@@ -14,6 +14,11 @@ use crate::models::{ChangeKind, PrInfo, PrSource, ReviewMark, Settings, TrackedP
 /// consumes it.
 pub const MECHANICAL_KINDS: &[&str] = &["new", "ready", "commits", "ci", "review", "analysis"];
 
+/// Feed rows that self-expire: notifications, not records. Once read, they are
+/// deleted after `PURGE_READ_AFTER_HOURS` instead of lingering in the feed.
+const EPHEMERAL_KINDS: &[&str] = &["analysis"];
+const PURGE_READ_AFTER_HOURS: i64 = 1;
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -651,14 +656,28 @@ impl Store {
             .collect::<Vec<_>>()
             .join(", ");
         let not_open = if ids.is_empty() { String::new() } else { format!(" AND pr_id NOT IN ({ids})") };
-        let n = conn.execute(
+        let reconciled = conn.execute(
             &format!(
                 "UPDATE activity SET read = 1
                  WHERE read = 0 AND flag = '' AND kind IN ({kinds}){not_open}"
             ),
             [],
         )?;
-        Ok(n)
+        // Ephemeral rows have done their job once read — drop them after the
+        // TTL instead of letting them linger. Flagged rows are an explicit
+        // keep, as everywhere.
+        let ephemeral =
+            EPHEMERAL_KINDS.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+        let cutoff =
+            (chrono::Utc::now() - chrono::Duration::hours(PURGE_READ_AFTER_HOURS)).to_rfc3339();
+        let purged = conn.execute(
+            &format!(
+                "DELETE FROM activity
+                 WHERE read = 1 AND flag = '' AND at < ?1 AND kind IN ({ephemeral})"
+            ),
+            params![cutoff],
+        )?;
+        Ok(reconciled + purged)
     }
 
     /// Unread feed rows — the org dropdown's badge number.
@@ -825,5 +844,38 @@ mod tests {
         assert!(store.get_pr("PR_1").unwrap().unwrap().unread.is_empty());
         store.untrack("PR_1").unwrap();
         assert!(store.list_prs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reconcile_purges_read_analysis_after_an_hour() {
+        let store = Store::open_in_memory().unwrap();
+        let p = pr("PR_1");
+        // Open + tracked, so reconcile's mechanical sweep leaves its rows be.
+        store
+            .upsert_pr(&p, &[PrSource::Authored], &[ChangeKind::New], "2026-01-01T00:00:00Z")
+            .unwrap();
+        let old = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        let recent = chrono::Utc::now().to_rfc3339();
+        store.add_activity(&old, &p, "analysis", "", "old read", "", true, true).unwrap();
+        store.add_activity(&recent, &p, "analysis", "", "fresh read", "", true, true).unwrap();
+        store.add_activity(&old, &p, "analysis", "", "old unread", "", true, false).unwrap();
+        store.add_activity(&old, &p, "analysis", "", "old flagged", "", true, true).unwrap();
+        let flagged_id = store
+            .list_activity(100)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.summary == "old flagged")
+            .unwrap()
+            .id;
+        store.set_activity_flag(flagged_id, "pin").unwrap();
+
+        store.reconcile_activity().unwrap();
+
+        let summaries: Vec<String> =
+            store.list_activity(100).unwrap().into_iter().map(|a| a.summary).collect();
+        assert!(!summaries.contains(&"old read".into()), "read analysis >1h should be purged");
+        assert!(summaries.contains(&"fresh read".into()), "recent read analysis kept");
+        assert!(summaries.contains(&"old unread".into()), "unread analysis kept");
+        assert!(summaries.contains(&"old flagged".into()), "flagged analysis kept");
     }
 }
