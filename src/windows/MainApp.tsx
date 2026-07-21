@@ -39,6 +39,7 @@ import {
 import { PrFilesRail } from "../components/PrFilesRail";
 import { events, ipc, onFocusPr } from "../lib/ipc";
 import { findingSeed } from "../lib/comments";
+import { setThemeOrg } from "../lib/theme";
 import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
@@ -567,13 +568,21 @@ function RefreshPrButton({ prId }: { prId: string }) {
   );
 }
 
-function TrackPrInput({ onDone }: { onDone: () => void }) {
+function TrackPrInput({
+  onDone,
+  onTracked,
+}: {
+  onDone: () => void;
+  onTracked: (id: string) => void;
+}) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const track = async () => {
     try {
-      await ipc.trackPrUrl(url);
+      const pr = await ipc.trackPrUrl(url);
       onDone();
+      // A hand-entered PR is the one you want to look at — open it.
+      onTracked(pr.id);
     } catch (e) {
       setError(String(e));
     }
@@ -1401,7 +1410,14 @@ export function MainApp() {
   const [orgMenuAt, setOrgMenuAt] = useState<{ x: number; y: number } | null>(null);
 
   const refreshOrgState = useCallback(
-    () => void ipc.getOrgState().then(setOrgState).catch(() => {}),
+    () =>
+      void ipc
+        .getOrgState()
+        .then((s) => {
+          setOrgState(s);
+          setThemeOrg(s.active); // each org keeps its own theme
+        })
+        .catch(() => {}),
     [],
   );
 
@@ -1689,58 +1705,58 @@ export function MainApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatVisible, selectedId, selected]);
 
+  const orgBar = orgState && (
+    <>
+      <button
+        className="org-select org-bar"
+        title="Active organization — data, settings, and feeds are per-org. Picking a new org enables it with its own isolated database."
+        aria-haspopup="menu"
+        aria-expanded={orgMenuAt != null}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setOrgMenuAt({ x: r.left, y: r.bottom + 4 });
+        }}
+      >
+        {orgState.active}
+        {(orgState.unread[orgState.active] ?? 0) > 0
+          ? ` · ${orgState.unread[orgState.active]}`
+          : ""}
+      </button>
+      {orgMenuAt && (
+        <ContextMenu
+          x={orgMenuAt.x}
+          y={orgMenuAt.y}
+          onClose={() => setOrgMenuAt(null)}
+          sections={[
+            {
+              title: "organizations",
+              items: orgState.enabled.map((o) => ({
+                label: (orgState.unread[o] ?? 0) > 0 ? `${o} · ${orgState.unread[o]}` : o,
+                checked: o === orgState.active,
+                onClick: () => void chooseOrg(o),
+              })),
+            },
+            ...(availableOrgs.some((o) => !orgState.enabled.includes(o.login))
+              ? [
+                  {
+                    title: "enable…",
+                    items: availableOrgs
+                      .filter((o) => !orgState.enabled.includes(o.login))
+                      .map((o) => ({
+                        label: o.personal ? `${o.login} (personal)` : o.login,
+                        onClick: () => void chooseOrg(o.login),
+                      })),
+                  },
+                ]
+              : []),
+          ]}
+        />
+      )}
+    </>
+  );
+
   return (
     <div className="main-shell">
-      {orgState && (
-        <div className="org-corner">
-          <button
-            className="org-select"
-            title="Active organization — data, settings, and feeds are per-org. Picking a new org enables it with its own isolated database."
-            aria-haspopup="menu"
-            aria-expanded={orgMenuAt != null}
-            onClick={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              setOrgMenuAt({ x: r.left, y: r.bottom + 4 });
-            }}
-          >
-            {orgState.active}
-            {(orgState.unread[orgState.active] ?? 0) > 0
-              ? ` · ${orgState.unread[orgState.active]}`
-              : ""}
-          </button>
-          {orgMenuAt && (
-            <ContextMenu
-              x={orgMenuAt.x}
-              y={orgMenuAt.y}
-              onClose={() => setOrgMenuAt(null)}
-              sections={[
-                {
-                  title: "organizations",
-                  items: orgState.enabled.map((o) => ({
-                    label:
-                      (orgState.unread[o] ?? 0) > 0 ? `${o} · ${orgState.unread[o]}` : o,
-                    checked: o === orgState.active,
-                    onClick: () => void chooseOrg(o),
-                  })),
-                },
-                ...(availableOrgs.some((o) => !orgState.enabled.includes(o.login))
-                  ? [
-                      {
-                        title: "enable…",
-                        items: availableOrgs
-                          .filter((o) => !orgState.enabled.includes(o.login))
-                          .map((o) => ({
-                            label: o.personal ? `${o.login} (personal)` : o.login,
-                            onClick: () => void chooseOrg(o.login),
-                          })),
-                      },
-                    ]
-                  : []),
-              ]}
-            />
-          )}
-        </div>
-      )}
       <nav className="rail" style={{ width: rail.width }}>
         {selected && railView === "files" ? (
           <PrFilesRail pr={selected} onBack={() => setRailView("list")} onOpenFile={openFile} />
@@ -1758,7 +1774,10 @@ export function MainApp() {
                 +
               </button>
             </div>
-            {showTrackInput && <TrackPrInput onDone={() => setShowTrackInput(false)} />}
+            {showTrackInput && (
+              <TrackPrInput onDone={() => setShowTrackInput(false)} onTracked={select} />
+            )}
+            {orgBar}
 
             <div className="rail-controls">
               <input
