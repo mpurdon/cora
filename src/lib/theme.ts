@@ -125,7 +125,24 @@ export const BUILTIN_THEMES: Theme[] = [
 ];
 
 const CUSTOM_KEY = "cora.customThemes";
+/// Legacy/global key — doubles as "most recently chosen anywhere", which is
+/// what a newly enabled org inherits until it picks its own.
 const ACTIVE_KEY = "cora.activeTheme";
+
+/** Theme SELECTION is per-org (the palette library is shared): each org
+ *  remembers its theme, and switching orgs re-skins the app. */
+let themeOrg: string | null = null;
+
+function orgKey(): string | null {
+  return themeOrg ? `${ACTIVE_KEY}.${themeOrg}` : null;
+}
+
+/** Call when the active org becomes known or changes — re-applies that
+ *  org's remembered theme (falling back to the most recent global choice). */
+export function setThemeOrg(org: string) {
+  themeOrg = org;
+  applyTheme(getTheme(activeThemeId()));
+}
 
 export function customThemes(): Theme[] {
   try {
@@ -145,7 +162,12 @@ export function getTheme(id: string): Theme {
 }
 
 export function activeThemeId(): string {
-  return localStorage.getItem(ACTIVE_KEY) ?? BUILTIN_THEMES[0].id;
+  const k = orgKey();
+  return (
+    (k ? localStorage.getItem(k) : null) ??
+    localStorage.getItem(ACTIVE_KEY) ??
+    BUILTIN_THEMES[0].id
+  );
 }
 
 export function applyTheme(theme: Theme) {
@@ -156,6 +178,9 @@ export function applyTheme(theme: Theme) {
 }
 
 export function setActiveTheme(id: string) {
+  const k = orgKey();
+  if (k) localStorage.setItem(k, id);
+  // The global key tracks the latest choice — the seed for future orgs.
   localStorage.setItem(ACTIVE_KEY, id);
   applyTheme(getTheme(id));
 }
@@ -192,7 +217,7 @@ export function cloneTheme(src: Theme): Theme {
 export function initTheme() {
   applyTheme(getTheme(activeThemeId()));
   window.addEventListener("storage", (e) => {
-    if (e.key === ACTIVE_KEY || e.key === CUSTOM_KEY) {
+    if (e.key === CUSTOM_KEY || e.key?.startsWith(ACTIVE_KEY)) {
       applyTheme(getTheme(activeThemeId()));
     }
   });

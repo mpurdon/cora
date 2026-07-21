@@ -20,6 +20,7 @@ import {
 } from "../components/icons";
 import { ContextMenu } from "../components/ContextMenu";
 import { ipc } from "../lib/ipc";
+import { setThemeOrg } from "../lib/theme";
 import { usePrStore } from "../state/prStore";
 
 function Tile({
@@ -279,7 +280,14 @@ export function CalloutApp() {
     document.body.classList.add("callout");
     void init();
     refresh();
-    const refreshOrg = () => void ipc.getOrgState().then(setOrgState).catch(() => {});
+    const refreshOrg = () =>
+      void ipc
+        .getOrgState()
+        .then((s) => {
+          setOrgState(s);
+          setThemeOrg(s.active); // each org keeps its own theme
+        })
+        .catch(() => {});
     refreshOrg();
     const un = listen("activity:changed", () => {
       refresh();
