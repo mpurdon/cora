@@ -1701,6 +1701,13 @@ pub fn poll_now(trigger: State<'_, PollTrigger>) {
 #[tauri::command]
 pub fn show_main_window(app: AppHandle, pr_id: Option<String>) -> AppResult<()> {
     if let Some(main) = app.get_webview_window("main") {
+        // An explicit click is authoritative. Drop any armed notification
+        // deep-link (e.g. a just-completed analysis for a *different* PR)
+        // first, so the focus-triggered claim from `set_focus` below can't
+        // race the FOCUS_PR emit and land on that other PR instead.
+        if pr_id.is_some() {
+            let _ = app.state::<crate::notify::PendingFocus>().take();
+        }
         let _ = main.show();
         let _ = main.unminimize();
         let _ = main.set_focus();

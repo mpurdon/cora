@@ -4,7 +4,7 @@ import type { PrCommit } from "../../bindings/PrCommit";
 import { ipc } from "../../lib/ipc";
 import { ciStatusTone, timeAgo } from "../../state/prStore";
 
-/** Commit history for the PR, oldest first — like GitHub's Commits tab. */
+/** Commit history for the PR, newest first — the latest push at the top. */
 export function HistoryView({ prId, headSha }: { prId: string; headSha: string }) {
   const [commits, setCommits] = useState<PrCommit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,9 +35,9 @@ export function HistoryView({ prId, headSha }: { prId: string; headSha: string }
   return (
     <div className="history-view">
       <span className="eyebrow">
-        {commits.length} commit{commits.length === 1 ? "" : "s"} — oldest first
+        {commits.length} commit{commits.length === 1 ? "" : "s"} — newest first
       </span>
-      {commits.map((c) => {
+      {[...commits].reverse().map((c) => {
         const ciLabel = c.ciStatus ? `checks: ${c.ciStatus.toLowerCase()}` : "no checks";
         return (
         <div key={c.sha} className="commit-row" title={c.message}>
