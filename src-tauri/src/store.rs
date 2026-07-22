@@ -70,6 +70,21 @@ CREATE TABLE IF NOT EXISTS audit (
   new_value     TEXT NOT NULL DEFAULT '',
   undone        INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS usage (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  at            TEXT NOT NULL,
+  pr_id         TEXT NOT NULL DEFAULT '',
+  repo          TEXT NOT NULL DEFAULT '',
+  number        INTEGER NOT NULL DEFAULT 0,
+  pr_title      TEXT NOT NULL DEFAULT '',
+  kind          TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read    INTEGER NOT NULL DEFAULT 0,
+  cache_write   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS usage_at ON usage(at);
 CREATE TABLE IF NOT EXISTS activity (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   at         TEXT NOT NULL,
@@ -517,6 +532,64 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    // -- model usage ----------------------------------------------------------
+
+    /// One Bedrock request's token cost. Written per request (a single
+    /// analysis makes many), so per-PR and per-day rollups are just sums.
+    pub fn add_usage(&self, row: &crate::usage::UsageRow) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO usage
+               (at, pr_id, repo, number, pr_title, kind, model,
+                input_tokens, output_tokens, cache_read, cache_write)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                row.at,
+                row.pr_id,
+                row.repo,
+                row.number,
+                row.pr_title,
+                row.kind,
+                row.model,
+                row.input_tokens,
+                row.output_tokens,
+                row.cache_read,
+                row.cache_write,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every recorded request, oldest first. The whole table is read for the
+    /// usage dashboard — a year of heavy use is a few thousand rows, and
+    /// keeping the arithmetic in Rust keeps pricing in exactly one place.
+    pub fn usage_rows(&self) -> AppResult<Vec<crate::usage::UsageRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT at, pr_id, repo, number, pr_title, kind, model,
+                    input_tokens, output_tokens, cache_read, cache_write
+             FROM usage ORDER BY at",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(crate::usage::UsageRow {
+                    at: r.get(0)?,
+                    pr_id: r.get(1)?,
+                    repo: r.get(2)?,
+                    number: r.get(3)?,
+                    pr_title: r.get(4)?,
+                    kind: r.get(5)?,
+                    model: r.get(6)?,
+                    input_tokens: r.get(7)?,
+                    output_tokens: r.get(8)?,
+                    cache_read: r.get(9)?,
+                    cache_write: r.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     // -- activity feed (callout) ---------------------------------------------
