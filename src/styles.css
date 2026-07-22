@@ -2595,10 +2595,26 @@ body.col-resizing * {
   font-family: var(--mono);
   font-size: 11.5px;
   white-space: pre-wrap;
+}
+
+/* Removed lines above, added below — the diff a suggestion applies, so the
+   reviewer sees what leaves as well as what lands. Blocks with no `removed`
+   line (a posted thread, which can't reconstruct the original) just show the
+   added side, as before. */
+.suggestion-line.removed {
+  background: color-mix(in srgb, var(--bad) 11%, transparent);
+}
+
+.suggestion-line.removed::before {
+  content: "− ";
+  color: var(--bad);
+}
+
+.suggestion-line.added {
   background: color-mix(in srgb, var(--ok) 11%, transparent);
 }
 
-.suggestion-line::before {
+.suggestion-line.added::before {
   content: "+ ";
   color: var(--ok);
 }
@@ -2796,6 +2812,47 @@ body.col-resizing * {
 
 .composer {
   margin-top: 10px;
+}
+
+.composer-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+/* Write/Preview toggle — reused by the assistant's confirm card. */
+.composer-tab {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 10px;
+}
+
+.composer-tab.on {
+  color: var(--text);
+  border-color: var(--line);
+  background: var(--ink-0);
+}
+
+.composer-tab:disabled {
+  opacity: 0.4;
+}
+
+/* Rendered preview sits where the textarea would, so the card doesn't jump. */
+.composer-preview {
+  min-height: 78px;
+  padding: 10px 14px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.pending-preview {
+  min-height: 84px;
 }
 
 .composer textarea {
@@ -3193,11 +3250,19 @@ button.diff-file-header:hover {
   min-width: 100%;
 }
 
-/* Threads/composers inside a wide scroll range stay readable and in view. */
+/* Threads/composers inside a wide scroll range stay pinned to the left edge
+   and span the scrollport, not the (wider) max-content layer — the visible
+   width is published as --diff-visible-w by a ResizeObserver on .diff-body. */
 .diff-scroll-inner .inline-thread {
   position: sticky;
   left: 0;
-  max-width: 780px;
+  width: var(--diff-visible-w, 100%);
+  box-sizing: border-box;
+}
+
+/* The lines a drag selection covers, highlighted as you drag the + gutter. */
+.diff-line.in-range {
+  background: color-mix(in srgb, var(--chat) 16%, transparent);
 }
 
 .diff-line {
@@ -4379,6 +4444,9 @@ button.diff-file-header:hover {
 }
 
 .pending-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   font-weight: 650;
   margin-bottom: 6px;

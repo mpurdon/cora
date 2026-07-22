@@ -4,4 +4,13 @@ import type { ReactionGroup } from "./ReactionGroup";
 /**
  * A single comment on a PR (conversation or review thread).
  */
-export type PrComment = { id: string, author: string, isBot: boolean, body: string, createdAt: string, url: string, reactions: Array<ReactionGroup>, };
+export type PrComment = { id: string, author: string, isBot: boolean, body: string, createdAt: string, url: string, reactions: Array<ReactionGroup>, 
+/**
+ * Whether the PAT owner wrote this — the UI only offers Edit on your own.
+ */
+viewerCanEdit: boolean, 
+/**
+ * A review-thread comment edits through a different GitHub mutation than
+ * a conversation comment, so the frontend has to tell them apart.
+ */
+isReviewComment: boolean, };

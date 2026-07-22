@@ -175,6 +175,13 @@ pub struct PrComment {
     pub url: String,
     #[serde(default)]
     pub reactions: Vec<ReactionGroup>,
+    /// Whether the PAT owner wrote this — the UI only offers Edit on your own.
+    #[serde(default)]
+    pub viewer_can_edit: bool,
+    /// A review-thread comment edits through a different GitHub mutation than
+    /// a conversation comment, so the frontend has to tell them apart.
+    #[serde(default)]
+    pub is_review_comment: bool,
 }
 
 /// A review thread anchored to code.

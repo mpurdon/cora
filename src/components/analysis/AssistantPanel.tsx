@@ -258,6 +258,7 @@ function PendingCard({
   onConfirm: (approve: boolean, edited?: string) => void;
 }) {
   const [draft, setDraft] = useState(pending.detail);
+  const [tab, setTab] = useState<"write" | "preview">("write");
   const edited = draft !== pending.detail;
   const empty = pending.editable && !draft.trim();
   return (
@@ -265,8 +266,28 @@ function PendingCard({
       <div className="pending-title">
         {pending.summary}
         {edited && <span className="pending-edited">edited</span>}
+        {pending.editable && (
+          <>
+            <span className="spacer" />
+            <button
+              className={`composer-tab${tab === "write" ? " on" : ""}`}
+              onClick={() => setTab("write")}
+            >
+              Write
+            </button>
+            <button
+              className={`composer-tab${tab === "preview" ? " on" : ""}`}
+              disabled={!draft.trim()}
+              onClick={() => setTab("preview")}
+            >
+              Preview
+            </button>
+          </>
+        )}
       </div>
-      {pending.editable ? (
+      {!pending.editable ? (
+        pending.detail && <pre className="pending-detail">{pending.detail}</pre>
+      ) : tab === "write" ? (
         <textarea
           className="pending-edit"
           value={draft}
@@ -274,7 +295,9 @@ function PendingCard({
           onChange={(e) => setDraft(e.target.value)}
         />
       ) : (
-        pending.detail && <pre className="pending-detail">{pending.detail}</pre>
+        <div className="composer-preview pending-preview">
+          <CommentBody body={draft} />
+        </div>
       )}
       <div className="row">
         <button
