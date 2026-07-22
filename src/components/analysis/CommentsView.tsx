@@ -13,7 +13,7 @@ import { isNonBlockingComment } from "../../lib/comments";
 import { ipc } from "../../lib/ipc";
 import { useDiffStore } from "../../state/diffStore";
 import { timeAgo } from "../../state/prStore";
-import { useReviewStore } from "../../state/reviewStore";
+import { serverHasVerdict, useReviewStore } from "../../state/reviewStore";
 import { DiffJump, parseDiff, type DiffFile } from "./DiffView";
 
 /** Comment id → DOM anchor, so reply notifications can deep-link here. */
@@ -551,12 +551,11 @@ export function CommentsView({
   // read-back lags its own mutation. Dropping it here (rather than in the
   // header) keeps the card from blinking out between the two refetches.
   const pendingVerdict = useReviewStore((s) => s.pending[prId]);
+  const settled =
+    pendingVerdict != null && serverHasVerdict(pendingVerdict, conversation?.reviews ?? []);
   useEffect(() => {
-    if (!pendingVerdict) return;
-    if (conversation?.reviews?.some((r) => r.id === pendingVerdict.id)) {
-      useReviewStore.getState().clear(prId);
-    }
-  }, [conversation, pendingVerdict, prId]);
+    if (settled) useReviewStore.getState().clear(prId);
+  }, [settled, prId]);
 
   // Deep-link: scroll to a specific comment once loaded (reply notifications).
   useEffect(() => {
@@ -587,10 +586,7 @@ export function CommentsView({
   const open = conversation.threads.filter((t) => !t.resolved);
   const resolved = conversation.threads.filter((t) => t.resolved);
   const served = conversation.reviews ?? [];
-  const verdicts =
-    pendingVerdict && !served.some((r) => r.id === pendingVerdict.id)
-      ? [...served, pendingVerdict]
-      : served;
+  const verdicts = pendingVerdict && !settled ? [...served, pendingVerdict] : served;
 
   return (
     <div className="comments-view">

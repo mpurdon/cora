@@ -13,6 +13,10 @@
   --bad: #e5534b;
   --idle: #3d4754;
   --chat: #9d8cff;
+  /* Chart fill. A darker step of --chat: the palette's own hues sit at OKLCH
+     L≈0.70–0.76, above the 0.48–0.67 band a fill needs on a dark surface.
+     Validated for contrast (≥3:1) and chroma (≥0.1). */
+  --viz: #8b78ef;
   --merge: #a78bfa;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
@@ -4934,19 +4938,11 @@ button.diff-file-header:hover {
   font-size: 10px;
 }
 
+/* Composes .activity-drawer for the chrome and the slide-in (including its
+   reduced-motion opt-out), like .code-drawer does — only the width differs. */
 .context-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
   width: 720px;
   max-width: 92vw;
-  background: var(--ink-1);
-  border-left: 1px solid var(--line);
-  z-index: 41;
-  display: flex;
-  flex-direction: column;
-  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
 }
 
 .context-summary {
@@ -5054,14 +5050,6 @@ button.diff-file-header:hover {
 
 /* ---------- developer: usage dashboard ---------- */
 
-/* Chart fill. A darker step of the app's assistant purple: the app palette's
-   own hues sit at OKLCH L≈0.70–0.76, above the 0.48–0.67 band a fill needs on
-   this dark surface. Validated (contrast ≥3:1, chroma ≥0.1) — one series, so
-   one hue and no legend. */
-:root {
-  --viz: #8b78ef;
-}
-
 .usage-view {
   padding-bottom: 24px;
 }
@@ -5071,7 +5059,7 @@ button.diff-file-header:hover {
   padding: 9px 12px;
   border: 1px solid var(--warn);
   border-radius: 8px;
-  background: rgba(217, 169, 63, 0.08);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
   font-size: 12px;
 }
 

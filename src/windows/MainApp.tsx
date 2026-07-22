@@ -267,13 +267,11 @@ function ReviewActions({
   reviews,
   flow,
   setFlow,
-  onDone,
 }: {
   pr: TrackedPr;
   reviews: PrReviews | null;
   flow: FlowOwner;
   setFlow: (f: FlowOwner) => void;
-  onDone: () => void;
 }) {
   const [mode, setMode] = useState<"approve" | "request-changes" | null>(null);
   const [body, setBody] = useState("");
@@ -338,13 +336,12 @@ function ReviewActions({
     try {
       // Hold the review GitHub just created: its own read-back lags the
       // mutation, and the header must show your verdict the moment it lands.
-      // (The review:submitted event records it too — this is the ordered path,
-      // guaranteed done before the refetch below.)
+      // No refetch from here — submit_review's own refresh emits
+      // reviews:changed, which Detail already listens for.
       const verdict = await ipc.submitReview(pr.id, mode, body);
       useReviewStore.getState().record(pr.id, verdict);
       setMode(null);
       setBody("");
-      onDone();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -648,9 +645,23 @@ type Tab = "assessment" | "c4" | "diff" | "comments" | "history";
 interface Shortcut {
   keys: string;
   label: string;
-  match?: (e: KeyboardEvent) => boolean;
-  run?: (e: KeyboardEvent) => void;
 }
+
+/** A shortcut the app actually handles. Both halves are required, so the
+ *  keydown loop never has to assert that a row it matched can also run. */
+interface KeyShortcut extends Shortcut {
+  match: (e: KeyboardEvent) => boolean;
+  run: (e: KeyboardEvent) => void;
+}
+
+/** Things the keyboard doesn't own — the mouse and the OS do — listed
+ *  because the sheet is where people look for them regardless. */
+const DOC_SHORTCUTS: Shortcut[] = [
+  { keys: "esc", label: "close menus, drawers, this help" },
+  { keys: "⌘ + / − / 0", label: "zoom in / out / reset" },
+  { keys: "right-click a PR", label: "analyze, PR/author/repo priority, mute, untrack" },
+  { keys: "click a node", label: "drill into the architecture · diff at code level" },
+];
 
 /** Bumping this re-announces the sheet once, for everyone, on next start. */
 const HOTKEYS_SEEN = "cora.hotkeysSeen.v2";
@@ -1267,13 +1278,7 @@ function Detail({
         ))}
       </div>
       <div className="actions">
-        <ReviewActions
-          pr={pr}
-          reviews={shownReviews}
-          flow={flow}
-          setFlow={setFlow}
-          onDone={() => setReviewBump((n) => n + 1)}
-        />
+        <ReviewActions pr={pr} reviews={shownReviews} flow={flow} setFlow={setFlow} />
         <PrControls pr={pr} closeRequested={closeRequested} flow={flow} setFlow={setFlow} />
         <span className="spacer" />
         <RefreshPrButton prId={pr.id} />
@@ -1742,7 +1747,7 @@ export function MainApp() {
   // exist without being documented (or be documented after it's gone). Rows
   // with no `run` are things the keyboard doesn't own — right-click, the
   // window zoom the OS handles — listed because the help is where people look.
-  const shortcuts: Shortcut[] = useMemo(
+  const shortcuts: KeyShortcut[] = useMemo(
     () => [
       {
         keys: "j / k",
@@ -1824,10 +1829,6 @@ export function MainApp() {
         match: (e) => e.key === "?",
         run: () => setShowHotkeys((s) => !s),
       },
-      { keys: "esc", label: "close menus, drawers, this help" },
-      { keys: "⌘ + / − / 0", label: "zoom in / out / reset" },
-      { keys: "right-click a PR", label: "analyze, PR/author/repo priority, mute, untrack" },
-      { keys: "click a node", label: "drill into the architecture · diff at code level" },
     ],
     [flatVisible, selectedId, selected, assistantOpen, openSettings],
   );
@@ -1848,9 +1849,9 @@ export function MainApp() {
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
 
-      const hit = shortcuts.find((s) => s.run && s.match?.(e));
+      const hit = shortcuts.find((s) => s.match(e));
       if (hit) {
-        hit.run!(e);
+        hit.run(e);
         e.preventDefault();
       }
     };
@@ -2323,7 +2324,10 @@ export function MainApp() {
       )}
 
       {showHotkeys && (
-        <HotkeysHelp shortcuts={shortcuts} onClose={() => setShowHotkeys(false)} />
+        <HotkeysHelp
+          shortcuts={[...shortcuts, ...DOC_SHORTCUTS]}
+          onClose={() => setShowHotkeys(false)}
+        />
       )}
       <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
     </div>

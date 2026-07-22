@@ -431,8 +431,6 @@ pub struct ContextPart {
     pub label: String,
     /// Where the bytes came from: repo file, github, analysis, you, model…
     pub origin: String,
-    #[ts(type = "number")]
-    pub chars: i64,
     /// Estimated tokens (~4 chars each). The real count for the whole
     /// request is in `usage` — only Bedrock can give an exact number.
     #[ts(type = "number")]
@@ -469,7 +467,6 @@ pub struct ChatUsage {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatContext {
-    pub pr_id: String,
     pub model_id: String,
     pub parts: Vec<ContextPart>,
     /// Best answer to "what will the next request carry": the raw estimate

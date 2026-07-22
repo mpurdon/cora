@@ -402,22 +402,15 @@ fn action_specs() -> Vec<(&'static str, &'static str, Value)> {
     ]
 }
 
-const ACTION_NAMES: &[&str] = &[
-    "post_pr_comment",
-    "post_diff_comment",
-    "reply_to_thread",
-    "resolve_thread",
-    "submit_review",
-    "merge_pr",
-    "close_pr",
-    "reopen_pr",
-    "toggle_reaction",
-    "set_pr_muted",
-    "untrack_pr",
-];
-
+/// Derived from `action_specs()` rather than listed again: a second list
+/// could fall out of sync, and the failure mode is silent and bad — an
+/// action missing from it would be treated as a research tool and execute
+/// against GitHub with no confirm card.
 fn is_action(name: &str) -> bool {
-    ACTION_NAMES.contains(&name)
+    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| action_specs().into_iter().map(|(name, _, _)| name).collect())
+        .contains(&name)
 }
 
 fn chat_specs() -> Vec<(&'static str, &'static str, Value)> {
@@ -526,69 +519,58 @@ fn carries_text(name: &str) -> bool {
 /// The confirm card the user sees: what would run, and the exact text.
 fn describe_action(name: &str, input: &Value) -> ChatPendingAction {
     let body = input.get("body").and_then(Value::as_str).unwrap_or("").to_string();
-    let (summary, detail) = match name {
-        "post_pr_comment" => ("Comment on the PR".to_string(), body),
-        "post_diff_comment" => (
-            format!(
-                "Comment on {}:{}",
-                input.get("path").and_then(Value::as_str).unwrap_or("?"),
-                input.get("line").and_then(Value::as_i64).unwrap_or(0)
-            ),
-            body,
+    let summary = match name {
+        "post_pr_comment" => "Comment on the PR".to_string(),
+        "post_diff_comment" => format!(
+            "Comment on {}:{}",
+            input.get("path").and_then(Value::as_str).unwrap_or("?"),
+            input.get("line").and_then(Value::as_i64).unwrap_or(0)
         ),
-        "reply_to_thread" => ("Reply to a review thread".to_string(), body),
-        "resolve_thread" => (
+        "reply_to_thread" => "Reply to a review thread".to_string(),
+        "resolve_thread" => {
             if input.get("resolve").and_then(Value::as_bool).unwrap_or(true) {
                 "Resolve a review thread".to_string()
             } else {
                 "Unresolve a review thread".to_string()
+            }
+        }
+        "submit_review" => format!(
+            "Submit review: {}",
+            input.get("event").and_then(Value::as_str).unwrap_or("comment")
+        ),
+        "merge_pr" => format!(
+            "Merge this PR ({})",
+            input.get("method").and_then(Value::as_str).unwrap_or("squash")
+        ),
+        "close_pr" => "Close this PR without merging".to_string(),
+        "reopen_pr" => "Reopen this PR".to_string(),
+        "toggle_reaction" => format!(
+            "{} {} on a comment",
+            if input.get("remove").and_then(Value::as_bool).unwrap_or(false) {
+                "Remove"
+            } else {
+                "React"
             },
-            String::new(),
+            input.get("content").and_then(Value::as_str).unwrap_or("?")
         ),
-        "submit_review" => (
-            format!(
-                "Submit review: {}",
-                input.get("event").and_then(Value::as_str).unwrap_or("comment")
-            ),
-            body,
-        ),
-        "merge_pr" => (
-            format!(
-                "Merge this PR ({})",
-                input.get("method").and_then(Value::as_str).unwrap_or("squash")
-            ),
-            String::new(),
-        ),
-        "close_pr" => ("Close this PR without merging".to_string(), String::new()),
-        "reopen_pr" => ("Reopen this PR".to_string(), String::new()),
-        "toggle_reaction" => (
-            format!(
-                "{} {} on a comment",
-                if input.get("remove").and_then(Value::as_bool).unwrap_or(false) {
-                    "Remove"
-                } else {
-                    "React"
-                },
-                input.get("content").and_then(Value::as_str).unwrap_or("?")
-            ),
-            String::new(),
-        ),
-        "set_pr_muted" => (
+        "set_pr_muted" => {
             if input.get("muted").and_then(Value::as_bool).unwrap_or(true) {
                 "Mute this PR — it leaves your queue".to_string()
             } else {
                 "Unmute this PR".to_string()
-            },
-            String::new(),
-        ),
-        "untrack_pr" => ("Stop tracking this PR".to_string(), String::new()),
-        other => (other.to_string(), body),
+            }
+        }
+        "untrack_pr" => "Stop tracking this PR".to_string(),
+        other => other.to_string(),
     };
+    // The detail is the body for exactly the actions that carry one, which is
+    // the same question `editable` answers — so ask it once.
+    let editable = carries_text(name);
     ChatPendingAction {
         name: name.to_string(),
         summary,
-        detail,
-        editable: carries_text(name),
+        detail: if editable { body } else { String::new() },
+        editable,
     }
 }
 
@@ -781,7 +763,6 @@ fn execute_local(
     name: &str,
     input: &Value,
 ) -> AppResult<Option<String>> {
-    use tauri::Manager;
     let orgs = app.state::<crate::orgs::Orgs>();
     let store = orgs.active();
     let pr = || -> AppResult<crate::models::TrackedPr> {
@@ -792,12 +773,7 @@ fn execute_local(
     let result = match name {
         "set_pr_priority" => {
             let priority = crate::models::PrPriority::parse(&str_arg(input, "priority")?);
-            crate::commands::set_pr_priority(
-                app.clone(),
-                app.state::<crate::orgs::Orgs>(),
-                pr_id.to_string(),
-                priority,
-            )?;
+            crate::commands::set_pr_priority(app.clone(), orgs, pr_id.to_string(), priority)?;
             format!("Priority set to {}", priority.as_str())
         }
         "set_repo_priority" => {
@@ -805,36 +781,33 @@ fn execute_local(
                 Some(r) if !r.trim().is_empty() => r.to_string(),
                 _ => pr()?.info.repo,
             };
-            let priority = parse_repo_priority(&str_arg(input, "priority")?)?;
+            let raw = str_arg(input, "priority")?;
             crate::commands::set_repo_priority(
                 app.clone(),
-                app.state::<crate::orgs::Orgs>(),
+                orgs,
                 app.state::<crate::github::poller::PollTrigger>(),
                 repo.clone(),
-                priority,
+                repo_priority(&raw)?,
             )?;
-            format!("{repo} priority set to {}", str_arg(input, "priority")?)
+            format!("{repo} priority set to {raw}")
         }
         "set_author_priority" => {
             let author = match input.get("author").and_then(Value::as_str) {
                 Some(a) if !a.trim().is_empty() => a.to_string(),
                 _ => pr()?.info.author,
             };
-            let priority = parse_repo_priority(&str_arg(input, "priority")?)?;
+            let raw = str_arg(input, "priority")?;
             crate::commands::set_author_priority(
                 app.clone(),
-                app.state::<crate::orgs::Orgs>(),
+                orgs,
                 app.state::<crate::github::poller::PollTrigger>(),
                 author.clone(),
-                priority,
+                repo_priority(&raw)?,
             )?;
-            format!("{author}'s PRs set to {}", str_arg(input, "priority")?)
+            format!("{author}'s PRs set to {raw}")
         }
         "set_review_mark" => {
-            let mark = crate::commands::set_review_mark(
-                app.state::<crate::orgs::Orgs>(),
-                pr_id.to_string(),
-            )?;
+            let mark = crate::commands::set_review_mark(orgs, pr_id.to_string())?;
             format!("Marked reviewed through {}", &mark.head_sha[..7.min(mark.head_sha.len())])
         }
         "refresh_pr" => {
@@ -864,14 +837,11 @@ fn execute_local(
     Ok(Some(result))
 }
 
-fn parse_repo_priority(s: &str) -> AppResult<crate::models::RepoPriority> {
-    match s {
-        "high" => Ok(crate::models::RepoPriority::High),
-        "normal" => Ok(crate::models::RepoPriority::Normal),
-        "low" => Ok(crate::models::RepoPriority::Low),
-        "ignored" => Ok(crate::models::RepoPriority::Ignored),
-        other => Err(AppError::Other(format!("unknown priority '{other}'"))),
-    }
+/// The tool's enum is closed, so an unknown value is the model's mistake and
+/// worth reporting back rather than silently defaulting.
+fn repo_priority(s: &str) -> AppResult<crate::models::RepoPriority> {
+    crate::models::RepoPriority::parse(s)
+        .ok_or_else(|| AppError::Other(format!("unknown priority '{s}'")))
 }
 
 // -- public entry points (called from commands) --------------------------------
@@ -893,9 +863,12 @@ fn est_tokens(text: &str) -> i64 {
 
 /// Context window for a model id, 0 when we can't claim to know it. Only
 /// used to draw a "how full is it" bar, never to make a decision.
-fn window_tokens(model_id: &str) -> i64 {
-    let id = model_id.to_lowercase();
-    if id.contains("claude") {
+///
+/// The id is usually an inference-profile ARN naming no model, which is the
+/// same problem pricing has — so use the same answer: the ARN → model mapping
+/// read out of the Claude Code settings that configured it.
+fn window_tokens(model_id: &str, aliases: &[crate::usage::ModelAlias]) -> i64 {
+    if model_id.to_lowercase().contains("claude") || aliases.iter().any(|a| a.model == model_id) {
         200_000
     } else {
         0
@@ -915,12 +888,15 @@ fn tool_origin(name: &str) -> &'static str {
     }
 }
 
+/// Borrows the text: the sizes-only path is by far the most common caller
+/// (every chat event, every turn), and a tool result can be megabytes — it
+/// must not be cloned just to be counted and dropped.
 fn part(
     group: ContextGroup,
     id: String,
     label: String,
     origin: &str,
-    text: String,
+    text: &str,
     include_text: bool,
 ) -> ContextPart {
     ContextPart {
@@ -928,9 +904,8 @@ fn part(
         group,
         label,
         origin: origin.to_string(),
-        chars: text.chars().count() as i64,
-        est_tokens: est_tokens(&text),
-        text: if include_text { text } else { String::new() },
+        est_tokens: est_tokens(text),
+        text: if include_text { text.to_string() } else { String::new() },
     }
 }
 
@@ -945,19 +920,27 @@ fn tool_parts(include_text: bool) -> Vec<ContextPart> {
     chat_specs()
         .into_iter()
         .map(|(name, description, schema)| {
+            let text = format!(
+                "{name}: {description}\n{}",
+                serde_json::to_string_pretty(&schema).unwrap_or_default()
+            );
             part(
                 ContextGroup::Tools,
                 format!("tool-{name}"),
                 name.to_string(),
                 if is_action(name) { "app action" } else { "research tool" },
-                format!(
-                    "{name}: {description}\n{}",
-                    serde_json::to_string_pretty(&schema).unwrap_or_default()
-                ),
+                &text,
                 include_text,
             )
         })
         .collect()
+}
+
+/// The tool definitions never change within a build, so their size is a
+/// constant — worth caching, since it's summed on every context read.
+fn tools_est() -> i64 {
+    static TOTAL: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *TOTAL.get_or_init(|| tool_parts(false).iter().map(|p| p.est_tokens).sum())
 }
 
 /// The session's own bytes: system prompt sections, then every message
@@ -973,7 +956,7 @@ fn build_parts(s: &ChatSession, include_text: bool) -> Vec<ContextPart> {
                 format!("system-{i}"),
                 p.label.to_string(),
                 p.origin,
-                p.text.clone(),
+                &p.text,
                 include_text,
             )
         })
@@ -995,7 +978,7 @@ fn build_parts(s: &ChatSession, include_text: bool) -> Vec<ContextPart> {
                         id,
                         label.to_string(),
                         origin,
-                        t.clone(),
+                        t,
                         include_text,
                     ));
                 }
@@ -1007,7 +990,7 @@ fn build_parts(s: &ChatSession, include_text: bool) -> Vec<ContextPart> {
                         id,
                         format!("call {}", describe_tool_call(tu.name(), &input)),
                         "model",
-                        serde_json::to_string(&input).unwrap_or_default(),
+                        &serde_json::to_string(&input).unwrap_or_default(),
                         include_text,
                     ));
                 }
@@ -1027,7 +1010,7 @@ fn build_parts(s: &ChatSession, include_text: bool) -> Vec<ContextPart> {
                         id,
                         format!("{name} result"),
                         tool_origin(name),
-                        text,
+                        &text,
                         include_text,
                     ));
                 }
@@ -1046,6 +1029,24 @@ pub fn invalidate_context(app: &AppHandle, pr_id: &str) {
     emit_event(app, pr_id, None);
 }
 
+/// Same, for every open session — used when something global to the prompt
+/// changes, like the team conventions in settings.
+pub fn invalidate_all_contexts(app: &AppHandle) {
+    let ids: Vec<String> = {
+        let sessions = app.state::<ChatSessions>();
+        let mut map = sessions.map.lock().unwrap();
+        map.iter_mut()
+            .map(|(id, s)| {
+                s.system_stale = true;
+                id.clone()
+            })
+            .collect()
+    };
+    for id in ids {
+        emit_event(app, &id, None);
+    }
+}
+
 /// Everything the assistant sees on its next turn, itemised by where it came
 /// from. `include_text` is false for the running total in the panel footer —
 /// tool results can be megabytes and the meter only needs sizes.
@@ -1060,11 +1061,16 @@ pub fn context(app: &AppHandle, pr_id: &str, include_text: bool) -> AppResult<Ch
         (build_parts(s, include_text), s.usage.clone(), s.requests, s.last_sent_est)
     })?;
 
-    parts.extend(tool_parts(include_text));
+    // Only build the tool schemas when someone will read them; their size on
+    // its own is a cached constant.
+    let est_tokens = if include_text {
+        parts.extend(tool_parts(true));
+        parts.iter().map(|p| p.est_tokens).sum()
+    } else {
+        parts.iter().map(|p| p.est_tokens).sum::<i64>() + tools_est()
+    };
 
-    let est_tokens: i64 = parts.iter().map(|p| p.est_tokens).sum();
     Ok(ChatContext {
-        pr_id: pr_id.to_string(),
         // Raw ~4-chars-per-token, then scaled by how far that estimate was
         // off on the last measured request. Before any request there is
         // nothing to calibrate against, so the raw estimate stands.
@@ -1073,7 +1079,7 @@ pub fn context(app: &AppHandle, pr_id: &str, include_text: bool) -> AppResult<Ch
             _ => est_tokens,
         },
         est_tokens,
-        window_tokens: window_tokens(&model_id),
+        window_tokens: window_tokens(&model_id, &crate::usage::claude_settings_aliases()),
         model_id,
         parts,
         usage,
@@ -1217,7 +1223,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
     )?;
     let specs = chat_specs();
     // Tool definitions don't change mid-conversation; price them once.
-    let specs_est: i64 = tool_parts(false).iter().map(|p| p.est_tokens).sum();
+    let specs_est = tools_est();
     let mut use_cache = true;
 
     for _turn in 0..MAX_CHAT_TURNS {

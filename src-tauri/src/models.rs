@@ -252,6 +252,20 @@ pub enum RepoPriority {
     Ignored,
 }
 
+impl RepoPriority {
+    /// None for anything unrecognised — the undo path stores an empty string
+    /// to mean "there was no entry", and callers that need strictness say so.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "high" => Some(RepoPriority::High),
+            "normal" => Some(RepoPriority::Normal),
+            "low" => Some(RepoPriority::Low),
+            "ignored" => Some(RepoPriority::Ignored),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]

@@ -5,7 +5,7 @@ import type { ContextPart } from "./ContextPart";
 /**
  * Everything the assistant will see on its next turn, itemised.
  */
-export type ChatContext = { prId: string, modelId: string, parts: Array<ContextPart>, 
+export type ChatContext = { modelId: string, parts: Array<ContextPart>, 
 /**
  * Best answer to "what will the next request carry": the raw estimate
  * scaled by how far it missed on the last measured request.

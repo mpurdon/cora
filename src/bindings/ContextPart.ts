@@ -13,7 +13,7 @@ label: string,
 /**
  * Where the bytes came from: repo file, github, analysis, you, model…
  */
-origin: string, chars: number, 
+origin: string, 
 /**
  * Estimated tokens (~4 chars each). The real count for the whole
  * request is in `usage` — only Bedrock can give an exact number.

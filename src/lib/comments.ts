@@ -1,3 +1,4 @@
+import { fileName } from "./fileTree";
 import type { CodeFinding } from "../bindings/CodeFinding";
 import type { PrConversation } from "../bindings/PrConversation";
 
@@ -77,7 +78,7 @@ export function requestChangesSeed(conversation: PrConversation | null, viewer: 
   }
   const total = [...byFile.values()].reduce((a, b) => a + b, 0);
   if (total === 0) return "";
-  const files = joinFiles([...byFile.keys()].map((p) => p.slice(p.lastIndexOf("/") + 1)));
+  const files = joinFiles([...byFile.keys()].map(fileName));
   return `Requesting changes — see my ${total} comment${total === 1 ? "" : "s"} on ${files}.`;
 }
 
@@ -116,7 +117,7 @@ export function approveSeed(conversation: PrConversation | null, viewer: string)
     const settled = t.resolved || t.outdated;
     if (!settled && !isNonBlockingComment(root.body)) continue;
     const bucket = settled ? addressed : notes;
-    const name = t.path.slice(t.path.lastIndexOf("/") + 1);
+    const name = fileName(t.path);
     // One per thread, not per comment: a point you raised counts once however
     // much back-and-forth it took to settle.
     bucket.set(name, (bucket.get(name) ?? 0) + 1);
