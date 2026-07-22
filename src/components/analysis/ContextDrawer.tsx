@@ -6,23 +6,23 @@ import { ipc } from "../../lib/ipc";
 import { useChatStore } from "../../state/chatStore";
 import { formatTokens } from "./TraceSteps";
 
-const GROUPS: { key: ContextGroup; title: string; blurb: string }[] = [
-  {
-    key: "system",
+/** Presentation for the groups we know about. Rendering walks the parts, not
+ *  this table, so a group added on the Rust side still shows up (under its own
+ *  key) instead of vanishing from a view whose total still counts it. */
+const GROUP_COPY: Partial<Record<ContextGroup, { title: string; blurb: string }>> = {
+  system: {
     title: "System prompt",
     blurb: "Sent ahead of every message: instructions, the PR, the analysis.",
   },
-  {
-    key: "tools",
+  tools: {
     title: "Tool definitions",
     blurb: "Names, descriptions and input schemas — in context on every turn.",
   },
-  {
-    key: "messages",
+  messages: {
     title: "Conversation",
     blurb: "Your messages, the model's replies, and everything its tools read back.",
   },
-];
+};
 
 /** Each part's exact bytes, revealed on demand — a 4k-line file in a tool
  *  result is the whole point of looking, so it renders verbatim. */
@@ -47,40 +47,30 @@ function Part({ part }: { part: ContextPart }) {
 
 /** Exactly what the assistant is being given, itemised by where it came
  *  from. Opens over the app because the contents are full files. */
-export function ContextDrawer({
-  prId,
-  open,
-  onClose,
-}: {
-  prId: string;
-  open: boolean;
-  onClose: () => void;
-}) {
+export function ContextDrawer({ prId, onClose }: { prId: string; onClose: () => void }) {
   const [context, setContext] = useState<ChatContext | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetched with text only while open: sizes are cheap, contents are not.
-  // Keyed on the panel's own sizes snapshot as well, so a drawer left open
-  // while an analysis lands or a turn runs refetches instead of showing the
+  // Mounted only while open, and fetched with text — so a drawer left open
+  // while an analysis lands or a turn runs refetches rather than showing the
   // context as it was when opened.
-  const sizes = useChatStore((s) => s.contexts[prId]);
+  // Depend on the size, not the snapshot's identity: the panel replaces that
+  // object on every chat event, and refetching here pulls the whole context —
+  // the largest payload this app moves — back across the IPC bridge.
+  const tokens = useChatStore((s) => s.contexts[prId]?.projectedTokens);
   useEffect(() => {
-    if (!open) return;
     setError(null);
     void ipc
       .getChatContext(prId, true)
       .then(setContext)
       .catch((e) => setError(String(e)));
-  }, [open, prId, sizes]);
+  }, [prId, tokens]);
 
   useEffect(() => {
-    if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
+  }, [onClose]);
 
   const usage = context?.usage;
   const est = context?.estTokens ?? 0;
@@ -91,7 +81,7 @@ export function ContextDrawer({
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} />
-      <aside className="context-drawer open">
+      <aside className="activity-drawer context-drawer open">
         <header className="drawer-header">
           <div className="drawer-title">
             Assistant context
@@ -149,9 +139,9 @@ export function ContextDrawer({
                 last measured request. Everything below is sent verbatim on the next turn.
               </p>
 
-              {GROUPS.map(({ key, title, blurb }) => {
+              {[...new Set(context.parts.map((p) => p.group))].map((key) => {
                 const parts = context.parts.filter((p) => p.group === key);
-                if (parts.length === 0) return null;
+                const { title, blurb } = GROUP_COPY[key] ?? { title: key, blurb: "" };
                 const sum = parts.reduce((n, p) => n + p.estTokens, 0);
                 return (
                   <section key={key} className="context-group">

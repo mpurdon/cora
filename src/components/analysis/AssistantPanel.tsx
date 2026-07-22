@@ -238,7 +238,9 @@ export function AssistantPanel({
       </div>
 
       <ContextMeter context={context} onOpen={() => setShowContext(true)} />
-      <ContextDrawer prId={pr.id} open={showContext} onClose={() => setShowContext(false)} />
+      {showContext && (
+        <ContextDrawer prId={pr.id} onClose={() => setShowContext(false)} />
+      )}
         </>
       )}
     </aside>

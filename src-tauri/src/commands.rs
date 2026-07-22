@@ -46,6 +46,10 @@ pub fn set_settings(
     let store = orgs.active();
     require_main(&window)?;
     store.save_settings(&settings)?;
+    // Team conventions are part of every chat session's system prompt, so a
+    // settings save has to reach open sessions the same way a finished
+    // analysis does — otherwise they keep the conventions they were built with.
+    crate::analysis::chat::invalidate_all_contexts(window.app_handle());
     // Re-emit immediately so settings that shape the visible set (the PR age
     // window) take effect without waiting for the poll cycle the trigger kicks.
     let _ = window
@@ -398,12 +402,10 @@ pub fn undo_audit(
         }
         "repo-priority" => {
             let mut settings = store.settings()?;
-            let old = match entry.old_value.as_str() {
-                "high" => Some(crate::models::RepoPriority::High),
-                "low" => Some(crate::models::RepoPriority::Low),
-                "ignored" => Some(crate::models::RepoPriority::Ignored),
-                _ => None,
-            };
+            // Normal is the absence of an override, so it undoes to a removal
+            // rather than to an explicit entry.
+            let old = crate::models::RepoPriority::parse(&entry.old_value)
+                .filter(|p| *p != crate::models::RepoPriority::Normal);
             match old {
                 Some(p) => {
                     settings.repo_priorities.insert(entry.subject_id.clone(), p);
@@ -418,12 +420,10 @@ pub fn undo_audit(
         "author-priority" => {
             let mut settings = store.settings()?;
             let login = entry.subject_id.strip_prefix("author:").unwrap_or(&entry.subject_id);
-            let old = match entry.old_value.as_str() {
-                "high" => Some(crate::models::RepoPriority::High),
-                "low" => Some(crate::models::RepoPriority::Low),
-                "ignored" => Some(crate::models::RepoPriority::Ignored),
-                _ => None,
-            };
+            // Normal is the absence of an override, so it undoes to a removal
+            // rather than to an explicit entry.
+            let old = crate::models::RepoPriority::parse(&entry.old_value)
+                .filter(|p| *p != crate::models::RepoPriority::Normal);
             match old {
                 Some(p) => {
                     settings.author_priorities.insert(login.to_string(), p);
@@ -1197,24 +1197,27 @@ pub fn chat_clear(app: AppHandle, pr_id: String) -> AppResult<()> {
     crate::analysis::chat::clear(&app, &pr_id)
 }
 
-/// What the assistant will see on its next turn, itemised. `include_text`
-/// false returns sizes only — the panel's running total asks for that on
-/// every chat event, and tool results can be megabytes.
-/// Token spend across every Bedrock request this org has made.
+/// Token spend across every Bedrock request this org has made. All of it is
+/// blocking — a whole table read, a settings parse, and a scan of the Claude
+/// settings files — so it runs off the async runtime's workers.
 #[tauri::command]
 pub async fn get_usage_stats(app: AppHandle) -> AppResult<crate::usage::UsageStats> {
-    let store = app.state::<crate::orgs::Orgs>().active();
-    let rows = store.usage_rows()?;
-    let prices = store.settings()?.model_prices;
-    // Read the ARN → model mapping fresh: editing a Claude settings file
-    // should reprice the dashboard on the next look, with nothing to migrate.
-    let aliases = crate::usage::claude_settings_aliases();
-    Ok(crate::usage::summarize(
-        &rows,
-        &prices,
-        &aliases,
-        &chrono::Utc::now().to_rfc3339(),
-    ))
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<crate::orgs::Orgs>().active();
+        let rows = store.usage_rows()?;
+        let prices = store.settings()?.model_prices;
+        // Read the ARN → model mapping fresh: editing a Claude settings file
+        // should reprice the dashboard on the next look, with nothing to migrate.
+        let aliases = crate::usage::claude_settings_aliases();
+        Ok(crate::usage::summarize(
+            &rows,
+            &prices,
+            &aliases,
+            &chrono::Utc::now().to_rfc3339(),
+        ))
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
 }
 
 /// Set (or clear, with a zero rate) the price for one model id.
@@ -1238,8 +1241,10 @@ pub fn set_model_price(
     store.save_settings(&settings)
 }
 
-/// Async so assembling a large context (and serialising it) stays off the
-/// UI thread — sync commands run there.
+/// What the assistant will see on its next turn, itemised. `include_text`
+/// false returns sizes only — the panel's running total asks for that on
+/// every chat event, and tool results can be megabytes. Async so assembling
+/// and serialising a large context stays off the UI thread.
 #[tauri::command]
 pub async fn get_chat_context(
     app: AppHandle,
