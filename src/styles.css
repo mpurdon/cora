@@ -4367,6 +4367,39 @@ button.diff-file-header:hover {
   margin-bottom: 6px;
 }
 
+/* The action's text, editable in place — same look as the read-only detail
+   so the card doesn't change shape when an action happens to carry prose. */
+.pending-edit {
+  display: block;
+  width: 100%;
+  min-height: 84px;
+  max-height: 260px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0 0 8px;
+}
+
+.pending-edit:focus {
+  outline: none;
+  border-color: var(--chat);
+}
+
+.pending-edited {
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--chat);
+}
+
 .pending-detail {
   font-family: var(--mono);
   font-size: 11px;

@@ -65,8 +65,9 @@ export const ipc = {
   getPrDiff: (prId: string) => invoke<string>("get_pr_diff", { prId }),
   chatHistory: (prId: string) => invoke<ChatTranscript>("chat_history", { prId }),
   chatSend: (prId: string, text: string) => invoke<void>("chat_send", { prId, text }),
-  chatConfirm: (prId: string, approve: boolean) =>
-    invoke<void>("chat_confirm", { prId, approve }),
+  /** `edited` replaces the action's text when the user rewrote it. */
+  chatConfirm: (prId: string, approve: boolean, edited?: string) =>
+    invoke<void>("chat_confirm", { prId, approve, edited: edited ?? null }),
   chatClear: (prId: string) => invoke<void>("chat_clear", { prId }),
   /** includeText false = sizes only, for the panel's running total. */
   getChatContext: (prId: string, includeText: boolean) =>
@@ -102,8 +103,8 @@ export const ipc = {
     invoke<void>("add_pr_comment", { prId, body }),
   replyToThread: (threadId: string, body: string) =>
     invoke<void>("reply_to_thread", { threadId, body }),
-  addDiffComment: (prId: string, path: string, line: number, body: string) =>
-    invoke<void>("add_diff_comment", { prId, path, line, body }),
+  addDiffComment: (prId: string, path: string, line: number, body: string, startLine?: number) =>
+    invoke<void>("add_diff_comment", { prId, path, line, body, startLine: startLine ?? null }),
   toggleReaction: (subjectId: string, content: string, remove: boolean) =>
     invoke<void>("toggle_reaction", { subjectId, content, remove }),
   takePendingFocus: () =>

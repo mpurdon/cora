@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatContext } from "../../bindings/ChatContext";
+import type { ChatPendingAction } from "../../bindings/ChatPendingAction";
 import type { TrackedPr } from "../../bindings/TrackedPr";
 import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
 import { useChatStore } from "../../state/chatStore";
@@ -202,23 +203,11 @@ export function AssistantPanel({
           </div>
         )}
         {session?.pending && (
-          <div className="pending-action">
-            <div className="pending-title">{session.pending.summary}</div>
-            {session.pending.detail && (
-              <pre className="pending-detail">{session.pending.detail}</pre>
-            )}
-            <div className="row">
-              <button
-                className="action-btn btn-ok"
-                onClick={() => void confirm(pr.id, true)}
-              >
-                Run it
-              </button>
-              <button className="action-btn" onClick={() => void confirm(pr.id, false)}>
-                Don't
-              </button>
-            </div>
-          </div>
+          <PendingCard
+            key={session.pending.summary}
+            pending={session.pending}
+            onConfirm={(approve, edited) => void confirm(pr.id, approve, edited)}
+          />
         )}
       </div>
 
@@ -253,6 +242,52 @@ export function AssistantPanel({
         </>
       )}
     </aside>
+  );
+}
+
+/** The confirm card. Text-carrying actions are editable in place — the text
+ *  shown is exactly what will post, so what you send is what you approved,
+ *  not the model's draft of it. */
+function PendingCard({
+  pending,
+  onConfirm,
+}: {
+  pending: ChatPendingAction;
+  onConfirm: (approve: boolean, edited?: string) => void;
+}) {
+  const [draft, setDraft] = useState(pending.detail);
+  const edited = draft !== pending.detail;
+  const empty = pending.editable && !draft.trim();
+  return (
+    <div className="pending-action">
+      <div className="pending-title">
+        {pending.summary}
+        {edited && <span className="pending-edited">edited</span>}
+      </div>
+      {pending.editable ? (
+        <textarea
+          className="pending-edit"
+          value={draft}
+          spellCheck={false}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+      ) : (
+        pending.detail && <pre className="pending-detail">{pending.detail}</pre>
+      )}
+      <div className="row">
+        <button
+          className="action-btn btn-ok"
+          disabled={empty}
+          title={empty ? "This action needs text" : undefined}
+          onClick={() => onConfirm(true, edited ? draft : undefined)}
+        >
+          {edited ? "Run my version" : "Run it"}
+        </button>
+        <button className="action-btn" onClick={() => onConfirm(false)}>
+          Don't
+        </button>
+      </div>
+    </div>
   );
 }
 

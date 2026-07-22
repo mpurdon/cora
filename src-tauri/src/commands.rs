@@ -1178,15 +1178,18 @@ pub fn chat_send(app: AppHandle, window: WebviewWindow, pr_id: String, text: Str
     crate::analysis::chat::send(app, pr_id, text)
 }
 
+/// `edited` carries the text as the user rewrote it in the confirm card,
+/// when they changed it.
 #[tauri::command]
 pub fn chat_confirm(
     app: AppHandle,
     window: WebviewWindow,
     pr_id: String,
     approve: bool,
+    edited: Option<String>,
 ) -> AppResult<()> {
     require_main(&window)?;
-    crate::analysis::chat::confirm(app, pr_id, approve)
+    crate::analysis::chat::confirm(app, pr_id, approve, edited)
 }
 
 #[tauri::command]
@@ -1270,21 +1273,30 @@ pub async fn add_diff_comment(
     path: String,
     line: i64,
     body: String,
+    start_line: Option<i64>,
 ) -> AppResult<()> {
     if body.trim().is_empty() {
         return Err(AppError::Other("comment is empty".into()));
     }
     let (tools, _) = repo_tools_for(&app, &pr_id)?;
+    let mut payload = serde_json::json!({
+        "body": body,
+        "commit_id": tools.head_ref(),
+        "path": path,
+        "line": line,
+        "side": "RIGHT",
+    });
+    // A multi-line anchor is what lets a suggestion replace a whole block
+    // rather than one line. GitHub wants the first line of the range, and
+    // rejects a start that isn't above `line`.
+    if let Some(start) = start_line.filter(|s| *s < line) {
+        payload["start_line"] = serde_json::json!(start);
+        payload["start_side"] = serde_json::json!("RIGHT");
+    }
     tools
         .post(
             &format!("repos/{}/pulls/{}/comments", tools.repo(), tools.pr_number()),
-            &serde_json::json!({
-                "body": body,
-                "commit_id": tools.head_ref(),
-                "path": path,
-                "line": line,
-                "side": "RIGHT",
-            }),
+            &payload,
         )
         .await?;
     // A new thread of yours can gate Approve — tell the UI to refetch.
