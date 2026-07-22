@@ -51,7 +51,7 @@ function LogsView() {
   const [minLevel, setMinLevel] = useState<LogLevel>("debug");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [follow, setFollow] = useState(true);
-  const endRef = useRef<HTMLDivElement>(null);
+  const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -62,8 +62,11 @@ function LogsView() {
     return () => unlisten?.();
   }, []);
 
+  // Scroll the log box itself. scrollIntoView() walks up to the nearest
+  // scrollable ancestor — here the settings pane — and yanks the whole page
+  // down, hiding the heading and tabs.
   useEffect(() => {
-    if (follow) endRef.current?.scrollIntoView({ behavior: "instant" as ScrollBehavior });
+    if (follow && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [entries, follow]);
 
   const sources = ["all", ...new Set(entries.map((e) => e.source))];
@@ -112,7 +115,7 @@ function LogsView() {
           Clear
         </button>
       </div>
-      <div className="dev-log">
+      <div className="dev-log" ref={logRef}>
         {visible.length === 0 && <div className="dev-log-empty">no entries yet</div>}
         {visible.map((e, i) => (
           <div key={i} className={`dev-log-line level-${e.level}`}>
@@ -122,7 +125,6 @@ function LogsView() {
             <span className="dev-log-msg">{e.message}</span>
           </div>
         ))}
-        <div ref={endRef} />
       </div>
     </div>
   );
