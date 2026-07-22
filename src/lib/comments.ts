@@ -80,3 +80,66 @@ export function requestChangesSeed(conversation: PrConversation | null, viewer: 
   const files = joinFiles([...byFile.keys()].map((p) => p.slice(p.lastIndexOf("/") + 1)));
   return `Requesting changes — see my ${total} comment${total === 1 ? "" : "s"} on ${files}.`;
 }
+
+/** Mirrors the Rust-side gate (models::is_non_blocking_comment): threads
+ *  opened as praise/note/fyi or marked (non-blocking) don't hold up approval,
+ *  so neither the approve gate nor the approval summary treats them as work. */
+export function isNonBlockingComment(body: string): boolean {
+  const first = (body.trimStart().split("\n")[0] ?? "")
+    .replace(/[*_`~]/g, "")
+    .trimStart()
+    .toLowerCase();
+  return (
+    first.startsWith("praise:") ||
+    first.startsWith("note:") ||
+    first.startsWith("fyi:") ||
+    first.includes("(non-blocking)") ||
+    first.includes("non-blocking:")
+  );
+}
+
+/** A one-sentence approval summary, the counterpart to `requestChangesSeed`:
+ *  what your review actually did — the comments of yours that got addressed,
+ *  and any non-blocking notes you're leaving behind. Only counts threads you
+ *  started, so it never claims credit for someone else's review, and falls
+ *  back to a plain sign-off when you left nothing to point at (an approval
+ *  always says something — silence reads as a rubber stamp). */
+export function approveSeed(conversation: PrConversation | null, viewer: string): string {
+  const addressed = new Map<string, number>();
+  const notes = new Map<string, number>();
+  for (const t of conversation?.threads ?? []) {
+    const root = t.comments[0];
+    if (!t.path || !viewer || root?.author !== viewer) continue;
+    // Resolved (or outdated — the code moved under it) means the author acted
+    // on it. Anything of mine still open got past the approve gate, so it's a
+    // note by construction; a blocking one would have disabled Approve.
+    const settled = t.resolved || t.outdated;
+    if (!settled && !isNonBlockingComment(root.body)) continue;
+    const bucket = settled ? addressed : notes;
+    const name = t.path.slice(t.path.lastIndexOf("/") + 1);
+    // One per thread, not per comment: a point you raised counts once however
+    // much back-and-forth it took to settle.
+    bucket.set(name, (bucket.get(name) ?? 0) + 1);
+  }
+  const count = (m: Map<string, number>) => [...m.values()].reduce((a, b) => a + b, 0);
+  const nDone = count(addressed);
+  const nNotes = count(notes);
+
+  const clauses: string[] = [];
+  if (nDone > 0) {
+    clauses.push(
+      `my ${nDone} comment${nDone === 1 ? " on" : "s on"} ${joinFiles([...addressed.keys()])} ${
+        nDone === 1 ? "is" : "are"
+      } addressed`,
+    );
+  }
+  if (nNotes > 0) {
+    clauses.push(
+      `${nNotes} non-blocking note${nNotes === 1 ? "" : "s"} on ${joinFiles([...notes.keys()])} — ${
+        nNotes === 1 ? "take it or leave it" : "take them or leave them"
+      }`,
+    );
+  }
+  if (clauses.length === 0) return "Approving — nothing blocking from me.";
+  return `Approving — ${clauses.join("; ")}.`;
+}

@@ -18,6 +18,8 @@ import type { AnalysisResult } from "../bindings/AnalysisResult";
 import type { PollStatus } from "../bindings/PollStatus";
 import type { PrChangedEvent } from "../bindings/PrChangedEvent";
 import type { ReviewMark } from "../bindings/ReviewMark";
+import type { ReviewSubmittedEvent } from "../bindings/ReviewSubmittedEvent";
+import type { ReviewVerdict } from "../bindings/ReviewVerdict";
 import type { Settings } from "../bindings/Settings";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import type { GithubOrg } from "../bindings/GithubOrg";
@@ -33,6 +35,7 @@ export const events = {
   analysisError: "analysis:error",
   chatEvent: "chat:event",
   orgChanged: "org:changed",
+  reviewSubmitted: "review:submitted",
 } as const;
 
 export const ipc = {
@@ -85,7 +88,7 @@ export const ipc = {
   mergePr: (prId: string, method: "squash" | "merge" | "rebase") =>
     invoke<void>("merge_pr", { prId, method }),
   submitReview: (prId: string, event: "approve" | "request-changes" | "comment", body: string) =>
-    invoke<void>("submit_review", { prId, event, body }),
+    invoke<ReviewVerdict>("submit_review", { prId, event, body }),
   resolveThread: (threadId: string, resolve: boolean) =>
     invoke<void>("resolve_thread", { threadId, resolve }),
   closePr: (prId: string) => invoke<void>("close_pr", { prId }),
@@ -152,4 +155,8 @@ export function onDevLog(cb: (entry: LogEntry) => void): Promise<UnlistenFn> {
 
 export function onChatEvent(cb: (e: ChatEvent) => void): Promise<UnlistenFn> {
   return listen<ChatEvent>(events.chatEvent, (e) => cb(e.payload));
+}
+
+export function onReviewSubmitted(cb: (e: ReviewSubmittedEvent) => void): Promise<UnlistenFn> {
+  return listen<ReviewSubmittedEvent>(events.reviewSubmitted, (e) => cb(e.payload));
 }

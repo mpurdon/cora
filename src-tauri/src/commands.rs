@@ -1000,14 +1000,16 @@ pub async fn resolve_thread(app: AppHandle, thread_id: String, resolve: bool) ->
     Ok(())
 }
 
-/// Submit a review: approve / request-changes / comment.
+/// Submit a review: approve / request-changes / comment. Returns the review
+/// GitHub created — its own read-back lags the mutation by a second or more,
+/// so the UI shows this until a refetch agrees.
 #[tauri::command]
 pub async fn submit_review(
     app: AppHandle,
     pr_id: String,
     event: String,
     body: String,
-) -> AppResult<()> {
+) -> AppResult<crate::models::ReviewVerdict> {
     let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
@@ -1029,13 +1031,44 @@ pub async fn submit_review(
     let doc = format!(
         "mutation($prId: ID!, $body: String) {{
            addPullRequestReview(input: {{ pullRequestId: $prId, event: {gh_event}, body: $body }}) {{
-             clientMutationId
+             pullRequestReview {{
+               id
+               state
+               body
+               url
+               submittedAt
+               author {{ login }}
+             }}
            }}
          }}"
     );
-    client
+    let data = client
         .run(&doc, &serde_json::json!({ "prId": pr_id, "body": body }))
         .await?;
+    let created = data.pointer("/addPullRequestReview/pullRequestReview");
+    let str_at = |path: &str| {
+        created
+            .and_then(|r| r.pointer(path))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let verdict = crate::models::ReviewVerdict {
+        id: str_at("/id"),
+        author: str_at("/author/login"),
+        // GitHub echoes the resulting state; fall back to the event we sent.
+        state: match str_at("/state").as_str() {
+            "" => match gh_event {
+                "APPROVE" => "APPROVED".into(),
+                "REQUEST_CHANGES" => "CHANGES_REQUESTED".into(),
+                _ => "COMMENTED".into(),
+            },
+            s => s.to_string(),
+        },
+        body: body.clone(),
+        submitted_at: str_at("/submittedAt"),
+        url: str_at("/url"),
+    };
     let label = pr_label(&store, &pr_id);
     let action = match gh_event {
         "APPROVE" => "approved",
@@ -1043,8 +1076,14 @@ pub async fn submit_review(
         _ => "review-commented",
     };
     store.add_audit(action, &pr_id, &label, "", gh_event)?;
+    // Before the refresh below emits REVIEWS_CHANGED — whoever refetches then
+    // may still get pre-mutation data back from GitHub.
+    let _ = app.emit(
+        events::REVIEW_SUBMITTED,
+        crate::models::ReviewSubmittedEvent { pr_id: pr_id.clone(), verdict: verdict.clone() },
+    );
     refresh_pr_inner(&app, &pr_id).await?;
-    Ok(())
+    Ok(verdict)
 }
 
 /// Merge / close / reopen — the PR lifecycle controls. All audited.
@@ -1146,6 +1185,50 @@ pub fn chat_confirm(
 #[tauri::command]
 pub fn chat_clear(app: AppHandle, pr_id: String) -> AppResult<()> {
     crate::analysis::chat::clear(&app, &pr_id)
+}
+
+/// What the assistant will see on its next turn, itemised. `include_text`
+/// false returns sizes only — the panel's running total asks for that on
+/// every chat event, and tool results can be megabytes.
+/// Token spend across every Bedrock request this org has made.
+#[tauri::command]
+pub async fn get_usage_stats(app: AppHandle) -> AppResult<crate::usage::UsageStats> {
+    let store = app.state::<crate::orgs::Orgs>().active();
+    let rows = store.usage_rows()?;
+    let prices = store.settings()?.model_prices;
+    Ok(crate::usage::summarize(&rows, &prices, &chrono::Utc::now().to_rfc3339()))
+}
+
+/// Set (or clear, with a zero rate) the price for one model id.
+#[tauri::command]
+pub fn set_model_price(
+    app: AppHandle,
+    model: String,
+    input_per_mtok: f64,
+    output_per_mtok: f64,
+) -> AppResult<()> {
+    let store = app.state::<crate::orgs::Orgs>().active();
+    let mut settings = store.settings()?;
+    settings.model_prices.retain(|p| p.model != model);
+    if input_per_mtok > 0.0 || output_per_mtok > 0.0 {
+        settings.model_prices.push(crate::models::ModelPrice {
+            model,
+            input_per_mtok,
+            output_per_mtok,
+        });
+    }
+    store.save_settings(&settings)
+}
+
+/// Async so assembling a large context (and serialising it) stays off the
+/// UI thread — sync commands run there.
+#[tauri::command]
+pub async fn get_chat_context(
+    app: AppHandle,
+    pr_id: String,
+    include_text: bool,
+) -> AppResult<crate::analysis::types::ChatContext> {
+    crate::analysis::chat::context(&app, &pr_id, include_text)
 }
 
 /// The store → PR → token → settings dance shared by every REST-backed

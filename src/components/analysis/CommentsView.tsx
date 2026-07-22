@@ -3,14 +3,17 @@ import Markdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PrComment } from "../../bindings/PrComment";
 import type { PrConversation } from "../../bindings/PrConversation";
 import type { ReviewThread } from "../../bindings/ReviewThread";
 import type { ReviewVerdict } from "../../bindings/ReviewVerdict";
+import { isNonBlockingComment } from "../../lib/comments";
 import { ipc } from "../../lib/ipc";
 import { useDiffStore } from "../../state/diffStore";
 import { timeAgo } from "../../state/prStore";
+import { useReviewStore } from "../../state/reviewStore";
 import { DiffJump, parseDiff, type DiffFile } from "./DiffView";
 
 /** Comment id → DOM anchor, so reply notifications can deep-link here. */
@@ -257,23 +260,6 @@ export function Composer({
         </button>
       </div>
     </div>
-  );
-}
-
-/** Mirrors the Rust-side gate (models::is_non_blocking_comment): threads
- *  opened as praise/note/fyi or marked (non-blocking) don't hold up approval,
- *  so show them as such. */
-export function isNonBlockingComment(body: string): boolean {
-  const first = (body.trimStart().split("\n")[0] ?? "")
-    .replace(/[*_`~]/g, "")
-    .trimStart()
-    .toLowerCase();
-  return (
-    first.startsWith("praise:") ||
-    first.startsWith("note:") ||
-    first.startsWith("fyi:") ||
-    first.includes("(non-blocking)") ||
-    first.includes("non-blocking:")
   );
 }
 
@@ -552,6 +538,26 @@ export function CommentsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prId]);
 
+  // A submitted review, a resolved thread or a refresh all change what belongs
+  // in this conversation — without this, your own approval only showed up on
+  // the next PR switch.
+  useEffect(() => {
+    const un = listen("reviews:changed", load);
+    return () => void un.then((fn) => fn());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prId]);
+
+  // Your just-submitted verdict, held until this query returns it — GitHub's
+  // read-back lags its own mutation. Dropping it here (rather than in the
+  // header) keeps the card from blinking out between the two refetches.
+  const pendingVerdict = useReviewStore((s) => s.pending[prId]);
+  useEffect(() => {
+    if (!pendingVerdict) return;
+    if (conversation?.reviews?.some((r) => r.id === pendingVerdict.id)) {
+      useReviewStore.getState().clear(prId);
+    }
+  }, [conversation, pendingVerdict, prId]);
+
   // Deep-link: scroll to a specific comment once loaded (reply notifications).
   useEffect(() => {
     if (!focusCommentId || conversation == null) return;
@@ -580,6 +586,11 @@ export function CommentsView({
 
   const open = conversation.threads.filter((t) => !t.resolved);
   const resolved = conversation.threads.filter((t) => t.resolved);
+  const served = conversation.reviews ?? [];
+  const verdicts =
+    pendingVerdict && !served.some((r) => r.id === pendingVerdict.id)
+      ? [...served, pendingVerdict]
+      : served;
 
   return (
     <div className="comments-view">
@@ -608,7 +619,7 @@ export function CommentsView({
               onQuoteReply={quoteReply}
             />
           ) })),
-          ...(conversation.reviews ?? []).map((r) => ({ at: r.submittedAt, el: (
+          ...verdicts.map((r) => ({ at: r.submittedAt, el: (
             <ReviewVerdictCard key={r.id} review={r} />
           ) })),
         ]
