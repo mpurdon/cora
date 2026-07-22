@@ -83,8 +83,18 @@ const NO_READY_FILTERS: ReadyFilters = { ciPass: false, reviewNeeded: false, noC
 function passesReady(pr: TrackedPr, f: ReadyFilters): boolean {
   // ciPass admits "no checks configured" (idle) — nothing is blocking.
   if (f.ciPass && !["ok", "idle"].includes(ciTone(pr))) return false;
-  // reviewNeeded keeps only PRs still awaiting a decision.
-  if (f.reviewNeeded && reviewTone(pr) !== "warn") return false;
+  // reviewNeeded keeps only PRs that still need YOUR decision. reviewTone is
+  // the aggregate (REVIEW_REQUIRED while any requested reviewer hasn't weighed
+  // in), so on its own it keeps a PR you've already approved when a co-reviewer
+  // still owes one — hence the second clause: a standing decision of yours,
+  // not re-requested, no longer needs you.
+  if (f.reviewNeeded) {
+    if (reviewTone(pr) !== "warn") return false;
+    const iDecided =
+      (pr.myReviewState === "APPROVED" || pr.myReviewState === "CHANGES_REQUESTED") &&
+      !pr.myReviewRerequested;
+    if (iDecided) return false;
+  }
   // noConflicts drops only known-conflicting; UNKNOWN is GitHub still computing.
   if (f.noConflicts && mergeTone(pr) === "bad") return false;
   return true;
