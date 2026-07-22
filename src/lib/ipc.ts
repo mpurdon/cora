@@ -22,6 +22,7 @@ import type { ReviewMark } from "../bindings/ReviewMark";
 import type { ReviewSubmittedEvent } from "../bindings/ReviewSubmittedEvent";
 import type { ReviewVerdict } from "../bindings/ReviewVerdict";
 import type { Settings } from "../bindings/Settings";
+import type { UsageStats } from "../bindings/UsageStats";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import type { GithubOrg } from "../bindings/GithubOrg";
 import type { OrgState } from "../bindings/OrgState";
@@ -116,6 +117,9 @@ export const ipc = {
   awsSsoLogin: (profile: string) => invoke<void>("aws_sso_login", { profile }),
   checkAws: (profile: string, region: string) =>
     invoke<string>("check_aws", { profile, region }),
+  getUsageStats: () => invoke<UsageStats>("get_usage_stats"),
+  setModelPrice: (model: string, inputPerMtok: number, outputPerMtok: number) =>
+    invoke<void>("set_model_price", { model, inputPerMtok, outputPerMtok }),
   getDevLogs: () => invoke<LogEntry[]>("get_dev_logs"),
   clearDevLogs: () => invoke<void>("clear_dev_logs"),
   getDefaultSystemPrompt: () => invoke<string>("get_default_system_prompt"),

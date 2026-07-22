@@ -3,11 +3,12 @@ import type { LogEntry } from "../bindings/LogEntry";
 import type { LogLevel } from "../bindings/LogLevel";
 import type { Settings } from "../bindings/Settings";
 import { ipc, onDevLog } from "../lib/ipc";
+import { UsageView } from "../components/UsageView";
 
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
-type DevTab = "logs" | "prompt" | "internals";
+type DevTab = "logs" | "usage" | "prompt" | "internals";
 
 export function DeveloperPane({
   settings,
@@ -24,6 +25,7 @@ export function DeveloperPane({
         {(
           [
             ["logs", "Logs"],
+            ["usage", "Usage"],
             ["prompt", "System prompt"],
             ["internals", "Internals"],
           ] as [DevTab, string][]
@@ -38,6 +40,7 @@ export function DeveloperPane({
         ))}
       </div>
       {tab === "logs" && <LogsView />}
+      {tab === "usage" && <UsageView />}
       {tab === "prompt" && <PromptEditor settings={settings} save={save} />}
       {tab === "internals" && <InternalsView settings={settings} />}
     </section>
