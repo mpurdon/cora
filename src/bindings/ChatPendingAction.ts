@@ -10,6 +10,12 @@ export type ChatPendingAction = { name: string,
  */
 summary: string, 
 /**
- * The full text/body the action would post, for review before running.
+ * The full text/body the action would post, verbatim — this is exactly
+ * what gets sent, so the panel can offer it for editing before it runs.
  */
-detail: string, };
+detail: string, 
+/**
+ * Whether `detail` is text the user may rewrite before confirming.
+ * False for actions that carry no prose (merge, close, resolve).
+ */
+editable: boolean, };
