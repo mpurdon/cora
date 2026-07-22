@@ -52,3 +52,31 @@ export function isFindingCommented(
 ): boolean {
   return f.line != null ? mine.lines.has(`${f.path}:${f.line}`) : mine.files.has(f.path);
 }
+
+/** Join file basenames into a natural clause, capped so it stays one sentence:
+ *  "A" · "A and B" · "A, B and C" · "A, B and 2 others". */
+function joinFiles(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  if (names.length === 3) return `${names[0]}, ${names[1]} and ${names[2]}`;
+  return `${names[0]}, ${names[1]} and ${names.length - 2} others`;
+}
+
+/** A one-sentence request-changes summary built from the viewer's inline
+ *  comments — a pointer to where the changes are, not their substance.
+ *  Empty when the viewer hasn't left any file-anchored comments (nothing to
+ *  point at — let them write their own). */
+export function requestChangesSeed(conversation: PrConversation | null, viewer: string): string {
+  if (!viewer) return "";
+  const byFile = new Map<string, number>();
+  for (const t of conversation?.threads ?? []) {
+    if (!t.path) continue;
+    const mine = t.comments.filter((c) => c.author === viewer).length;
+    if (mine === 0) continue;
+    byFile.set(t.path, (byFile.get(t.path) ?? 0) + mine);
+  }
+  const total = [...byFile.values()].reduce((a, b) => a + b, 0);
+  if (total === 0) return "";
+  const files = joinFiles([...byFile.keys()].map((p) => p.slice(p.lastIndexOf("/") + 1)));
+  return `Requesting changes — see my ${total} comment${total === 1 ? "" : "s"} on ${files}.`;
+}

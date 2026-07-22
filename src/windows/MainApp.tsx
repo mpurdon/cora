@@ -39,7 +39,12 @@ import {
 } from "../components/icons";
 import { PrFilesRail } from "../components/PrFilesRail";
 import { events, ipc, onFocusPr } from "../lib/ipc";
-import { findingSeed, isFindingCommented, viewerComments } from "../lib/comments";
+import {
+  findingSeed,
+  isFindingCommented,
+  requestChangesSeed,
+  viewerComments,
+} from "../lib/comments";
 import { setThemeOrg } from "../lib/theme";
 import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
@@ -257,6 +262,8 @@ function ReviewActions({
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The live conversation drives the auto-seeded request-changes summary.
+  const [conversation, setConversation] = useState<PrConversation | null>(null);
 
   // A half-written review for one PR must not follow you to the next.
   useEffect(() => {
@@ -266,11 +273,26 @@ function ReviewActions({
   }, [pr.id]);
 
   useEffect(() => {
+    const load = () =>
+      void ipc.getPrComments(pr.id).then(setConversation).catch(() => setConversation(null));
+    load();
+    const un = listen("reviews:changed", load);
+    return () => void un.then((fn) => fn());
+  }, [pr.id]);
+
+  useEffect(() => {
     if (flow !== "review") setMode(null);
   }, [flow]);
   const openMode = (m: "approve" | "request-changes") => {
     setFlow("review");
     setMode(m);
+    // Requesting changes: seed a one-sentence pointer to your inline comments
+    // so the summary is written for you. Only when the box is still empty —
+    // never clobber text you've typed.
+    if (m === "request-changes" && !body.trim()) {
+      const seed = requestChangesSeed(conversation, reviews?.viewerLogin ?? "");
+      if (seed) setBody(seed);
+    }
   };
 
   if (pr.state !== "OPEN") return null;
