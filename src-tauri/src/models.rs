@@ -504,6 +504,16 @@ pub struct PrChangedEvent {
     pub changes: Vec<ChangeKind>,
 }
 
+/// Payload for the `review:submitted` event — the review GitHub just created,
+/// carried to the UI because GitHub's own read-back lags the mutation.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSubmittedEvent {
+    pub pr_id: String,
+    pub verdict: ReviewVerdict,
+}
+
 /// One row in the callout's activity feed: something happened on a PR the
 /// reviewer cares about. Written by the poller as it detects changes;
 /// read/flag state is the reviewer's own.
@@ -567,6 +577,10 @@ pub mod events {
     /// Review/thread state changed (resolve, new diff comment, submitted
     /// review, refresh): the approve gate should refetch. No payload.
     pub const REVIEWS_CHANGED: &str = "reviews:changed";
+    /// You submitted a review: `ReviewSubmittedEvent`. Always emitted before
+    /// `REVIEWS_CHANGED`, so the UI can show the verdict before the refetch
+    /// that may not yet know about it.
+    pub const REVIEW_SUBMITTED: &str = "review:submitted";
 }
 
 /// The login-only half of bot detection (GitHub App logins end in "[bot]").

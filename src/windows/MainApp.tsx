@@ -40,6 +40,7 @@ import {
 import { PrFilesRail } from "../components/PrFilesRail";
 import { events, ipc, onFocusPr } from "../lib/ipc";
 import {
+  approveSeed,
   findingSeed,
   isFindingCommented,
   requestChangesSeed,
@@ -50,6 +51,12 @@ import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
 import { ciTone, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
+import {
+  initReviewStore,
+  lockedReview,
+  useReviewStore,
+  withPending,
+} from "../state/reviewStore";
 import { SettingsView, type SettingsPane } from "./SettingsView";
 
 /** Reason grouping: a PR appears once, under its most specific reason. */
@@ -209,27 +216,37 @@ function Legend() {
   );
 }
 
-/** Requested reviewers + latest review states — visible before analyzing. */
+/** Requested reviewers + latest review states — visible before analyzing.
+ *  Your own verdict is the actions row's job ("✓ you approved"), so it never
+ *  repeats here under your login. The one exception is a review you can still
+ *  move — then the strip carries it, labelled "you", and the actions row shows
+ *  the buttons instead. */
 function ReviewStrip({ reviews }: { reviews: PrReviews | null }) {
   if (!reviews) return null;
-  if (reviews.requested.length === 0 && reviews.reviews.length === 0) return null;
+  const me = reviews.viewerLogin;
+  const locked = lockedReview(reviews) != null;
+  const iOweAReview = reviews.requested.includes(me);
+  const others = reviews.reviews.filter((r) => r.author !== me);
+  const mine = locked || iOweAReview ? undefined : reviews.reviews.find((r) => r.author === me);
+  const requested = reviews.requested.filter((who) => who !== me || !locked);
+  if (others.length === 0 && !mine && requested.length === 0) return null;
 
   const glyph = (state: string) =>
     state === "APPROVED" ? "✓" : state === "CHANGES_REQUESTED" ? "±" : "💬";
 
   return (
     <div className="review-strip">
-      {reviews.reviews.map((r) => (
+      {(mine ? [mine, ...others] : others).map((r) => (
         <span key={r.author} className={`review-chip state-${r.state.toLowerCase()}`}>
           <span className="review-glyph">{glyph(r.state)}</span>
-          {r.author}
+          {r.author === me ? "you" : r.author}
           <span className="review-state">{r.state.toLowerCase().replace(/_/g, " ")}</span>
         </span>
       ))}
-      {reviews.requested.map((who) => (
+      {requested.map((who) => (
         <span key={who} className="review-chip state-requested">
           <span className="review-glyph">…</span>
-          {who}
+          {who === me ? "you" : who}
           <span className="review-state">requested</span>
         </span>
       ))}
@@ -286,32 +303,22 @@ function ReviewActions({
   const openMode = (m: "approve" | "request-changes") => {
     setFlow("review");
     setMode(m);
-    // Requesting changes: seed a one-sentence pointer to your inline comments
-    // so the summary is written for you. Only when the box is still empty —
+    // Both verdicts open with a one-sentence summary written from the live
+    // conversation — a pointer to your comments when requesting changes, what
+    // your review settled when approving. Only when the box is still empty:
     // never clobber text you've typed.
-    if (m === "request-changes" && !body.trim()) {
-      const seed = requestChangesSeed(conversation, reviews?.viewerLogin ?? "");
+    if (!body.trim()) {
+      const viewer = reviews?.viewerLogin ?? "";
+      const seed =
+        m === "approve" ? approveSeed(conversation, viewer) : requestChangesSeed(conversation, viewer);
       if (seed) setBody(seed);
     }
   };
 
   if (pr.state !== "OPEN") return null;
 
-  const mine = reviews?.reviews.find((r) => r.author === reviews.viewerLogin);
-  const reRequested = reviews?.requested.includes(reviews.viewerLogin) ?? false;
-  const commitsAfterReview =
-    mine?.submittedAt != null &&
-    reviews?.lastCommitAt != null &&
-    reviews.lastCommitAt > mine.submittedAt;
-  const threadsCleared = mine?.state === "CHANGES_REQUESTED" && reviews?.openThreads === 0;
-  const locked =
-    !!mine &&
-    (mine.state === "APPROVED" || mine.state === "CHANGES_REQUESTED") &&
-    !reRequested &&
-    !commitsAfterReview &&
-    !threadsCleared;
-
-  if (locked) {
+  const mine = lockedReview(reviews);
+  if (mine) {
     const verb = mine.state === "APPROVED" ? "approved" : "requested changes";
     return (
       <span
@@ -329,7 +336,12 @@ function ReviewActions({
     setBusy(true);
     setError(null);
     try {
-      await ipc.submitReview(pr.id, mode, body);
+      // Hold the review GitHub just created: its own read-back lags the
+      // mutation, and the header must show your verdict the moment it lands.
+      // (The review:submitted event records it too — this is the ordered path,
+      // guaranteed done before the refetch below.)
+      const verdict = await ipc.submitReview(pr.id, mode, body);
+      useReviewStore.getState().record(pr.id, verdict);
       setMode(null);
       setBody("");
       onDone();
@@ -1155,9 +1167,18 @@ function Detail({
 
   useEffect(() => setFlow(null), [pr.id]);
 
+  useEffect(() => setReviews(null), [pr.id]);
   useEffect(() => {
-    setReviews(null);
-    void ipc.getPrReviews(pr.id).then(setReviews).catch(() => setReviews(null));
+    // Refetches keep the last answer on screen until the new one lands —
+    // blanking it would flash the Approve buttons back over your own verdict.
+    let live = true;
+    void ipc
+      .getPrReviews(pr.id)
+      .then((r) => live && setReviews(r))
+      .catch(() => live && setReviews(null));
+    return () => {
+      live = false;
+    };
   }, [pr.id, pr.headSha, reviewBump]);
   // Anything that moves thread/review state (resolving a thread, posting a
   // diff comment, a refresh) re-checks the approve gate.
@@ -1165,6 +1186,12 @@ function Detail({
     const un = listen("reviews:changed", () => setReviewBump((n) => n + 1));
     return () => void un.then((fn) => fn());
   }, []);
+  // Your just-submitted verdict, shown until GitHub's read-back catches up.
+  const pendingVerdict = useReviewStore((s) => s.pending[pr.id]);
+  const shownReviews = useMemo(
+    () => withPending(reviews, pendingVerdict),
+    [reviews, pendingVerdict],
+  );
   const focusNodes = (ids: string[]) => {
     setHighlight(ids);
     if (ids.length > 0) setTab("c4");
@@ -1230,7 +1257,7 @@ function Detail({
       <div className="actions">
         <ReviewActions
           pr={pr}
-          reviews={reviews}
+          reviews={shownReviews}
           flow={flow}
           setFlow={setFlow}
           onDone={() => setReviewBump((n) => n + 1)}
@@ -1292,7 +1319,7 @@ function Detail({
           ]}
         />
       )}
-      <ReviewStrip reviews={reviews} />
+      <ReviewStrip reviews={shownReviews} />
 
       <div className="tabs" role="tablist">
         {TAB_ORDER.map(([key, label], i) => (
@@ -1494,6 +1521,7 @@ export function MainApp() {
 
   useEffect(() => {
     void init();
+    initReviewStore();
     refreshOrgState();
     // Org switch (from any window): hard-reset every PR-keyed cache so no
     // data from the previous org lingers, then refetch as the new org.
