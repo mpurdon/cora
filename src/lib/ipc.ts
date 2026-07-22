@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ActivityItem } from "../bindings/ActivityItem";
 import type { AnalysisError } from "../bindings/AnalysisError";
 import type { ChatEvent } from "../bindings/ChatEvent";
+import type { ChatContext } from "../bindings/ChatContext";
 import type { ChatTranscript } from "../bindings/ChatTranscript";
 import type { AuditEntry } from "../bindings/AuditEntry";
 import type { ChangeKind } from "../bindings/ChangeKind";
@@ -66,6 +67,9 @@ export const ipc = {
   chatConfirm: (prId: string, approve: boolean) =>
     invoke<void>("chat_confirm", { prId, approve }),
   chatClear: (prId: string) => invoke<void>("chat_clear", { prId }),
+  /** includeText false = sizes only, for the panel's running total. */
+  getChatContext: (prId: string, includeText: boolean) =>
+    invoke<ChatContext>("get_chat_context", { prId, includeText }),
   ensureReviewMark: (prId: string) => invoke<ReviewMark>("ensure_review_mark", { prId }),
   setReviewMark: (prId: string) => invoke<ReviewMark>("set_review_mark", { prId }),
   getDiffSince: (prId: string) => invoke<string>("get_diff_since", { prId }),

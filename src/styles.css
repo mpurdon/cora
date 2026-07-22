@@ -4837,3 +4837,171 @@ button.diff-file-header:hover {
   margin-bottom: 2px;
   color: var(--idle);
 }
+
+/* ---------- assistant: context meter + inspector ---------- */
+
+/* Running total under the composer: how much the next turn will carry. */
+.context-meter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  text-align: left;
+}
+
+.context-meter:hover {
+  background: var(--ink-2);
+  color: var(--text);
+}
+
+.context-meter-total {
+  font-size: 10px;
+  color: var(--text);
+}
+
+.context-meter-bar {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--ink-2);
+  overflow: hidden;
+}
+
+.context-meter-bar .fill {
+  display: block;
+  height: 100%;
+  background: var(--chat);
+}
+
+/* Near the window's edge, the bar stops being decorative. */
+.context-meter-bar .fill.hot {
+  background: var(--warn);
+}
+
+.context-meter-pct {
+  font-size: 10px;
+}
+
+.context-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 720px;
+  max-width: 92vw;
+  background: var(--ink-1);
+  border-left: 1px solid var(--line);
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
+}
+
+.context-summary {
+  display: flex;
+  gap: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.context-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.context-stat-num {
+  font-size: 18px;
+  color: var(--text);
+}
+
+.context-note,
+.context-blurb {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 10px 0 0;
+}
+
+.context-group {
+  margin-top: 22px;
+}
+
+.context-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.context-blurb {
+  margin: 6px 0 8px;
+}
+
+.context-part {
+  border-bottom: 1px solid var(--ink-2);
+}
+
+.context-part-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 2px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+
+.context-part-head:hover {
+  color: var(--chat);
+}
+
+.context-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Provenance is the point of the panel — repo file vs github vs your text. */
+.context-origin {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 13px;
+  white-space: nowrap;
+}
+
+.context-size {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.context-text {
+  max-height: 340px;
+  overflow: auto;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}

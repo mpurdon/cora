@@ -402,6 +402,89 @@ pub struct ChatTranscript {
     pub pending: Option<ChatPendingAction>,
 }
 
+/// Where a slice of context sits in the request the model receives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContextGroup {
+    /// The system prompt: instructions, PR facts, the analysis.
+    System,
+    /// Tool definitions — names, descriptions and input schemas.
+    Tools,
+    /// The conversation: your messages, the model's, and tool results.
+    Messages,
+}
+
+/// One labelled slice of the model's context, with the exact text that
+/// occupies it. Nothing here is a summary — `text` is what gets sent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextPart {
+    pub id: String,
+    pub group: ContextGroup,
+    /// Human label: "PR facts", "call get_file", "get_file → src/api.ts".
+    pub label: String,
+    /// Where the bytes came from: repo file, github, analysis, you, model…
+    pub origin: String,
+    #[ts(type = "number")]
+    pub chars: i64,
+    /// Estimated tokens (~4 chars each). The real count for the whole
+    /// request is in `usage` — only Bedrock can give an exact number.
+    #[ts(type = "number")]
+    pub est_tokens: i64,
+    /// The verbatim text. Empty when the caller asked for sizes only.
+    pub text: String,
+}
+
+/// What the last request to the model actually cost, straight from Bedrock.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatUsage {
+    /// The whole prompt Bedrock counted: `input_tokens` plus both cache
+    /// buckets. This is "how big is the context", and the number to
+    /// calibrate estimates against.
+    #[ts(type = "number")]
+    pub prompt_tokens: i64,
+    /// Billed at full rate — the part of the prompt the cache did NOT serve.
+    /// On a warm cache this is a handful of tokens, not the context size.
+    #[ts(type = "number")]
+    pub input_tokens: i64,
+    #[ts(type = "number")]
+    pub output_tokens: i64,
+    /// Prefix served from the prompt cache — in context, but cheap.
+    #[ts(type = "number")]
+    pub cache_read_tokens: i64,
+    #[ts(type = "number")]
+    pub cache_write_tokens: i64,
+}
+
+/// Everything the assistant will see on its next turn, itemised.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatContext {
+    pub pr_id: String,
+    pub model_id: String,
+    pub parts: Vec<ContextPart>,
+    /// Best answer to "what will the next request carry": the raw estimate
+    /// scaled by how far it missed on the last measured request.
+    #[ts(type = "number")]
+    pub projected_tokens: i64,
+    /// The uncalibrated ~4-chars-per-token sum of `parts`.
+    #[ts(type = "number")]
+    pub est_tokens: i64,
+    /// The model's context window, 0 when we don't know it for this id.
+    #[ts(type = "number")]
+    pub window_tokens: i64,
+    /// Measured cost of the most recent request, when one has been made.
+    pub usage: Option<ChatUsage>,
+    /// Requests made in this session (a turn with tool calls makes several).
+    #[ts(type = "number")]
+    pub requests: i64,
+}
+
 /// Payload for chat:item / chat:state events.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
