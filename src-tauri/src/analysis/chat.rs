@@ -33,9 +33,13 @@ const MAX_CONVERSATION_CHARS: usize = 30_000;
 
 const CHAT_SYSTEM_PROMPT: &str = r#"You are CORA's review assistant — a principal engineer pairing with the user on a pull request they are reviewing. The architecture analysis below (when present) is shared context; ground your answers in it and cite concrete findings rather than re-deriving them. Use the research tools when a question needs evidence the context doesn't hold. Stay at review altitude: boundaries, contracts, risk — not style nits.
 
-You can also act through the app: posting comments, replying to or resolving threads, submitting a review. Each action tool call pauses until the user confirms it in the panel; the app then executes it and records it in the user's own action history. Propose one action at a time, with the exact text you intend to post. Never claim an action happened unless its tool result says so.
+You can drive the whole app, not just answer about it. Anything the user can do from the UI you can do too, split by consequence:
 
-mark_files_viewed is the exception: it is local review-progress bookkeeping (the checkboxes in the file list), so it runs immediately without confirmation. When the user asks to mark files viewed, call it with the exact diff paths — or all=true when they mean everything.
+Actions that change GitHub — commenting, replying, resolving threads, submitting a review, merging, closing, reopening, reacting — or that take a PR out of the user's queue (muting, untracking) pause until the user confirms them in the panel. The app then executes them and records them in the user's own action history. Propose one at a time, with the exact text you intend to post. Never claim an action happened unless its tool result says so.
+
+Local review state applies immediately, no confirmation: mark_files_viewed (the checkboxes in the file list), set_pr_priority, set_repo_priority, set_author_priority, set_review_mark, refresh_pr, run_analysis. These only change Cora's own view and the user can undo them from the UI. When the user asks to mark files viewed, call mark_files_viewed with the exact diff paths — or all=true when they mean everything.
+
+Prefer doing over describing: if the user asks for something an action tool covers, call the tool rather than explaining how they could do it themselves.
 
 Comment etiquette: prefix comments that need no action with "praise:", "note:", or "fyi:" (or add "(non-blocking)") — the app excludes those threads from the approve gate. Leave actionable comments unprefixed so they demand resolution.
 
@@ -351,15 +355,59 @@ fn action_specs() -> Vec<(&'static str, &'static str, Value)> {
                 "body": {"type": "string", "description": "Review comment (required for request-changes)"}
             }, "required": ["event", "body"]}),
         ),
+        (
+            "merge_pr",
+            "Merge the pull request. Pauses for user confirmation.",
+            json!({"type": "object", "properties": {
+                "method": {"type": "string", "enum": ["squash", "merge", "rebase"], "description": "Defaults to squash"}
+            }, "required": []}),
+        ),
+        (
+            "close_pr",
+            "Close the pull request without merging. Pauses for user confirmation.",
+            json!({"type": "object", "properties": {}, "required": []}),
+        ),
+        (
+            "reopen_pr",
+            "Reopen a closed pull request. Pauses for user confirmation.",
+            json!({"type": "object", "properties": {}, "required": []}),
+        ),
+        (
+            "toggle_reaction",
+            "Add or remove an emoji reaction on a comment (ids from get_pr_conversation). Pauses for user confirmation.",
+            json!({"type": "object", "properties": {
+                "subject_id": {"type": "string", "description": "Comment id to react to"},
+                "content": {"type": "string", "enum": ["THUMBS_UP", "THUMBS_DOWN", "LAUGH", "HOORAY", "CONFUSED", "HEART", "ROCKET", "EYES"]},
+                "remove": {"type": "boolean", "description": "true to take the reaction back"}
+            }, "required": ["subject_id", "content"]}),
+        ),
+        (
+            "set_pr_muted",
+            "Mute or unmute this PR — muted PRs drop out of the queue and stop notifying. Pauses for user confirmation.",
+            json!({"type": "object", "properties": {
+                "muted": {"type": "boolean"}
+            }, "required": ["muted"]}),
+        ),
+        (
+            "untrack_pr",
+            "Stop tracking this PR entirely (undoable from History). Pauses for user confirmation.",
+            json!({"type": "object", "properties": {}, "required": []}),
+        ),
     ]
 }
 
-const ACTION_NAMES: [&str; 5] = [
+const ACTION_NAMES: &[&str] = &[
     "post_pr_comment",
     "post_diff_comment",
     "reply_to_thread",
     "resolve_thread",
     "submit_review",
+    "merge_pr",
+    "close_pr",
+    "reopen_pr",
+    "toggle_reaction",
+    "set_pr_muted",
+    "untrack_pr",
 ];
 
 fn is_action(name: &str) -> bool {
@@ -380,6 +428,49 @@ fn chat_specs() -> Vec<(&'static str, &'static str, Value)> {
             "paths": {"type": "array", "items": {"type": "string"}, "description": "File paths exactly as they appear in the diff"},
             "all": {"type": "boolean", "description": "Mark every file in the diff; ignores paths"},
             "viewed": {"type": "boolean", "description": "true to mark viewed (default), false to unmark"}
+        }, "required": []}),
+    ));
+    // Local review-state controls. These change only Cora's own view of the
+    // queue and are reversible from the UI, so they run without confirmation
+    // — the same bargain as mark_files_viewed.
+    specs.push((
+        "set_pr_priority",
+        "Set this PR's priority in the reviewer's queue. Applies immediately.",
+        json!({"type": "object", "properties": {
+            "priority": {"type": "string", "enum": ["high", "normal", "low"]}
+        }, "required": ["priority"]}),
+    ));
+    specs.push((
+        "set_repo_priority",
+        "Set a repository's priority, or ignore it entirely. Applies immediately.",
+        json!({"type": "object", "properties": {
+            "repo": {"type": "string", "description": "owner/name; defaults to this PR's repo"},
+            "priority": {"type": "string", "enum": ["high", "normal", "low", "ignored"]}
+        }, "required": ["priority"]}),
+    ));
+    specs.push((
+        "set_author_priority",
+        "Set an author's priority — how much their PRs are surfaced. Applies immediately.",
+        json!({"type": "object", "properties": {
+            "author": {"type": "string", "description": "Login; defaults to this PR's author"},
+            "priority": {"type": "string", "enum": ["high", "normal", "low", "ignored"]}
+        }, "required": ["priority"]}),
+    ));
+    specs.push((
+        "set_review_mark",
+        "Mark this PR reviewed up to its current head — later commits then show as new. Applies immediately.",
+        json!({"type": "object", "properties": {}, "required": []}),
+    ));
+    specs.push((
+        "refresh_pr",
+        "Re-fetch this PR from GitHub (state, checks, reviews). Applies immediately.",
+        json!({"type": "object", "properties": {}, "required": []}),
+    ));
+    specs.push((
+        "run_analysis",
+        "Run the architecture analysis for this PR. Applies immediately; results arrive in the panel, not as a tool result.",
+        json!({"type": "object", "properties": {
+            "force": {"type": "boolean", "description": "Re-run even if a cached analysis exists for this head"}
         }, "required": []}),
     ));
     specs.extend(action_specs());
@@ -424,6 +515,36 @@ fn describe_action(name: &str, input: &Value) -> ChatPendingAction {
             ),
             body,
         ),
+        "merge_pr" => (
+            format!(
+                "Merge this PR ({})",
+                input.get("method").and_then(Value::as_str).unwrap_or("squash")
+            ),
+            String::new(),
+        ),
+        "close_pr" => ("Close this PR without merging".to_string(), String::new()),
+        "reopen_pr" => ("Reopen this PR".to_string(), String::new()),
+        "toggle_reaction" => (
+            format!(
+                "{} {} on a comment",
+                if input.get("remove").and_then(Value::as_bool).unwrap_or(false) {
+                    "Remove"
+                } else {
+                    "React"
+                },
+                input.get("content").and_then(Value::as_str).unwrap_or("?")
+            ),
+            String::new(),
+        ),
+        "set_pr_muted" => (
+            if input.get("muted").and_then(Value::as_bool).unwrap_or(true) {
+                "Mute this PR — it leaves your queue".to_string()
+            } else {
+                "Unmute this PR".to_string()
+            },
+            String::new(),
+        ),
+        "untrack_pr" => ("Stop tracking this PR".to_string(), String::new()),
         other => (other.to_string(), body),
     };
     ChatPendingAction { name: name.to_string(), summary, detail }
@@ -495,6 +616,59 @@ async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) ->
                 .await?;
             Ok(format!("Submitted review: {event}"))
         }
+        // merge / close / reopen audit themselves in the command layer, the
+        // same as the buttons do.
+        "merge_pr" => {
+            let method = input
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or("squash")
+                .to_string();
+            crate::commands::merge_pr(app.clone(), pr_id.to_string(), method.clone()).await?;
+            Ok(format!("Merged the PR ({method})"))
+        }
+        "close_pr" => {
+            crate::commands::close_pr(app.clone(), pr_id.to_string()).await?;
+            Ok("Closed the PR".into())
+        }
+        "reopen_pr" => {
+            crate::commands::reopen_pr(app.clone(), pr_id.to_string()).await?;
+            Ok("Reopened the PR".into())
+        }
+        "toggle_reaction" => {
+            let content = str_arg(input, "content")?;
+            let remove = input.get("remove").and_then(Value::as_bool).unwrap_or(false);
+            crate::commands::toggle_reaction(
+                app.clone(),
+                str_arg(input, "subject_id")?,
+                content.clone(),
+                remove,
+            )
+            .await?;
+            Ok(if remove {
+                format!("Removed the {content} reaction")
+            } else {
+                format!("Reacted {content}")
+            })
+        }
+        "set_pr_muted" => {
+            let muted = input.get("muted").and_then(Value::as_bool).unwrap_or(true);
+            crate::commands::set_pr_muted(
+                app.clone(),
+                app.state::<crate::orgs::Orgs>(),
+                pr_id.to_string(),
+                muted,
+            )?;
+            Ok(if muted { "Muted the PR".into() } else { "Unmuted the PR".to_string() })
+        }
+        "untrack_pr" => {
+            crate::commands::untrack_pr(
+                app.clone(),
+                app.state::<crate::orgs::Orgs>(),
+                pr_id.to_string(),
+            )?;
+            Ok("Stopped tracking the PR".into())
+        }
         other => Err(AppError::Other(format!("unknown action: {other}"))),
     }
 }
@@ -543,7 +717,111 @@ async fn execute_research(
             format!("Marked {} file(s) as {verb}: {}", paths.len(), paths.join(", "))
         });
     }
+    if let Some(result) = execute_local(app, pr_id, name, input)? {
+        return Ok(result);
+    }
     tools.execute(name, input).await
+}
+
+/// Local review-state tools. Return None when `name` isn't one of ours, so
+/// the caller falls through to the repo research tools.
+fn execute_local(
+    app: &AppHandle,
+    pr_id: &str,
+    name: &str,
+    input: &Value,
+) -> AppResult<Option<String>> {
+    use tauri::Manager;
+    let orgs = app.state::<crate::orgs::Orgs>();
+    let store = orgs.active();
+    let pr = || -> AppResult<crate::models::TrackedPr> {
+        store
+            .get_pr(pr_id)?
+            .ok_or_else(|| AppError::Other("PR not found".into()))
+    };
+    let result = match name {
+        "set_pr_priority" => {
+            let priority = crate::models::PrPriority::parse(&str_arg(input, "priority")?);
+            crate::commands::set_pr_priority(
+                app.clone(),
+                app.state::<crate::orgs::Orgs>(),
+                pr_id.to_string(),
+                priority,
+            )?;
+            format!("Priority set to {}", priority.as_str())
+        }
+        "set_repo_priority" => {
+            let repo = match input.get("repo").and_then(Value::as_str) {
+                Some(r) if !r.trim().is_empty() => r.to_string(),
+                _ => pr()?.info.repo,
+            };
+            let priority = parse_repo_priority(&str_arg(input, "priority")?)?;
+            crate::commands::set_repo_priority(
+                app.clone(),
+                app.state::<crate::orgs::Orgs>(),
+                app.state::<crate::github::poller::PollTrigger>(),
+                repo.clone(),
+                priority,
+            )?;
+            format!("{repo} priority set to {}", str_arg(input, "priority")?)
+        }
+        "set_author_priority" => {
+            let author = match input.get("author").and_then(Value::as_str) {
+                Some(a) if !a.trim().is_empty() => a.to_string(),
+                _ => pr()?.info.author,
+            };
+            let priority = parse_repo_priority(&str_arg(input, "priority")?)?;
+            crate::commands::set_author_priority(
+                app.clone(),
+                app.state::<crate::orgs::Orgs>(),
+                app.state::<crate::github::poller::PollTrigger>(),
+                author.clone(),
+                priority,
+            )?;
+            format!("{author}'s PRs set to {}", str_arg(input, "priority")?)
+        }
+        "set_review_mark" => {
+            let mark = crate::commands::set_review_mark(
+                app.state::<crate::orgs::Orgs>(),
+                pr_id.to_string(),
+            )?;
+            format!("Marked reviewed through {}", &mark.head_sha[..7.min(mark.head_sha.len())])
+        }
+        "refresh_pr" => {
+            // The refresh itself is async; the tool loop is not, so hand it to
+            // the runtime and report that it's under way.
+            let app = app.clone();
+            let id = pr_id.to_string();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::commands::refresh_pr(app, id).await;
+            });
+            "Refreshing this PR from GitHub".to_string()
+        }
+        "run_analysis" => {
+            let force = input.get("force").and_then(Value::as_bool).unwrap_or(false);
+            crate::commands::spawn_analysis_task(
+                app.clone(),
+                orgs.active_login(),
+                pr_id.to_string(),
+                crate::analysis::types::AnalysisLevel::Context,
+                None,
+                force,
+            );
+            "Started the architecture analysis — it lands in the panel when done".to_string()
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(result))
+}
+
+fn parse_repo_priority(s: &str) -> AppResult<crate::models::RepoPriority> {
+    match s {
+        "high" => Ok(crate::models::RepoPriority::High),
+        "normal" => Ok(crate::models::RepoPriority::Normal),
+        "low" => Ok(crate::models::RepoPriority::Low),
+        "ignored" => Ok(crate::models::RepoPriority::Ignored),
+        other => Err(AppError::Other(format!("unknown priority '{other}'"))),
+    }
 }
 
 // -- public entry points (called from commands) --------------------------------
@@ -581,7 +859,8 @@ fn tool_origin(name: &str) -> &'static str {
         "get_file" | "list_tree" | "search_code" | "get_readme_and_docs" => "repo file",
         "get_pr_diff" | "get_commit_diff" | "list_commits" | "list_recent_prs"
         | "get_pr_conversation" => "github",
-        "mark_files_viewed" => "app",
+        "mark_files_viewed" | "set_pr_priority" | "set_repo_priority" | "set_author_priority"
+        | "set_review_mark" | "refresh_pr" | "run_analysis" => "app",
         _ => "tool",
     }
 }

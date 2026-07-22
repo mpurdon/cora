@@ -42,15 +42,17 @@ export function AssistantPanel({
     void init().then(() => load(pr.id));
   }, [pr.id, init, load]);
 
-  // Chat events keep the running total live (see chatStore); this covers the
-  // rest: opening the panel, a new head, and an analysis landing — which
-  // rewrites the system prompt without touching the conversation.
-  useEffect(() => {
-    void loadContext(pr.id).catch(() => {});
-  }, [pr.id, pr.headSha, loadContext]);
-
   // The L1 analysis run's steps — live during a run, the trace afterwards.
   const run = useAnalysisStore((s) => s.runs[analysisKey(pr.id, "context")]);
+
+  // Chat events keep the running total live (see chatStore); this covers the
+  // rest: opening the panel, a new head, and — keyed on the analysis itself
+  // rather than trusting the event that announces it — a new assessment
+  // landing, which rewrites the system prompt without touching the
+  // conversation.
+  useEffect(() => {
+    void loadContext(pr.id).catch(() => {});
+  }, [pr.id, pr.headSha, run?.result?.createdAt, run?.status, loadContext]);
   const live = run?.status === "running";
   const steps = live
     ? run.progress.map((p) => ({ at: p.at, kind: "status", message: p.message }))

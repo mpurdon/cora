@@ -3,6 +3,7 @@ import type { ChatContext } from "../../bindings/ChatContext";
 import type { ContextGroup } from "../../bindings/ContextGroup";
 import type { ContextPart } from "../../bindings/ContextPart";
 import { ipc } from "../../lib/ipc";
+import { useChatStore } from "../../state/chatStore";
 import { formatTokens } from "./TraceSteps";
 
 const GROUPS: { key: ContextGroup; title: string; blurb: string }[] = [
@@ -59,6 +60,10 @@ export function ContextDrawer({
   const [error, setError] = useState<string | null>(null);
 
   // Fetched with text only while open: sizes are cheap, contents are not.
+  // Keyed on the panel's own sizes snapshot as well, so a drawer left open
+  // while an analysis lands or a turn runs refetches instead of showing the
+  // context as it was when opened.
+  const sizes = useChatStore((s) => s.contexts[prId]);
   useEffect(() => {
     if (!open) return;
     setError(null);
@@ -66,7 +71,7 @@ export function ContextDrawer({
       .getChatContext(prId, true)
       .then(setContext)
       .catch((e) => setError(String(e)));
-  }, [open, prId]);
+  }, [open, prId, sizes]);
 
   useEffect(() => {
     if (!open) return;
