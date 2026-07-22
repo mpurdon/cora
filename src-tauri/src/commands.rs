@@ -1206,7 +1206,15 @@ pub async fn get_usage_stats(app: AppHandle) -> AppResult<crate::usage::UsageSta
     let store = app.state::<crate::orgs::Orgs>().active();
     let rows = store.usage_rows()?;
     let prices = store.settings()?.model_prices;
-    Ok(crate::usage::summarize(&rows, &prices, &chrono::Utc::now().to_rfc3339()))
+    // Read the ARN → model mapping fresh: editing a Claude settings file
+    // should reprice the dashboard on the next look, with nothing to migrate.
+    let aliases = crate::usage::claude_settings_aliases();
+    Ok(crate::usage::summarize(
+        &rows,
+        &prices,
+        &aliases,
+        &chrono::Utc::now().to_rfc3339(),
+    ))
 }
 
 /// Set (or clear, with a zero rate) the price for one model id.
