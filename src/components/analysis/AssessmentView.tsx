@@ -104,6 +104,7 @@ export function AssessmentView({
   onFocusNodes,
   onCommentFinding,
   onCommentCode,
+  isCommented,
 }: {
   assessment: Assessment;
   codeFindings: CodeFinding[];
@@ -111,6 +112,8 @@ export function AssessmentView({
   onFocusNodes: (nodeIds: string[]) => void;
   onCommentFinding: (seed: string, nodeIds: string[]) => void;
   onCommentCode: (finding: CodeFinding) => void;
+  /** Whether a finding already has a review comment from the viewer. */
+  isCommented?: (finding: CodeFinding) => boolean;
 }) {
   const codeByFile = new Map<string, CodeFinding[]>();
   for (const f of codeFindings) {
@@ -202,17 +205,30 @@ export function AssessmentView({
                 )}
                 <span className="anchor-name">{path.slice(path.lastIndexOf("/") + 1)}</span>
               </div>
-              {findings.map((f, i) => (
-                <div key={i} className="code-finding-row">
-                  <span className={`sev sev-${f.severity}`}>{f.severity}</span>
-                  <span className="kind-tag mono">{f.kind}</span>
-                  <div className="code-finding-body">
-                    <div>{f.finding}</div>
-                    <div className="code-finding-suggestion">→ {f.suggestion}</div>
+              {findings.map((f, i) => {
+                const commented = isCommented?.(f) ?? false;
+                return (
+                  <div key={i} className={`code-finding-row${commented ? " commented" : ""}`}>
+                    <span className={`sev sev-${f.severity}`}>{f.severity}</span>
+                    <span className="kind-tag mono">{f.kind}</span>
+                    <div className="code-finding-body">
+                      <div>{f.finding}</div>
+                      <div className="code-finding-suggestion">→ {f.suggestion}</div>
+                    </div>
+                    {commented ? (
+                      <span
+                        className="finding-comment-btn commented"
+                        aria-disabled="true"
+                        title="You have a review comment at this line"
+                      >
+                        ✓ commented
+                      </span>
+                    ) : (
+                      <CommentFindingButton onClick={() => onCommentCode(f)} />
+                    )}
                   </div>
-                  <CommentFindingButton onClick={() => onCommentCode(f)} />
-                </div>
-              ))}
+                );
+              })}
             </div>
           ))}
         </section>
