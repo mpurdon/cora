@@ -388,8 +388,12 @@ pub struct ChatPendingAction {
     pub name: String,
     /// One-line human description ("comment on src/api.ts:41").
     pub summary: String,
-    /// The full text/body the action would post, for review before running.
+    /// The full text/body the action would post, verbatim — this is exactly
+    /// what gets sent, so the panel can offer it for editing before it runs.
     pub detail: String,
+    /// Whether `detail` is text the user may rewrite before confirming.
+    /// False for actions that carry no prose (merge, close, resolve).
+    pub editable: bool,
 }
 
 /// Snapshot of a PR's chat session for (re)mounting the panel.

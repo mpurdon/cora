@@ -22,7 +22,8 @@ interface ChatState {
   load: (prId: string) => Promise<void>;
   loadContext: (prId: string) => Promise<void>;
   send: (prId: string, text: string) => Promise<void>;
-  confirm: (prId: string, approve: boolean) => Promise<void>;
+  /** `edited` posts the user's rewrite of the action's text instead. */
+  confirm: (prId: string, approve: boolean, edited?: string) => Promise<void>;
   clear: (prId: string) => Promise<void>;
   /** Org switch: drop every session view. */
   reset: () => void;
@@ -84,7 +85,7 @@ export const useChatStore = create<ChatState>((set) => ({
   },
 
   send: (prId, text) => ipc.chatSend(prId, text),
-  confirm: (prId, approve) => ipc.chatConfirm(prId, approve),
+  confirm: (prId, approve, edited) => ipc.chatConfirm(prId, approve, edited),
 
   clear: async (prId) => {
     await ipc.chatClear(prId);

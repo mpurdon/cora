@@ -41,6 +41,10 @@ Local review state applies immediately, no confirmation: mark_files_viewed (the 
 
 Prefer doing over describing: if the user asks for something an action tool covers, call the tool rather than explaining how they could do it themselves.
 
+When you can name the fix in code, attach it: post_diff_comment takes a `suggestion` — replacement lines the author accepts in one click. Anchor it to the exact range you are replacing (`start_line`..`line`) and make the suggestion the complete replacement for that range, indented as it must appear in the file. Put your reasoning in `body` and only the code in `suggestion`. Prefer a suggestion over describing an edit in prose whenever the change is small and you can see the surrounding lines; skip it when the fix spans files or you would be guessing at code you haven't read.
+
+The user can edit your text before it posts, so write the real thing rather than a sketch.
+
 Comment etiquette: prefix comments that need no action with "praise:", "note:", or "fyi:" (or add "(non-blocking)") — the app excludes those threads from the approve gate. Leave actionable comments unprefixed so they demand resolution.
 
 Keep answers tight and skimmable (markdown). Short paragraphs, no preamble."#;
@@ -324,11 +328,13 @@ fn action_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "post_diff_comment",
-            "Post a line-anchored review comment on the diff. Pauses for user confirmation.",
+            "Post a line-anchored review comment on the diff, optionally with a suggested change the author can accept in one click. Pauses for user confirmation.",
             json!({"type": "object", "properties": {
                 "path": {"type": "string"},
-                "line": {"type": "integer", "description": "Line number on the new side of the diff"},
-                "body": {"type": "string"}
+                "line": {"type": "integer", "description": "Line number on the new side of the diff. With a suggestion, the LAST line being replaced"},
+                "start_line": {"type": "integer", "description": "First line of the range, when the comment or suggestion covers several lines"},
+                "body": {"type": "string", "description": "The prose. With a suggestion, say why — the replacement code goes in `suggestion`, not here"},
+                "suggestion": {"type": "string", "description": "Replacement code for lines start_line..line, verbatim and correctly indented. Must be the complete replacement for every line in the range — GitHub swaps the whole range for this text"}
             }, "required": ["path", "line", "body"]}),
         ),
         (
@@ -486,6 +492,37 @@ fn str_arg(input: &Value, key: &str) -> AppResult<String> {
         .ok_or_else(|| AppError::Other(format!("missing {key}")))
 }
 
+/// Fold a proposed action's arguments into the exact text that will post, so
+/// the confirm card, the user's edits, and what GitHub receives are all the
+/// same string. Today that means turning a `suggestion` argument into the
+/// fenced block GitHub renders as an accept-able change.
+fn normalize_action_input(name: &str, mut input: Value) -> Value {
+    if name != "post_diff_comment" {
+        return input;
+    }
+    let Some(suggestion) = input.get("suggestion").and_then(Value::as_str).map(String::from) else {
+        return input;
+    };
+    let body = input.get("body").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    // Trailing newlines inside the fence become blank lines in the applied
+    // patch, so trim to exactly the replacement lines.
+    let block = format!("```suggestion\n{}\n```", suggestion.trim_end_matches('\n'));
+    let composed = if body.is_empty() { block } else { format!("{body}\n\n{block}") };
+    input["body"] = Value::String(composed);
+    if let Some(obj) = input.as_object_mut() {
+        obj.remove("suggestion");
+    }
+    input
+}
+
+/// Actions whose `detail` is prose the user may rewrite before confirming.
+fn carries_text(name: &str) -> bool {
+    matches!(
+        name,
+        "post_pr_comment" | "post_diff_comment" | "reply_to_thread" | "submit_review"
+    )
+}
+
 /// The confirm card the user sees: what would run, and the exact text.
 fn describe_action(name: &str, input: &Value) -> ChatPendingAction {
     let body = input.get("body").and_then(Value::as_str).unwrap_or("").to_string();
@@ -547,7 +584,12 @@ fn describe_action(name: &str, input: &Value) -> ChatPendingAction {
         "untrack_pr" => ("Stop tracking this PR".to_string(), String::new()),
         other => (other.to_string(), body),
     };
-    ChatPendingAction { name: name.to_string(), summary, detail }
+    ChatPendingAction {
+        name: name.to_string(),
+        summary,
+        detail,
+        editable: carries_text(name),
+    }
 }
 
 /// Execute a confirmed action through the app's command layer, and audit the
@@ -569,12 +611,16 @@ async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) ->
                 .get("line")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| AppError::Other("missing line".into()))?;
+            let start_line = input.get("start_line").and_then(Value::as_i64);
+            let body = str_arg(input, "body")?;
+            let suggested = body.contains("```suggestion");
             crate::commands::add_diff_comment(
                 app.clone(),
                 pr_id.to_string(),
                 path.clone(),
                 line,
-                str_arg(input, "body")?,
+                body,
+                start_line,
             )
             .await?;
             store.add_audit(
@@ -584,7 +630,11 @@ async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) ->
                 "",
                 &format!("{path}:{line} · via assistant"),
             )?;
-            Ok(format!("Posted a review comment on {path}:{line}"))
+            Ok(if suggested {
+                format!("Posted a suggested change on {path}:{line}")
+            } else {
+                format!("Posted a review comment on {path}:{line}")
+            })
         }
         "reply_to_thread" => {
             crate::commands::reply_to_thread(
@@ -1070,15 +1120,28 @@ pub fn send(app: AppHandle, pr_id: String, text: String) -> AppResult<()> {
     Ok(())
 }
 
-pub fn confirm(app: AppHandle, pr_id: String, approve: bool) -> AppResult<()> {
+pub fn confirm(
+    app: AppHandle,
+    pr_id: String,
+    approve: bool,
+    edited: Option<String>,
+) -> AppResult<()> {
     // Claim the pending action before spawning so a double-click can't run it twice.
-    let (pending, mut results) = with_session(&app, &pr_id, |s| {
+    let (mut pending, mut results) = with_session(&app, &pr_id, |s| {
         let Some(pending) = s.pending.take() else {
             return Err(AppError::Other("no pending action".into()));
         };
         s.busy = true;
         Ok((pending, std::mem::take(&mut s.pending_results)))
     })??;
+
+    // What the user approved is what they were looking at. The card shows the
+    // composed body verbatim, so an edit replaces it wholesale — no merging
+    // back into the arguments the model proposed.
+    if let Some(text) = edited.filter(|_| approve && carries_text(&pending.name)) {
+        pending.input["body"] = Value::String(text.clone());
+        pending.public.detail = text;
+    }
     emit_event(&app, &pr_id, None);
 
     tauri::async_runtime::spawn(async move {
@@ -1265,6 +1328,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
         }
 
         if let Some((tool_use_id, name, input)) = action {
+            let input = normalize_action_input(&name, input);
             let public = describe_action(&name, &input);
             with_session(app, pr_id, |s| {
                 s.pending = Some(PendingAction { tool_use_id, name, input, public });
@@ -1314,6 +1378,47 @@ mod tests {
                 "tool",
                 "{name} has no origin — add it to tool_origin()"
             );
+        }
+    }
+
+    /// A suggestion becomes the fenced block GitHub renders as an acceptable
+    /// change, folded into the body at propose time — so the confirm card,
+    /// the user's edit, and what posts are all the same string.
+    #[test]
+    fn a_suggestion_becomes_a_fenced_block_in_the_body() {
+        let input = json!({
+            "path": "src/a.ts",
+            "line": 12,
+            "body": "This drops the error.",
+            "suggestion": "if (!ok) throw new Error(msg);\n",
+        });
+        let out = normalize_action_input("post_diff_comment", input);
+        assert_eq!(
+            out["body"],
+            json!("This drops the error.\n\n```suggestion\nif (!ok) throw new Error(msg);\n```"),
+            "trailing newlines inside the fence would post as blank lines"
+        );
+        assert!(out.get("suggestion").is_none(), "folded in, not sent twice");
+    }
+
+    #[test]
+    fn a_suggestion_with_no_prose_is_still_a_valid_body() {
+        let out = normalize_action_input(
+            "post_diff_comment",
+            json!({"path": "a", "line": 1, "body": "", "suggestion": "x = 1"}),
+        );
+        assert_eq!(out["body"], json!("```suggestion\nx = 1\n```"));
+    }
+
+    /// Only the text-carrying actions offer an edit box; merging or resolving
+    /// has nothing to rewrite.
+    #[test]
+    fn only_prose_actions_are_editable() {
+        for name in ["post_pr_comment", "post_diff_comment", "reply_to_thread", "submit_review"] {
+            assert!(carries_text(name), "{name} should be editable");
+        }
+        for name in ["merge_pr", "close_pr", "resolve_thread", "untrack_pr"] {
+            assert!(!carries_text(name), "{name} has no text to edit");
         }
     }
 
