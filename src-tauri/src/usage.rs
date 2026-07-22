@@ -87,22 +87,138 @@ const KNOWN_RATES: &[(&str, f64, f64)] = &[
     ("claude-haiku-4-5", 1.0, 5.0),
 ];
 
-/// Input/output dollars per million tokens for a model id, or None when we
-/// have no basis for a number.
-fn rate_for(model: &str, prices: &[ModelPrice]) -> Option<(f64, f64)> {
+/// A model id we could only name by looking it up somewhere else — a Bedrock
+/// inference-profile ARN mapped back to its family by the Claude Code
+/// settings that configured it.
+#[derive(Debug, Clone)]
+pub struct ModelAlias {
+    pub model: String,
+    /// Human name for the family: "Claude Opus", "Claude Sonnet"…
+    pub family: String,
+    /// Where we learned it, for the UI to cite.
+    pub source: String,
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+}
+
+/// Does this value name a model? A Bedrock ARN, or an id carrying the model
+/// family in it. Anything else in a settings `env` is not ours to read.
+fn is_model_ref(value: &str) -> bool {
+    let v = value.to_lowercase();
+    (v.starts_with("arn:") && v.contains("bedrock")) || v.contains("claude") || v.contains("anthropic.")
+}
+
+/// Published rates per family. Opus 4.6/4.7/4.8 all price the same, as do
+/// the current Sonnets, so family is a safe granularity even when the env
+/// var doesn't pin a version.
+fn family_rate(key: &str) -> Option<(&'static str, f64, f64)> {
+    let k = key.to_uppercase();
+    if k.contains("OPUS") {
+        Some(("Claude Opus", 5.0, 25.0))
+    } else if k.contains("SONNET") {
+        Some(("Claude Sonnet", 3.0, 15.0))
+    } else if k.contains("HAIKU") {
+        Some(("Claude Haiku", 1.0, 5.0))
+    } else {
+        None
+    }
+}
+
+/// Claude Code's settings files point env vars like ANTHROPIC_DEFAULT_OPUS_MODEL
+/// at inference-profile ARNs. That mapping is the only thing that can tell us
+/// what an ARN actually is, so read it back: every *.json directly under
+/// ~/.claude, any `env` object, any key naming a model.
+pub fn claude_settings_aliases() -> Vec<ModelAlias> {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return Vec::new();
+    };
+    let dir = home.join(".claude");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ModelAlias> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        // Settings files are small; don't slurp something enormous by accident.
+        if entry.metadata().map(|m| m.len() > 1_000_000).unwrap_or(true) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let Some(env) = json.get("env").and_then(|e| e.as_object()) else { continue };
+        let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        for (key, value) in env {
+            if !key.to_uppercase().contains("MODEL") {
+                continue;
+            }
+            // Neighbouring keys like ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES
+            // also say MODEL and OPUS; their values are capability lists, not
+            // models. Take only values that look like a model reference.
+            let Some(model) = value.as_str().map(str::trim).filter(|v| is_model_ref(v)) else {
+                continue;
+            };
+            let Some((family, input, output)) = family_rate(key) else { continue };
+            if out.iter().any(|a| a.model == model) {
+                continue;
+            }
+            out.push(ModelAlias {
+                model: model.to_string(),
+                family: family.to_string(),
+                source: format!("~/.claude/{file}"),
+                input_per_mtok: input,
+                output_per_mtok: output,
+            });
+        }
+    }
+    out
+}
+
+/// Where a rate came from. Ordered by authority: what you set wins over what
+/// we inferred, which wins over a name we recognised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "kebab-case")]
+pub enum RateSource {
+    /// You typed it in the rate editor.
+    Yours,
+    /// An ARN matched a model env var in your Claude Code settings.
+    ClaudeSettings,
+    /// The model id itself names a model we have a published rate for.
+    Published,
+    /// Nothing could price it.
+    Unknown,
+}
+
+/// Input/output dollars per million tokens for a model id, with where the
+/// number came from. None of these is a guess at a model we can't identify —
+/// an unrecognised ARN stays Unknown rather than being priced as Opus.
+fn rate_for(
+    model: &str,
+    prices: &[ModelPrice],
+    aliases: &[ModelAlias],
+) -> (Option<(f64, f64)>, RateSource) {
     if let Some(p) = prices.iter().find(|p| p.model == model) {
-        return Some((p.input_per_mtok, p.output_per_mtok));
+        return (Some((p.input_per_mtok, p.output_per_mtok)), RateSource::Yours);
+    }
+    if let Some(a) = aliases.iter().find(|a| a.model == model) {
+        return (
+            Some((a.input_per_mtok, a.output_per_mtok)),
+            RateSource::ClaudeSettings,
+        );
     }
     let id = model.to_lowercase();
-    KNOWN_RATES
-        .iter()
-        .find(|(needle, _, _)| id.contains(needle))
-        .map(|(_, input, output)| (*input, *output))
+    match KNOWN_RATES.iter().find(|(needle, _, _)| id.contains(needle)) {
+        Some((_, input, output)) => (Some((*input, *output)), RateSource::Published),
+        None => (None, RateSource::Unknown),
+    }
 }
 
 /// Dollars for one row, and whether we could price it at all.
-fn cost_of(row: &UsageRow, prices: &[ModelPrice]) -> Option<f64> {
-    let (input, output) = rate_for(&row.model, prices)?;
+fn cost_of(row: &UsageRow, prices: &[ModelPrice], aliases: &[ModelAlias]) -> Option<f64> {
+    let (input, output) = rate_for(&row.model, prices, aliases).0?;
     let per_token = |tokens: i64, rate: f64| tokens as f64 * rate / 1_000_000.0;
     Some(
         per_token(row.input_tokens, input)
@@ -192,15 +308,22 @@ pub struct ModelRate {
     pub model: String,
     pub input_per_mtok: f64,
     pub output_per_mtok: f64,
-    /// False when neither settings nor the built-in table knows this model.
+    /// False when nothing could price this model.
     pub known: bool,
-    /// True when the rate came from the built-in table rather than settings.
-    pub built_in: bool,
+    pub source: RateSource,
+    /// What we identified it as and from where, when we had to look it up:
+    /// "Claude Opus · ~/.claude/trajector-settings.json".
+    pub note: String,
 }
 
 /// Roll rows up into everything the dashboard shows. One pass per grouping,
 /// all in memory — see `Store::usage_rows` for why that's the right call.
-pub fn summarize(rows: &[UsageRow], prices: &[ModelPrice], now: &str) -> UsageStats {
+pub fn summarize(
+    rows: &[UsageRow],
+    prices: &[ModelPrice],
+    aliases: &[ModelAlias],
+    now: &str,
+) -> UsageStats {
     let mut stats = UsageStats::default();
     if rows.is_empty() {
         return stats;
@@ -215,12 +338,12 @@ pub fn summarize(rows: &[UsageRow], prices: &[ModelPrice], now: &str) -> UsageSt
     let mut by_day: Vec<UsageGroup> = Vec::new();
 
     for row in rows {
-        let cost = cost_of(row, prices);
+        let cost = cost_of(row, prices, aliases);
         stats.all_time.add(row, cost);
         if row.at.as_str() >= cutoff.as_str() {
             stats.last_30_days.add(row, cost);
         }
-        if let Some((input_rate, _)) = rate_for(&row.model, prices) {
+        if let (Some((input_rate, _)), _) = rate_for(&row.model, prices, aliases) {
             // Cache reads at a tenth of input price — the other nine tenths
             // is the saving.
             stats.cache_savings +=
@@ -252,14 +375,23 @@ pub fn summarize(rows: &[UsageRow], prices: &[ModelPrice], now: &str) -> UsageSt
     stats.rates = by_model
         .iter()
         .map(|g| {
-            let from_settings = prices.iter().find(|p| p.model == g.key);
-            let resolved = rate_for(&g.key, prices);
+            let (resolved, source) = rate_for(&g.key, prices, aliases);
+            let note = match source {
+                RateSource::ClaudeSettings => aliases
+                    .iter()
+                    .find(|a| a.model == g.key)
+                    .map(|a| format!("{} · {}", a.family, a.source))
+                    .unwrap_or_default(),
+                RateSource::Published => "published rate for this model".to_string(),
+                RateSource::Yours | RateSource::Unknown => String::new(),
+            };
             ModelRate {
                 model: g.key.clone(),
                 input_per_mtok: resolved.map(|r| r.0).unwrap_or(0.0),
                 output_per_mtok: resolved.map(|r| r.1).unwrap_or(0.0),
                 known: resolved.is_some(),
-                built_in: resolved.is_some() && from_settings.is_none(),
+                source,
+                note,
             }
         })
         .collect();
@@ -312,7 +444,7 @@ mod tests {
     #[test]
     fn prices_known_models_through_bedrock_prefixes() {
         let r = row("us.anthropic.claude-opus-4-8", "p1", "2026-07-01T00:00:00Z", 1_000_000, 0);
-        assert_eq!(cost_of(&r, &[]), Some(5.0));
+        assert_eq!(cost_of(&r, &[], &[]), Some(5.0));
     }
 
     /// An inference-profile ARN names no model — pricing it from a guess
@@ -320,11 +452,105 @@ mod tests {
     #[test]
     fn leaves_unrecognized_models_unpriced() {
         let r = row("arn:aws:bedrock:us-east-2:1:application-inference-profile/x", "p1", "2026-07-01T00:00:00Z", 1_000_000, 0);
-        assert_eq!(cost_of(&r, &[]), None);
-        let stats = summarize(&[r], &[], "2026-07-02T00:00:00Z");
+        assert_eq!(cost_of(&r, &[], &[]), None);
+        let stats = summarize(&[r], &[], &[], "2026-07-02T00:00:00Z");
         assert_eq!(stats.all_time.unpriced_requests, 1);
         assert_eq!(stats.all_time.cost, 0.0);
         assert!(!stats.rates[0].known);
+    }
+
+    /// The shape Claude Code writes: env vars naming models, values that are
+    /// opaque ARNs. Every key that names a family should resolve, including
+    /// the underscore-prefixed spares people keep around.
+    #[test]
+    fn claude_settings_shape_maps_arns_to_families() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"env": {
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "arn:aws:bedrock:us-east-2:1:application-inference-profile/opus",
+                "_ANTHROPIC_DEFAULT_OPUS_MODEL_OPUS_47": "arn:aws:bedrock:us-east-2:1:application-inference-profile/opus47",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "arn:aws:bedrock:us-east-2:1:application-inference-profile/sonnet",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "arn:aws:bedrock:us-east-2:1:application-inference-profile/haiku",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES": "thinking,effort"
+            }}"#,
+        )
+        .unwrap();
+        let env = json.get("env").unwrap().as_object().unwrap();
+        let mut found: Vec<(&str, f64)> = Vec::new();
+        for (key, value) in env {
+            if !key.to_uppercase().contains("MODEL") {
+                continue;
+            }
+            let Some(model) = value.as_str().map(str::trim).filter(|v| is_model_ref(v)) else {
+                continue;
+            };
+            if let Some((family, input, _)) = family_rate(key) {
+                found.push((family, input));
+                assert!(model.starts_with("arn:"), "{model} should be a model reference");
+            }
+        }
+        found.sort_by(|a, b| a.0.cmp(b.0).then(a.1.total_cmp(&b.1)));
+        assert_eq!(
+            found,
+            vec![
+                ("Claude Haiku", 1.0),
+                ("Claude Opus", 5.0),
+                ("Claude Opus", 5.0),
+                ("Claude Sonnet", 3.0),
+            ],
+            "the _SUPPORTED_CAPABILITIES key names OPUS and MODEL but holds no model"
+        );
+    }
+
+    #[test]
+    fn capability_lists_are_not_models() {
+        assert!(!is_model_ref("thinking,adaptive_thinking,effort"));
+        assert!(!is_model_ref("1"));
+        assert!(!is_model_ref(""));
+        assert!(is_model_ref(
+            "arn:aws:bedrock:us-east-2:1:application-inference-profile/abcd1234efgh"
+        ));
+        assert!(is_model_ref("us.anthropic.claude-opus-4-8"));
+        assert!(is_model_ref("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn an_alias_prices_an_arn_that_nothing_else_can() {
+        let arn = "arn:aws:bedrock:us-east-2:1:application-inference-profile/abcd1234efgh";
+        let aliases = vec![ModelAlias {
+            model: arn.to_string(),
+            family: "Claude Opus".into(),
+            source: "~/.claude/settings.json".into(),
+            input_per_mtok: 5.0,
+            output_per_mtok: 25.0,
+        }];
+        let r = row(arn, "p1", "2026-07-01T00:00:00Z", 1_000_000, 0);
+        assert_eq!(cost_of(&r, &[], &[]), None, "unpriced without the mapping");
+        assert_eq!(cost_of(&r, &[], &aliases), Some(5.0));
+
+        let stats = summarize(&[r], &[], &aliases, "2026-07-02T00:00:00Z");
+        assert_eq!(stats.rates[0].source, RateSource::ClaudeSettings);
+        assert!(stats.rates[0].note.contains("Claude Opus"), "the UI can say what it is");
+    }
+
+    /// A rate you typed outranks one we inferred from a settings file.
+    #[test]
+    fn your_rate_outranks_an_alias() {
+        let arn = "arn:aws:bedrock:us-east-2:1:application-inference-profile/x";
+        let aliases = vec![ModelAlias {
+            model: arn.to_string(),
+            family: "Claude Opus".into(),
+            source: "~/.claude/settings.json".into(),
+            input_per_mtok: 5.0,
+            output_per_mtok: 25.0,
+        }];
+        let prices = vec![ModelPrice {
+            model: arn.to_string(),
+            input_per_mtok: 2.0,
+            output_per_mtok: 4.0,
+        }];
+        let r = row(arn, "p1", "2026-07-01T00:00:00Z", 1_000_000, 0);
+        assert_eq!(cost_of(&r, &prices, &aliases), Some(2.0));
     }
 
     #[test]
@@ -335,9 +561,9 @@ mod tests {
             output_per_mtok: 2.0,
         }];
         let r = row("us.anthropic.claude-opus-4-8", "p1", "2026-07-01T00:00:00Z", 1_000_000, 1_000_000);
-        assert_eq!(cost_of(&r, &prices), Some(3.0));
-        let stats = summarize(&[r], &prices, "2026-07-02T00:00:00Z");
-        assert!(!stats.rates[0].built_in, "an explicit rate is not built-in");
+        assert_eq!(cost_of(&r, &prices, &[]), Some(3.0));
+        let stats = summarize(&[r], &prices, &[], "2026-07-02T00:00:00Z");
+        assert_eq!(stats.rates[0].source, RateSource::Yours);
     }
 
     #[test]
@@ -347,7 +573,7 @@ mod tests {
             row("claude-opus-4-8", "p1", "2026-07-01T01:00:00Z", 1_000_000, 0),
             row("claude-opus-4-8", "p2", "2026-07-02T00:00:00Z", 2_000_000, 0),
         ];
-        let stats = summarize(&rows, &[], "2026-07-03T00:00:00Z");
+        let stats = summarize(&rows, &[], &[], "2026-07-03T00:00:00Z");
         assert_eq!(stats.prs, 2);
         assert_eq!(stats.all_time.requests, 3);
         assert_eq!(stats.cost_per_pr, 10.0); // $20 across two PRs
@@ -361,7 +587,7 @@ mod tests {
             row("claude-opus-4-8", "p1", "2026-01-01T00:00:00Z", 1_000_000, 0),
             row("claude-opus-4-8", "p2", "2026-07-01T00:00:00Z", 1_000_000, 0),
         ];
-        let stats = summarize(&rows, &[], "2026-07-02T00:00:00Z");
+        let stats = summarize(&rows, &[], &[], "2026-07-02T00:00:00Z");
         assert_eq!(stats.all_time.requests, 2);
         assert_eq!(stats.last_30_days.requests, 1);
     }
@@ -370,8 +596,8 @@ mod tests {
     fn cache_reads_are_billed_at_a_tenth_and_counted_as_savings() {
         let mut r = row("claude-opus-4-8", "p1", "2026-07-01T00:00:00Z", 0, 0);
         r.cache_read = 1_000_000;
-        assert_eq!(cost_of(&r, &[]), Some(0.5)); // $5/M × 0.1
-        let stats = summarize(&[r], &[], "2026-07-02T00:00:00Z");
+        assert_eq!(cost_of(&r, &[], &[]), Some(0.5)); // $5/M × 0.1
+        let stats = summarize(&[r], &[], &[], "2026-07-02T00:00:00Z");
         assert_eq!(stats.cache_savings, 4.5); // the other nine tenths
     }
 }

@@ -166,9 +166,12 @@ function Rates({ rates, onSaved }: { rates: ModelRate[]; onSaved: () => void }) 
     <section className="usage-block">
       <span className="eyebrow">Rates — dollars per million tokens</span>
       <p className="usage-note">
-        Cache reads bill at a tenth of the input rate and cache writes at 1.25×, so both follow
-        from it. Costs are recomputed from these rates every time this page loads — correcting a
-        rate reprices all history.
+        Inference-profile ARNs name no model, so Cora reads the mapping back out of the{" "}
+        <span className="mono">env</span> block in your <span className="mono">~/.claude/*.json</span>{" "}
+        settings — whatever <span className="mono">ANTHROPIC_DEFAULT_&lt;FAMILY&gt;_MODEL</span>{" "}
+        points at gets that family's published rate. Anything you type here wins over that. Cache
+        reads bill at a tenth of the input rate and cache writes at 1.25×, so both follow from it.
+        Costs are recomputed every time this page loads — correcting a rate reprices all history.
       </p>
       {error && <div className="settings-error">{error}</div>}
       <table className="usage-table">
@@ -183,8 +186,14 @@ function Rates({ rates, onSaved }: { rates: ModelRate[]; onSaved: () => void }) 
               <tr key={r.model}>
                 <td className="usage-label mono usage-model">
                   {r.model}
-                  {!r.known && <span className="usage-flag">no rate — spend not counted</span>}
-                  {r.builtIn && <span className="usage-flag muted">published rate</span>}
+                  {r.source === "unknown" && (
+                    <span className="usage-flag">no rate — spend not counted</span>
+                  )}
+                  {r.source === "claude-settings" && (
+                    <span className="usage-flag muted">identified as {r.note}</span>
+                  )}
+                  {r.source === "published" && <span className="usage-flag muted">{r.note}</span>}
+                  {r.source === "yours" && <span className="usage-flag muted">your rate</span>}
                 </td>
                 <td className="num">
                   <input

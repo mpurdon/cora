@@ -2287,9 +2287,22 @@ body.col-resizing * {
   min-width: 380px;
 }
 
+.hotkeys-help .drawer-title {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+
 .hotkeys-help table {
   margin-top: 12px;
   border-collapse: collapse;
+}
+
+.hotkeys-foot {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--idle);
 }
 
 .hotkeys-help td {

@@ -643,6 +643,18 @@ function TrackPrInput({
 }
 
 type Tab = "assessment" | "c4" | "diff" | "comments" | "history";
+/** A row of the shortcut sheet. `run` present = the app handles the key;
+ *  absent = documentation for something the mouse or the OS owns. */
+interface Shortcut {
+  keys: string;
+  label: string;
+  match?: (e: KeyboardEvent) => boolean;
+  run?: (e: KeyboardEvent) => void;
+}
+
+/** Bumping this re-announces the sheet once, for everyone, on next start. */
+const HOTKEYS_SEEN = "cora.hotkeysSeen.v2";
+
 const TAB_ORDER: [Tab, string][] = [
   ["assessment", "Assessment"],
   ["c4", "Architecture"],
@@ -1726,6 +1738,100 @@ export function MainApp() {
     [grouped, collapsed, groupMode],
   );
 
+  // One table drives both the handler and the help sheet, so a shortcut can't
+  // exist without being documented (or be documented after it's gone). Rows
+  // with no `run` are things the keyboard doesn't own — right-click, the
+  // window zoom the OS handles — listed because the help is where people look.
+  const shortcuts: Shortcut[] = useMemo(
+    () => [
+      {
+        keys: "j / k",
+        label: "next / previous pull request",
+        match: (e) => e.key === "j" || e.key === "k",
+        run: (e) => {
+          if (flatVisible.length === 0) return;
+          const idx = flatVisible.findIndex((p) => p.id === selectedId);
+          const next =
+            e.key === "j"
+              ? Math.min(flatVisible.length - 1, idx + 1)
+              : Math.max(0, idx <= 0 ? 0 : idx - 1);
+          select(flatVisible[idx === -1 ? 0 : next].id);
+        },
+      },
+      {
+        keys: `1 – ${TAB_ORDER.length}`,
+        label: TAB_ORDER.map(([, label]) => label).join(" · "),
+        match: (e) => {
+          const i = Number(e.key) - 1;
+          return !!selected && Number.isInteger(i) && i >= 0 && i < TAB_ORDER.length;
+        },
+        run: (e) => {
+          const tab = TAB_ORDER[Number(e.key) - 1][0];
+          window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: tab }));
+        },
+      },
+      {
+        keys: "a",
+        label: "toggle the assistant panel",
+        match: (e) => e.key === "a" && !!selected,
+        run: () => setAssistant(!assistantOpen),
+      },
+      {
+        keys: "A",
+        label: "analyze this PR (shift, so it isn't a slip)",
+        match: (e) => e.key === "A" && !!selected,
+        run: () => selected && void ipc.runAnalysis(selected.id, "context"),
+      },
+      {
+        keys: "r",
+        label: "refresh this PR from GitHub",
+        match: (e) => e.key === "r" && !!selected,
+        run: () => selected && void ipc.refreshPr(selected.id).catch(() => {}),
+      },
+      {
+        keys: "o",
+        label: "open this PR on GitHub",
+        match: (e) => e.key === "o" && !!selected,
+        run: () => selected && void openUrl(selected.url),
+      },
+      {
+        keys: "y",
+        label: "copy this PR's link",
+        match: (e) => e.key === "y" && !!selected,
+        run: () => selected && void navigator.clipboard.writeText(selected.url),
+      },
+      {
+        keys: "/",
+        label: "focus the filter",
+        match: (e) => e.key === "/",
+        run: () => filterRef.current?.focus(),
+      },
+      {
+        keys: "h",
+        label: "history — your actions, undoable",
+        match: (e) => e.key === "h",
+        run: () => setShowHistory(true),
+      },
+      {
+        keys: ",",
+        label: "settings",
+        match: (e) => e.key === ",",
+        run: () => openSettings(),
+      },
+      {
+        keys: "?",
+        label: "show or hide this help",
+        match: (e) => e.key === "?",
+        run: () => setShowHotkeys((s) => !s),
+      },
+      { keys: "esc", label: "close menus, drawers, this help" },
+      { keys: "⌘ + / − / 0", label: "zoom in / out / reset" },
+      { keys: "right-click a PR", label: "analyze, PR/author/repo priority, mute, untrack" },
+      { keys: "click a node", label: "drill into the architecture · diff at code level" },
+    ],
+    [flatVisible, selectedId, selected, assistantOpen, openSettings],
+  );
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -1742,42 +1848,24 @@ export function MainApp() {
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
 
-      if (e.key === "?") {
-        setShowHotkeys((s) => !s);
-        e.preventDefault();
-        return;
-      }
-      if (e.key === "/") {
-        filterRef.current?.focus();
-        e.preventDefault();
-        return;
-      }
-      if (e.key === "a" && selected) {
-        setAssistant(!assistantOpen);
-        e.preventDefault();
-        return;
-      }
-      if (e.key === "j" || e.key === "k") {
-        if (flatVisible.length === 0) return;
-        const idx = flatVisible.findIndex((p) => p.id === selectedId);
-        const next =
-          e.key === "j"
-            ? Math.min(flatVisible.length - 1, idx + 1)
-            : Math.max(0, idx <= 0 ? 0 : idx - 1);
-        select(flatVisible[idx === -1 ? 0 : next].id);
-        e.preventDefault();
-        return;
-      }
-      const tabIndex = Number(e.key) - 1;
-      if (tabIndex >= 0 && tabIndex < TAB_ORDER.length && selected) {
-        window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: TAB_ORDER[tabIndex][0] }));
+      const hit = shortcuts.find((s) => s.run && s.match?.(e));
+      if (hit) {
+        hit.run!(e);
         e.preventDefault();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flatVisible, selectedId, selected]);
+  }, [shortcuts]);
+
+  // Announce the shortcuts once, the first time this build runs — a help
+  // sheet nobody knows about may as well not exist. Bump the key when the
+  // list changes enough to be worth re-announcing.
+  useEffect(() => {
+    if (localStorage.getItem(HOTKEYS_SEEN) === "1") return;
+    localStorage.setItem(HOTKEYS_SEEN, "1");
+    setShowHotkeys(true);
+  }, []);
 
   const orgBar = orgState && (
     <>
@@ -2068,7 +2156,14 @@ export function MainApp() {
           </button>
           <button
             className="icon-btn"
-            title="Settings"
+            title="Keyboard shortcuts  (?)"
+            onClick={() => setShowHotkeys((s) => !s)}
+          >
+            ⌨
+          </button>
+          <button
+            className="icon-btn"
+            title="Settings  (,)"
             onClick={() => (showSettings ? setShowSettings(false) : openSettings())}
           >
             ⚙
@@ -2227,7 +2322,9 @@ export function MainApp() {
         />
       )}
 
-      {showHotkeys && <HotkeysHelp onClose={() => setShowHotkeys(false)} />}
+      {showHotkeys && (
+        <HotkeysHelp shortcuts={shortcuts} onClose={() => setShowHotkeys(false)} />
+      )}
       <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
     </div>
   );
@@ -2263,33 +2360,37 @@ function Onboarding({ onOpenSettings }: { onOpenSettings: () => void }) {
   );
 }
 
-function HotkeysHelp({ onClose }: { onClose: () => void }) {
-  const KEYS: [string, string][] = [
-    ["j / k", "next / previous pull request"],
-    ["1 – 4", "Assessment · Architecture · Diff · Comments"],
-    ["a", "toggle the assistant panel"],
-    ["⌘ +  /  −  /  0", "zoom in / out / reset"],
-    ["/", "focus the filter"],
-    ["esc", "close menus, drawers, this help"],
-    ["?", "toggle this help"],
-    ["right-click a PR", "analyze, PR/author/repo priority, mute, untrack"],
-    ["click a node", "drill into the architecture · diff at code level"],
-  ];
+function HotkeysHelp({
+  shortcuts,
+  onClose,
+}: {
+  shortcuts: Shortcut[];
+  onClose: () => void;
+}) {
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} />
       <div className="hotkeys-help">
-        <div className="drawer-title">Keyboard shortcuts</div>
+        <div className="drawer-title">
+          Keyboard shortcuts
+          <span className="spacer" />
+          <button className="icon-btn" title="Close" onClick={onClose}>
+            ✕
+          </button>
+        </div>
         <table>
           <tbody>
-            {KEYS.map(([key, what]) => (
-              <tr key={key}>
-                <td className="mono hotkey-key">{key}</td>
-                <td>{what}</td>
+            {shortcuts.map((s) => (
+              <tr key={s.keys}>
+                <td className="mono hotkey-key">{s.keys}</td>
+                <td>{s.label}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        <p className="hotkeys-foot">
+          Press <span className="mono">?</span> any time, or use the ⌨ button beside the gear.
+        </p>
       </div>
     </>
   );
