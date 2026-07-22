@@ -7,6 +7,8 @@
 //! table (seeded from public per-model rates, editable), and anything we
 //! can't price is reported as unpriced rather than quietly counted as free.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -70,22 +72,29 @@ pub fn record(
 const CACHE_READ_RATIO: f64 = 0.1;
 const CACHE_WRITE_RATIO: f64 = 1.25;
 
-/// Published per-million-token rates for models we can recognise by id,
-/// matched on a substring so Bedrock's `anthropic.` and regional prefixes
-/// (`us.anthropic.claude-opus-4-8`) resolve to the same entry. Only a
-/// fallback: a settings entry for the exact model id always wins.
-const KNOWN_RATES: &[(&str, f64, f64)] = &[
-    ("claude-fable-5", 10.0, 50.0),
-    ("claude-mythos-5", 10.0, 50.0),
-    ("claude-opus-4-8", 5.0, 25.0),
-    ("claude-opus-4-7", 5.0, 25.0),
-    ("claude-opus-4-6", 5.0, 25.0),
-    ("claude-opus-4-5", 5.0, 25.0),
-    ("claude-sonnet-5", 3.0, 15.0),
-    ("claude-sonnet-4-6", 3.0, 15.0),
-    ("claude-sonnet-4-5", 3.0, 15.0),
-    ("claude-haiku-4-5", 1.0, 5.0),
+/// Published per-million-token rates, keyed by the family name as it appears
+/// in either a model id (`us.anthropic.claude-opus-4-8`) or the Claude Code
+/// env var that points at an ARN (`ANTHROPIC_DEFAULT_OPUS_MODEL`). One table
+/// serves both lookups, so a new model is priced for both at once.
+///
+/// Family is the right granularity: Opus 4.6/4.7/4.8 all price alike, as do
+/// the current Sonnets. Only a fallback — a rate you set always wins.
+const FAMILY_RATES: &[(&str, &str, f64, f64)] = &[
+    ("fable", "Claude Fable", 10.0, 50.0),
+    ("mythos", "Claude Mythos", 10.0, 50.0),
+    ("opus", "Claude Opus", 5.0, 25.0),
+    ("sonnet", "Claude Sonnet", 3.0, 15.0),
+    ("haiku", "Claude Haiku", 1.0, 5.0),
 ];
+
+/// Match a family name inside any text — a model id or an env var key.
+fn family_of(text: &str) -> Option<(&'static str, f64, f64)> {
+    let t = text.to_lowercase();
+    FAMILY_RATES
+        .iter()
+        .find(|(needle, _, _, _)| t.contains(needle))
+        .map(|(_, family, input, output)| (*family, *input, *output))
+}
 
 /// A model id we could only name by looking it up somewhere else — a Bedrock
 /// inference-profile ARN mapped back to its family by the Claude Code
@@ -106,22 +115,6 @@ pub struct ModelAlias {
 fn is_model_ref(value: &str) -> bool {
     let v = value.to_lowercase();
     (v.starts_with("arn:") && v.contains("bedrock")) || v.contains("claude") || v.contains("anthropic.")
-}
-
-/// Published rates per family. Opus 4.6/4.7/4.8 all price the same, as do
-/// the current Sonnets, so family is a safe granularity even when the env
-/// var doesn't pin a version.
-fn family_rate(key: &str) -> Option<(&'static str, f64, f64)> {
-    let k = key.to_uppercase();
-    if k.contains("OPUS") {
-        Some(("Claude Opus", 5.0, 25.0))
-    } else if k.contains("SONNET") {
-        Some(("Claude Sonnet", 3.0, 15.0))
-    } else if k.contains("HAIKU") {
-        Some(("Claude Haiku", 1.0, 5.0))
-    } else {
-        None
-    }
 }
 
 /// Claude Code's settings files point env vars like ANTHROPIC_DEFAULT_OPUS_MODEL
@@ -160,7 +153,7 @@ pub fn claude_settings_aliases() -> Vec<ModelAlias> {
             let Some(model) = value.as_str().map(str::trim).filter(|v| is_model_ref(v)) else {
                 continue;
             };
-            let Some((family, input, output)) = family_rate(key) else { continue };
+            let Some((family, input, output)) = family_of(key) else { continue };
             if out.iter().any(|a| a.model == model) {
                 continue;
             }
@@ -209,9 +202,8 @@ fn rate_for(
             RateSource::ClaudeSettings,
         );
     }
-    let id = model.to_lowercase();
-    match KNOWN_RATES.iter().find(|(needle, _, _)| id.contains(needle)) {
-        Some((_, input, output)) => (Some((*input, *output)), RateSource::Published),
+    match family_of(model) {
+        Some((_, input, output)) => (Some((input, output)), RateSource::Published),
         None => (None, RateSource::Unknown),
     }
 }
@@ -308,8 +300,6 @@ pub struct ModelRate {
     pub model: String,
     pub input_per_mtok: f64,
     pub output_per_mtok: f64,
-    /// False when nothing could price this model.
-    pub known: bool,
     pub source: RateSource,
     /// What we identified it as and from where, when we had to look it up:
     /// "Claude Opus · ~/.claude/trajector-settings.json".
@@ -336,6 +326,8 @@ pub fn summarize(
     let mut by_model: Vec<UsageGroup> = Vec::new();
     let mut by_kind: Vec<UsageGroup> = Vec::new();
     let mut by_day: Vec<UsageGroup> = Vec::new();
+    let (mut pr_at, mut model_at, mut kind_at, mut day_at) =
+        (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
 
     for row in rows {
         let cost = cost_of(row, prices, aliases);
@@ -355,11 +347,11 @@ pub fn summarize(
         } else {
             format!("{} #{}", row.repo, row.number)
         };
-        push(&mut by_pr, &row.pr_id, &pr_label, row, cost);
-        push(&mut by_model, &row.model, &row.model.clone(), row, cost);
-        push(&mut by_kind, &row.kind, &row.kind.clone(), row, cost);
-        let day = row.at.get(..10).unwrap_or_default().to_string();
-        push(&mut by_day, &day, &day, row, cost);
+        push(&mut by_pr, &mut pr_at, &row.pr_id, &pr_label, row, cost);
+        push(&mut by_model, &mut model_at, &row.model, &row.model, row, cost);
+        push(&mut by_kind, &mut kind_at, &row.kind, &row.kind, row, cost);
+        let day = row.at.get(..10).unwrap_or_default();
+        push(&mut by_day, &mut day_at, day, day, row, cost);
     }
 
     stats.prs = by_pr.len() as i64;
@@ -389,7 +381,6 @@ pub fn summarize(
                 model: g.key.clone(),
                 input_per_mtok: resolved.map(|r| r.0).unwrap_or(0.0),
                 output_per_mtok: resolved.map(|r| r.1).unwrap_or(0.0),
-                known: resolved.is_some(),
                 source,
                 note,
             }
@@ -403,15 +394,26 @@ pub fn summarize(
     stats
 }
 
-fn push(groups: &mut Vec<UsageGroup>, key: &str, label: &str, row: &UsageRow, cost: Option<f64>) {
-    match groups.iter_mut().find(|g| g.key == key) {
-        Some(group) => group.totals.add(row, cost),
-        None => {
-            let mut totals = UsageTotals::default();
-            totals.add(row, cost);
-            groups.push(UsageGroup { key: key.to_string(), label: label.to_string(), totals });
-        }
-    }
+/// Groups keep insertion order (the day series is read as a time series), so
+/// the index map is what keeps the per-row lookup off a linear scan — a busy
+/// year is tens of thousands of rows against thousands of PRs.
+fn push(
+    groups: &mut Vec<UsageGroup>,
+    index: &mut HashMap<String, usize>,
+    key: &str,
+    label: &str,
+    row: &UsageRow,
+    cost: Option<f64>,
+) {
+    let at = *index.entry(key.to_string()).or_insert_with(|| {
+        groups.push(UsageGroup {
+            key: key.to_string(),
+            label: label.to_string(),
+            totals: UsageTotals::default(),
+        });
+        groups.len() - 1
+    });
+    groups[at].totals.add(row, cost);
 }
 
 /// RFC3339 timestamps sort lexicographically, so a string cutoff is enough.
@@ -456,7 +458,7 @@ mod tests {
         let stats = summarize(&[r], &[], &[], "2026-07-02T00:00:00Z");
         assert_eq!(stats.all_time.unpriced_requests, 1);
         assert_eq!(stats.all_time.cost, 0.0);
-        assert!(!stats.rates[0].known);
+        assert_eq!(stats.rates[0].source, RateSource::Unknown);
     }
 
     /// The shape Claude Code writes: env vars naming models, values that are
@@ -484,7 +486,7 @@ mod tests {
             let Some(model) = value.as_str().map(str::trim).filter(|v| is_model_ref(v)) else {
                 continue;
             };
-            if let Some((family, input, _)) = family_rate(key) {
+            if let Some((family, input, _)) = family_of(key) {
                 found.push((family, input));
                 assert!(model.starts_with("arn:"), "{model} should be a model reference");
             }

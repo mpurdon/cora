@@ -39,15 +39,21 @@ export function initReviewStore(): void {
   void onReviewSubmitted((e) => useReviewStore.getState().record(e.prId, e.verdict));
 }
 
-/** Has a refetch caught up with a pending verdict? Both timestamps come from
- *  GitHub (the mutation returns the review it created), so this compares
- *  server clock to server clock — no local skew to guess at. */
-export function serverHasVerdict(pending: ReviewVerdict, reviews: ReviewSummary[]): boolean {
-  return reviews.some(
-    (r) =>
-      r.author === pending.author &&
-      r.submittedAt != null &&
-      r.submittedAt >= pending.submittedAt,
+/** Has a refetch caught up with a pending verdict? Two backend shapes answer
+ *  this: the review strip's summaries carry no id, so they're matched on
+ *  author and server timestamp; the conversation's verdicts carry the id the
+ *  mutation returned, so they're matched exactly. One predicate either way,
+ *  so the header and the conversation can't disagree about what's settled. */
+export function serverHasVerdict(
+  pending: ReviewVerdict,
+  reviews: (ReviewSummary | ReviewVerdict)[],
+): boolean {
+  return reviews.some((r) =>
+    "id" in r
+      ? r.id === pending.id
+      : r.author === pending.author &&
+        r.submittedAt != null &&
+        r.submittedAt >= pending.submittedAt,
   );
 }
 
