@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message, StopReason};
+use aws_sdk_bedrockruntime::types::{
+    ContentBlock, ConversationRole, Message, StopReason, ToolResultContentBlock,
+};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -17,7 +19,8 @@ use crate::analysis::engine::{
 };
 use crate::analysis::tools::RepoTools;
 use crate::analysis::types::{
-    events, AnalysisResult, ChatEvent, ChatItem, ChatItemKind, ChatPendingAction, ChatTranscript,
+    events, AnalysisResult, ChatContext, ChatEvent, ChatItem, ChatItemKind, ChatPendingAction,
+    ChatTranscript, ChatUsage, ContextGroup, ContextPart,
 };
 use crate::devlog;
 use crate::error::{AppError, AppResult};
@@ -41,7 +44,10 @@ Keep answers tight and skimmable (markdown). Short paragraphs, no preamble."#;
 /// One PR's live conversation. Bedrock messages are kept verbatim so the
 /// prompt cache stays warm; items are the UI transcript.
 pub struct ChatSession {
-    system: String,
+    /// The system prompt as labelled sections. Kept split (rather than as
+    /// one string) so the context inspector can attribute every byte to
+    /// where it came from; joined verbatim on the way to Bedrock.
+    system_parts: Vec<SystemPart>,
     head_sha: String,
     messages: Vec<Message>,
     items: Vec<ChatItem>,
@@ -50,6 +56,29 @@ pub struct ChatSession {
     /// completed with the action's own result before resuming.
     pending_results: Vec<ContentBlock>,
     busy: bool,
+    /// What the last request cost, and how many we've made this session.
+    usage: Option<ChatUsage>,
+    requests: i64,
+    /// Our own estimate for the request `usage` measured, so the running
+    /// total can be scaled to what Bedrock actually counts.
+    last_sent_est: i64,
+    /// Context outside the conversation moved (an analysis finished) —
+    /// rebuild the system prompt before the next turn.
+    system_stale: bool,
+}
+
+impl ChatSession {
+    fn system(&self) -> String {
+        self.system_parts.iter().map(|p| p.text.as_str()).collect()
+    }
+}
+
+/// A labelled section of the system prompt.
+#[derive(Clone)]
+struct SystemPart {
+    label: &'static str,
+    origin: &'static str,
+    text: String,
 }
 
 struct PendingAction {
@@ -106,7 +135,7 @@ fn with_session<R>(
 
 /// Append the collected tool results as the next user message.
 fn push_results(app: &AppHandle, pr_id: &str, results: Vec<ContentBlock>) -> AppResult<()> {
-    with_session(app, pr_id, |s| {
+    let out = with_session(app, pr_id, |s| {
         if let Ok(msg) = Message::builder()
             .role(ConversationRole::User)
             .set_content(Some(results))
@@ -114,7 +143,12 @@ fn push_results(app: &AppHandle, pr_id: &str, results: Vec<ContentBlock>) -> App
         {
             s.messages.push(msg);
         }
-    })
+    });
+    // Tool results are usually the largest thing that ever enters the
+    // context, and they arrive between transcript items — announce them so
+    // the context meter moves when the bytes land, not a step later.
+    emit_event(app, pr_id, None);
+    out
 }
 
 fn emit_event(app: &AppHandle, pr_id: &str, item: Option<ChatItem>) {
@@ -141,31 +175,54 @@ fn set_busy(app: &AppHandle, pr_id: &str, busy: bool) {
 
 // -- context seeding ----------------------------------------------------------
 
-fn build_system(pr: &TrackedPr, analysis: Option<&AnalysisResult>, settings: &Settings) -> String {
-    let mut s = String::from(CHAT_SYSTEM_PROMPT);
-    s.push_str(&crate::analysis::engine::conventions_section(settings));
-    s.push_str(&format!(
-        "\n\n## Pull request\n{repo} #{num}: {title}\nAuthor: {author} · head {head} · +{add} −{del} across {files} files\nURL: {url}",
-        repo = pr.info.repo,
-        num = pr.info.number,
-        title = pr.info.title,
-        author = pr.info.author,
-        head = pr.info.head_sha,
-        add = pr.info.additions,
-        del = pr.info.deletions,
-        files = pr.info.changed_files,
-        url = pr.info.url,
-    ));
+fn build_system(
+    pr: &TrackedPr,
+    analysis: Option<&AnalysisResult>,
+    settings: &Settings,
+) -> Vec<SystemPart> {
+    let mut parts = vec![SystemPart {
+        label: "Assistant instructions",
+        origin: "app",
+        text: String::from(CHAT_SYSTEM_PROMPT),
+    }];
+    let conventions = crate::analysis::engine::conventions_section(settings);
+    if !conventions.is_empty() {
+        parts.push(SystemPart {
+            label: "Team conventions",
+            origin: "your settings",
+            text: conventions,
+        });
+    }
+    parts.push(SystemPart {
+        label: "PR facts",
+        origin: "github",
+        text: format!(
+            "\n\n## Pull request\n{repo} #{num}: {title}\nAuthor: {author} · head {head} · +{add} −{del} across {files} files\nURL: {url}",
+            repo = pr.info.repo,
+            num = pr.info.number,
+            title = pr.info.title,
+            author = pr.info.author,
+            head = pr.info.head_sha,
+            add = pr.info.additions,
+            del = pr.info.deletions,
+            files = pr.info.changed_files,
+            url = pr.info.url,
+        ),
+    });
     match analysis {
         Some(a) => {
-            s.push_str("\n\n## Architecture analysis (completed for this head)\n");
-            s.push_str(
-                &serde_json::to_string(&json!({
-                    "assessment": a.assessment,
-                    "graph": a.graph,
-                }))
-                .unwrap_or_default(),
-            );
+            parts.push(SystemPart {
+                label: "Architecture analysis",
+                origin: "analysis",
+                text: format!(
+                    "\n\n## Architecture analysis (completed for this head)\n{}",
+                    serde_json::to_string(&json!({
+                        "assessment": a.assessment,
+                        "graph": a.graph,
+                    }))
+                    .unwrap_or_default()
+                ),
+            });
             let steps: Vec<&str> = a
                 .trace
                 .iter()
@@ -174,15 +231,25 @@ fn build_system(pr: &TrackedPr, analysis: Option<&AnalysisResult>, settings: &Se
                 .take(80)
                 .collect();
             if !steps.is_empty() {
-                s.push_str("\n\n### Research already done during the analysis\n");
-                s.push_str(&steps.join("\n"));
+                parts.push(SystemPart {
+                    label: "Analysis research trace",
+                    origin: "analysis",
+                    text: format!(
+                        "\n\n### Research already done during the analysis\n{}",
+                        steps.join("\n")
+                    ),
+                });
             }
         }
-        None => s.push_str(
-            "\n\n(No architecture analysis has been run for this head yet — explore with the research tools as needed.)",
-        ),
+        None => parts.push(SystemPart {
+            label: "No analysis yet",
+            origin: "app",
+            text: String::from(
+                "\n\n(No architecture analysis has been run for this head yet — explore with the research tools as needed.)",
+            ),
+        }),
     }
-    s
+    parts
 }
 
 /// Create the session if absent; refresh its context when the head moved.
@@ -196,7 +263,7 @@ fn ensure_session(app: &AppHandle, pr_id: &str) -> AppResult<()> {
     {
         let map = sessions.map.lock().unwrap();
         if let Some(existing) = map.get(pr_id) {
-            if existing.head_sha == pr.info.head_sha {
+            if existing.head_sha == pr.info.head_sha && !existing.system_stale {
                 return Ok(());
             }
         }
@@ -206,26 +273,31 @@ fn ensure_session(app: &AppHandle, pr_id: &str) -> AppResult<()> {
         .get_analysis(pr_id, "context", "", &pr.info.head_sha)?
         .and_then(|json| serde_json::from_str::<AnalysisResult>(&json).ok());
     let settings = store.settings()?;
-    let system = build_system(&pr, analysis.as_ref(), &settings);
+    let system_parts = build_system(&pr, analysis.as_ref(), &settings);
 
     let mut map = sessions.map.lock().unwrap();
     match map.get_mut(pr_id) {
         // Head moved mid-conversation: keep the transcript, swap the context.
         Some(existing) => {
-            existing.system = system;
+            existing.system_parts = system_parts;
             existing.head_sha = pr.info.head_sha.clone();
+            existing.system_stale = false;
         }
         None => {
             map.insert(
                 pr_id.to_string(),
                 ChatSession {
-                    system,
+                    system_parts,
                     head_sha: pr.info.head_sha.clone(),
                     messages: Vec::new(),
                     items: Vec::new(),
                     pending: None,
                     pending_results: Vec::new(),
                     busy: false,
+                    usage: None,
+                    requests: 0,
+                    last_sent_est: 0,
+                    system_stale: false,
                 },
             );
         }
@@ -485,6 +557,201 @@ pub fn transcript(app: &AppHandle, pr_id: &str) -> AppResult<ChatTranscript> {
     })
 }
 
+/// ~4 chars per token. Deliberately crude: the exact number for a whole
+/// request only comes back from Bedrock, and `ChatContext::usage` carries it.
+fn est_tokens(text: &str) -> i64 {
+    (text.chars().count() as i64 + 3) / 4
+}
+
+/// Context window for a model id, 0 when we can't claim to know it. Only
+/// used to draw a "how full is it" bar, never to make a decision.
+fn window_tokens(model_id: &str) -> i64 {
+    let id = model_id.to_lowercase();
+    if id.contains("claude") {
+        200_000
+    } else {
+        0
+    }
+}
+
+/// Where a tool's output comes from, so the inspector can say whether bytes
+/// are repo source, GitHub state, or the app's own bookkeeping.
+fn tool_origin(name: &str) -> &'static str {
+    match name {
+        "get_file" | "list_tree" | "search_code" | "get_readme_and_docs" => "repo file",
+        "get_pr_diff" | "get_commit_diff" | "list_commits" | "list_recent_prs"
+        | "get_pr_conversation" => "github",
+        "mark_files_viewed" => "app",
+        _ => "tool",
+    }
+}
+
+fn part(
+    group: ContextGroup,
+    id: String,
+    label: String,
+    origin: &str,
+    text: String,
+    include_text: bool,
+) -> ContextPart {
+    ContextPart {
+        id,
+        group,
+        label,
+        origin: origin.to_string(),
+        chars: text.chars().count() as i64,
+        est_tokens: est_tokens(&text),
+        text: if include_text { text } else { String::new() },
+    }
+}
+
+/// Estimated tokens for a whole request: the session's own bytes plus the
+/// tool definitions, which ride along on every turn.
+fn est_session(s: &ChatSession, tools_est: i64) -> i64 {
+    build_parts(s, false).iter().map(|p| p.est_tokens).sum::<i64>() + tools_est
+}
+
+/// The tool definitions as context parts — one per tool, schema included.
+fn tool_parts(include_text: bool) -> Vec<ContextPart> {
+    chat_specs()
+        .into_iter()
+        .map(|(name, description, schema)| {
+            part(
+                ContextGroup::Tools,
+                format!("tool-{name}"),
+                name.to_string(),
+                if is_action(name) { "app action" } else { "research tool" },
+                format!(
+                    "{name}: {description}\n{}",
+                    serde_json::to_string_pretty(&schema).unwrap_or_default()
+                ),
+                include_text,
+            )
+        })
+        .collect()
+}
+
+/// The session's own bytes: system prompt sections, then every message
+/// block. Runs under the session lock, so it borrows rather than clones.
+fn build_parts(s: &ChatSession, include_text: bool) -> Vec<ContextPart> {
+    let mut parts: Vec<ContextPart> = s
+        .system_parts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            part(
+                ContextGroup::System,
+                format!("system-{i}"),
+                p.label.to_string(),
+                p.origin,
+                p.text.clone(),
+                include_text,
+            )
+        })
+        .collect();
+
+    // Tool results identify their call by id only — walk forward so each
+    // result can be labelled with the tool that produced it.
+    let mut call_names: HashMap<&str, &str> = HashMap::new();
+    for (m, message) in s.messages.iter().enumerate() {
+        let from_user = message.role() == &ConversationRole::User;
+        for (b, block) in message.content().iter().enumerate() {
+            let id = format!("msg-{m}-{b}");
+            match block {
+                ContentBlock::Text(t) => {
+                    let (label, origin) =
+                        if from_user { ("You", "you") } else { ("Assistant", "model") };
+                    parts.push(part(
+                        ContextGroup::Messages,
+                        id,
+                        label.to_string(),
+                        origin,
+                        t.clone(),
+                        include_text,
+                    ));
+                }
+                ContentBlock::ToolUse(tu) => {
+                    call_names.insert(tu.tool_use_id(), tu.name());
+                    let input = document_to_value(tu.input());
+                    parts.push(part(
+                        ContextGroup::Messages,
+                        id,
+                        format!("call {}", describe_tool_call(tu.name(), &input)),
+                        "model",
+                        serde_json::to_string(&input).unwrap_or_default(),
+                        include_text,
+                    ));
+                }
+                ContentBlock::ToolResult(tr) => {
+                    let name = call_names.get(tr.tool_use_id()).copied().unwrap_or("tool");
+                    let text: String = tr
+                        .content()
+                        .iter()
+                        .filter_map(|c| match c {
+                            ToolResultContentBlock::Text(t) => Some(t.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    parts.push(part(
+                        ContextGroup::Messages,
+                        id,
+                        format!("{name} result"),
+                        tool_origin(name),
+                        text,
+                        include_text,
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    parts
+}
+
+/// Mark a session's system prompt for rebuild — called when the context it
+/// was built from changes (an analysis completing) rather than the head.
+/// Silent when there is no session for the PR: the next one builds fresh.
+pub fn invalidate_context(app: &AppHandle, pr_id: &str) {
+    let _ = with_session(app, pr_id, |s| s.system_stale = true);
+    emit_event(app, pr_id, None);
+}
+
+/// Everything the assistant sees on its next turn, itemised by where it came
+/// from. `include_text` is false for the running total in the panel footer —
+/// tool results can be megabytes and the meter only needs sizes.
+pub fn context(app: &AppHandle, pr_id: &str, include_text: bool) -> AppResult<ChatContext> {
+    ensure_session(app, pr_id)?;
+    let store = app.state::<crate::orgs::Orgs>().active();
+    let model_id = store.settings()?.bedrock_model_id;
+    // Built inside the session lock: the meter refetches on every chat event
+    // and tool results are large — cloning the message list to read its size
+    // would be the most expensive thing this command does.
+    let (mut parts, usage, requests, last_sent_est) = with_session(app, pr_id, |s| {
+        (build_parts(s, include_text), s.usage.clone(), s.requests, s.last_sent_est)
+    })?;
+
+    parts.extend(tool_parts(include_text));
+
+    let est_tokens: i64 = parts.iter().map(|p| p.est_tokens).sum();
+    Ok(ChatContext {
+        pr_id: pr_id.to_string(),
+        // Raw ~4-chars-per-token, then scaled by how far that estimate was
+        // off on the last measured request. Before any request there is
+        // nothing to calibrate against, so the raw estimate stands.
+        projected_tokens: match (&usage, last_sent_est) {
+            (Some(u), sent) if sent > 0 => est_tokens * u.prompt_tokens / sent,
+            _ => est_tokens,
+        },
+        est_tokens,
+        window_tokens: window_tokens(&model_id),
+        model_id,
+        parts,
+        usage,
+        requests,
+    })
+}
+
 pub fn clear(app: &AppHandle, pr_id: &str) -> AppResult<()> {
     let sessions = app.state::<ChatSessions>();
     sessions.map.lock().unwrap().remove(pr_id);
@@ -607,11 +874,13 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
         &token,
     )?;
     let specs = chat_specs();
+    // Tool definitions don't change mid-conversation; price them once.
+    let specs_est: i64 = tool_parts(false).iter().map(|p| p.est_tokens).sum();
     let mut use_cache = true;
 
     for _turn in 0..MAX_CHAT_TURNS {
         let (system, messages) =
-            with_session(app, pr_id, |s| (s.system.clone(), s.messages.clone()))?;
+            with_session(app, pr_id, |s| (s.system(), s.messages.clone()))?;
 
         let resp = converse_once(
             app,
@@ -626,6 +895,30 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
             &settings.aws_profile,
         )
         .await?;
+
+        // What that request actually cost — the only exact numbers we get,
+        // and what the panel's context meter reports.
+        if let Some(u) = resp.usage() {
+            // input_tokens is only the part the cache didn't serve, so on a
+            // warm prefix it reads near zero. The prompt is all three buckets.
+            let cache_read = u.cache_read_input_tokens().unwrap_or(0) as i64;
+            let cache_write = u.cache_write_input_tokens().unwrap_or(0) as i64;
+            let usage = ChatUsage {
+                prompt_tokens: u.input_tokens() as i64 + cache_read + cache_write,
+                input_tokens: u.input_tokens() as i64,
+                output_tokens: u.output_tokens() as i64,
+                cache_read_tokens: cache_read,
+                cache_write_tokens: cache_write,
+            };
+            // The session still holds exactly what we sent (the reply is
+            // pushed below), so this is the estimate that measurement
+            // corresponds to — the ratio calibrates every later total.
+            with_session(app, pr_id, |s| {
+                s.last_sent_est = est_session(s, specs_est);
+                s.usage = Some(usage);
+                s.requests += 1;
+            })?;
+        }
 
         let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {
             return Err(AppError::Other("Bedrock returned no message".into()));
@@ -721,4 +1014,50 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
     );
     set_busy(app, pr_id, false);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The inspector's value is provenance, so every research tool has to say
+    /// where its bytes come from. A tool added later that falls through to the
+    /// generic label is a gap, not a harmless default.
+    #[test]
+    fn every_research_tool_declares_an_origin() {
+        for (name, _, _) in chat_specs() {
+            if is_action(name) {
+                continue;
+            }
+            assert_ne!(
+                tool_origin(name),
+                "tool",
+                "{name} has no origin — add it to tool_origin()"
+            );
+        }
+    }
+
+    /// The system prompt is sent as one string; splitting it into labelled
+    /// parts must not change a byte of what the model receives.
+    #[test]
+    fn system_parts_join_to_the_prompt_verbatim() {
+        let parts = vec![
+            SystemPart { label: "a", origin: "app", text: "one".into() },
+            SystemPart { label: "b", origin: "app", text: "\n\ntwo".into() },
+        ];
+        let session = ChatSession {
+            system_parts: parts,
+            head_sha: String::new(),
+            messages: Vec::new(),
+            items: Vec::new(),
+            pending: None,
+            pending_results: Vec::new(),
+            busy: false,
+            usage: None,
+            requests: 0,
+            last_sent_est: 0,
+            system_stale: false,
+        };
+        assert_eq!(session.system(), "one\n\ntwo");
+    }
 }
