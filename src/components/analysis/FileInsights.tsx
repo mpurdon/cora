@@ -1,10 +1,14 @@
+import { useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type { CodeFinding } from "../../bindings/CodeFinding";
+import type { PrConversation } from "../../bindings/PrConversation";
 import type { TrackedPr } from "../../bindings/TrackedPr";
 import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
 import { codePassFailure } from "./AssessmentView";
 import { useDiffStore } from "../../state/diffStore";
 import { parseDiffCached } from "./DiffView";
-import { findingSeed } from "../../lib/comments";
+import { ipc } from "../../lib/ipc";
+import { findingSeed, isFindingCommented, viewerComments } from "../../lib/comments";
 
 /** Per-file insights for the file currently in view on the Diff tab —
  *  follows the scroll spy, so it always describes what the reviewer is
@@ -16,6 +20,30 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
   const requestCompose = useDiffStore((s) => s.requestCompose);
   const run = useAnalysisStore((s) => s.runs[analysisKey(pr.id, "context")]);
   const result = run?.status === "done" ? run.result : undefined;
+  // A finding is "addressed" when the viewer has a review comment at its line.
+  // Derived from the live PR conversation, so it's durable across reloads and
+  // reflects comments made on GitHub directly — not just clicks in CORA.
+  const [conversation, setConversation] = useState<PrConversation | null>(null);
+  const [viewerLogin, setViewerLogin] = useState("");
+
+  useEffect(() => {
+    const load = () =>
+      void ipc.getPrComments(pr.id).then(setConversation).catch(() => setConversation(null));
+    load();
+    void ipc
+      .getPrReviews(pr.id)
+      .then((r) => setViewerLogin(r.viewerLogin))
+      .catch(() => {});
+    // Refresh the moment a comment/review lands, so the ✓ appears right after
+    // you post from the composer this button opens.
+    const un = listen("reviews:changed", load);
+    return () => void un.then((fn) => fn());
+  }, [pr.id]);
+
+  const mine = useMemo(
+    () => viewerComments(conversation, viewerLogin),
+    [conversation, viewerLogin],
+  );
 
   const files = entry?.raw ? parseDiffCached(entry.raw) : [];
   const file = visiblePath ? files.find((f) => f.path === visiblePath) : undefined;
@@ -82,27 +110,40 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
             ) : (
               <p className="insights-reason muted">None for this file.</p>
             ))}
-          {findings.map((f, i) => (
-            <div key={i} className="code-finding-row">
-              <span className={`sev sev-${f.severity}`}>{f.severity}</span>
-              <span className="kind-tag mono">{f.kind}</span>
-              <div className="code-finding-body">
-                <div>
-                  {f.line != null && <span className="mono insights-line">L{f.line} · </span>}
-                  {f.finding}
+          {findings.map((f, i) => {
+            const isCommented = isFindingCommented(f, mine);
+            return (
+              <div key={i} className={`code-finding-row${isCommented ? " commented" : ""}`}>
+                <span className={`sev sev-${f.severity}`}>{f.severity}</span>
+                <span className="kind-tag mono">{f.kind}</span>
+                <div className="code-finding-body">
+                  <div>
+                    {f.line != null && <span className="mono insights-line">L{f.line} · </span>}
+                    {f.finding}
+                  </div>
+                  <div className="code-finding-suggestion">→ {f.suggestion}</div>
                 </div>
-                <div className="code-finding-suggestion">→ {f.suggestion}</div>
+                {isCommented ? (
+                  <span
+                    className="finding-comment-btn commented"
+                    aria-disabled="true"
+                    title="You have a review comment at this line"
+                  >
+                    ✓ commented
+                  </span>
+                ) : (
+                  <span
+                    className="finding-comment-btn"
+                    role="button"
+                    title="Draft a review comment from this finding"
+                    onClick={() => commentCode(f)}
+                  >
+                    ± comment
+                  </span>
+                )}
               </div>
-              <span
-                className="finding-comment-btn"
-                role="button"
-                title="Draft a review comment from this finding"
-                onClick={() => commentCode(f)}
-              >
-                ± comment
-              </span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

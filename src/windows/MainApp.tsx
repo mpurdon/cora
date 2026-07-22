@@ -24,6 +24,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
 import type { PrPriority } from "../bindings/PrPriority";
 import type { PrReviews } from "../bindings/PrReviews";
+import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
@@ -38,7 +39,7 @@ import {
 } from "../components/icons";
 import { PrFilesRail } from "../components/PrFilesRail";
 import { events, ipc, onFocusPr } from "../lib/ipc";
-import { findingSeed } from "../lib/comments";
+import { findingSeed, isFindingCommented, viewerComments } from "../lib/comments";
 import { setThemeOrg } from "../lib/theme";
 import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
@@ -690,6 +691,28 @@ function AnalysisPanel({
 
   useEffect(() => setStack([ROOT_FRAME]), [pr.id]);
 
+  // Which findings you've already commented on, derived from the live PR
+  // conversation so a finding settles to "commented" once you leave a review
+  // comment at its location — durable across reloads, reflects GitHub-side
+  // comments too. Refetches on any comment/review change.
+  const [conversation, setConversation] = useState<PrConversation | null>(null);
+  const [viewerLogin, setViewerLogin] = useState("");
+  useEffect(() => {
+    const load = () =>
+      void ipc.getPrComments(pr.id).then(setConversation).catch(() => setConversation(null));
+    load();
+    void ipc
+      .getPrReviews(pr.id)
+      .then((r) => setViewerLogin(r.viewerLogin))
+      .catch(() => {});
+    const un = listen("reviews:changed", load);
+    return () => void un.then((fn) => fn());
+  }, [pr.id]);
+  const mine = useMemo(
+    () => viewerComments(conversation, viewerLogin),
+    [conversation, viewerLogin],
+  );
+
   const frame = stack[stack.length - 1];
   const aLevel = ANALYSIS_OF[frame.level];
   // The container view reuses the root context run — no focus of its own.
@@ -1027,6 +1050,7 @@ function AnalysisPanel({
           onFocusNodes={onFocusNodes}
           onCommentFinding={commentFinding}
           onCommentCode={commentCode}
+          isCommented={(f) => isFindingCommented(f, mine)}
         />
       ) : (
         <>

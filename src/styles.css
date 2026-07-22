@@ -4754,6 +4754,22 @@ button.diff-file-header:hover {
   opacity: 1;
 }
 
+/* A finding you've drafted a comment from — settled into a "done" state.
+   The row recedes and the button stays visible (no longer hover-gated) as a
+   persistent "addressed" marker in the review accent. */
+.code-finding-row.commented {
+  opacity: 0.7;
+}
+
+.finding-comment-btn.commented,
+.code-finding-row.commented:hover .finding-comment-btn.commented {
+  opacity: 1;
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: transparent;
+  cursor: default;
+}
+
 /* Whole-file added/deleted state tags in diff headers. */
 .file-state-tag {
   flex: none;
