@@ -5005,3 +5005,187 @@ button.diff-file-header:hover {
   word-break: break-word;
   user-select: text;
 }
+
+/* ---------- developer: usage dashboard ---------- */
+
+/* Chart fill. A darker step of the app's assistant purple: the app palette's
+   own hues sit at OKLCH L≈0.70–0.76, above the 0.48–0.67 band a fill needs on
+   this dark surface. Validated (contrast ≥3:1, chroma ≥0.1) — one series, so
+   one hue and no legend. */
+:root {
+  --viz: #8b78ef;
+}
+
+.usage-view {
+  padding-bottom: 24px;
+}
+
+.usage-warn {
+  margin: 12px 0;
+  padding: 9px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: rgba(217, 169, 63, 0.08);
+  font-size: 12px;
+}
+
+.usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 10px;
+  margin: 16px 0 4px;
+}
+
+.usage-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.usage-tile-value {
+  font-size: 22px;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+.usage-tile-hint {
+  font-size: 10.5px;
+  color: var(--idle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-block {
+  margin-top: 26px;
+}
+
+.usage-block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.usage-caption {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* Bars sit on the baseline, 2px apart, with rounded data-ends. */
+.usage-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 110px;
+  margin-top: 8px;
+  padding: 0 1px;
+  border-bottom: 1px solid var(--line);
+}
+
+.usage-bar-slot {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  min-width: 4px;
+}
+
+.usage-bar {
+  display: block;
+  width: 100%;
+  background: var(--viz);
+  border-radius: 4px 4px 0 0;
+}
+
+.usage-bar-slot.on .usage-bar {
+  background: var(--text);
+}
+
+.usage-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  font-size: 9.5px;
+  color: var(--idle);
+}
+
+.usage-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.usage-table th {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--idle);
+  text-align: left;
+  padding: 0 8px 5px 0;
+}
+
+.usage-table td {
+  padding: 6px 8px 6px 0;
+  border-top: 1px solid var(--ink-2);
+}
+
+.usage-table .num {
+  text-align: right;
+  padding-right: 0;
+  white-space: nowrap;
+}
+
+.usage-table td.num {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.usage-label {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-model {
+  font-size: 10.5px;
+  max-width: 420px;
+}
+
+.usage-flag {
+  display: inline-block;
+  margin-left: 8px;
+  font-family: var(--sans);
+  font-size: 10px;
+  color: var(--warn);
+}
+
+.usage-flag.muted {
+  color: var(--idle);
+}
+
+.usage-rate {
+  width: 74px;
+  padding: 4px 6px;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: right;
+}
+
+.usage-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 62ch;
+}

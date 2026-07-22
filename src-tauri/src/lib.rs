@@ -8,6 +8,7 @@ mod notify;
 mod orgs;
 mod secrets;
 mod store;
+mod usage;
 
 use std::sync::Arc;
 
@@ -149,6 +150,8 @@ pub fn run() {
             commands::chat_confirm,
             commands::chat_clear,
             commands::get_chat_context,
+            commands::get_usage_stats,
+            commands::set_model_price,
             commands::get_pr_diff,
             commands::ensure_review_mark,
             commands::set_review_mark,

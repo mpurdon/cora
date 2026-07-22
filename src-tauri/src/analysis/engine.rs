@@ -625,6 +625,7 @@ pub async fn run(
         if let Some(usage) = resp.usage() {
             total_in += usage.input_tokens();
             total_out += usage.output_tokens();
+            crate::usage::record(app, &pr, "analysis", &model_id, usage);
             devlog::debug(
                 app,
                 "bedrock",
@@ -1007,6 +1008,10 @@ pub async fn code_findings(
             &settings.aws_profile,
         )
         .await?;
+
+        if let Some(usage) = resp.usage() {
+            crate::usage::record(app, &pr, "code-pass", &model_id, usage);
+        }
 
         let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {
             return Err(AppError::Other("Bedrock returned no message".into()));

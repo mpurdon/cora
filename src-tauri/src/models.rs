@@ -281,6 +281,11 @@ pub struct Settings {
     /// Cheaper/faster model for Component/Code drill-downs; empty = use main.
     #[serde(default = "default_drill_model")]
     pub bedrock_drill_model_id: String,
+    /// Dollars per million tokens, per model id, for the usage dashboard.
+    /// Inference-profile ARNs name no model, so their rate can only be told
+    /// to us; recognizable Claude ids fall back to published rates.
+    #[serde(default)]
+    pub model_prices: Vec<ModelPrice>,
     /// Unlocks the Developer settings pane (logs, prompt editing, internals).
     #[serde(default)]
     pub developer_mode: bool,
@@ -413,6 +418,7 @@ impl Default for Settings {
                 "arn:aws:bedrock:us-east-2:000000000000:application-inference-profile/abcd1234efgh"
                     .into(),
             bedrock_drill_model_id: default_drill_model(),
+            model_prices: Vec::new(),
             developer_mode: false,
             custom_system_prompt: String::new(),
             review_ignore_globs: default_ignore_globs(),
@@ -502,6 +508,17 @@ pub struct PollStatus {
 pub struct PrChangedEvent {
     pub pr: TrackedPr,
     pub changes: Vec<ChangeKind>,
+}
+
+/// What one model id costs, in dollars per million tokens.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPrice {
+    /// Exact model id or ARN as configured — matched literally.
+    pub model: String,
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
 }
 
 /// Payload for the `review:submitted` event — the review GitHub just created,

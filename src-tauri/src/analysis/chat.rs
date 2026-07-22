@@ -918,6 +918,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
                 s.usage = Some(usage);
                 s.requests += 1;
             })?;
+            crate::usage::record(app, &pr, "chat", &settings.bedrock_model_id, u);
         }
 
         let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {
