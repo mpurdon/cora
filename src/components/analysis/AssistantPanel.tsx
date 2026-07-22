@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import type { ChatContext } from "../../bindings/ChatContext";
 import type { TrackedPr } from "../../bindings/TrackedPr";
 import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
 import { useChatStore } from "../../state/chatStore";
 import { CommentBody } from "./CommentsView";
+import { ContextDrawer } from "./ContextDrawer";
 import { FileInsights } from "./FileInsights";
 import { formatTokens, TraceSteps } from "./TraceSteps";
 import { IconArrowUp } from "../icons";
@@ -27,15 +29,25 @@ export function AssistantPanel({
     if (!insightsEnabled) setView("chat");
   }, [insightsEnabled]);
   const session = useChatStore((s) => s.sessions[pr.id]);
+  const context = useChatStore((s) => s.contexts[pr.id]);
   const init = useChatStore((s) => s.init);
   const load = useChatStore((s) => s.load);
+  const loadContext = useChatStore((s) => s.loadContext);
   const send = useChatStore((s) => s.send);
   const confirm = useChatStore((s) => s.confirm);
   const clear = useChatStore((s) => s.clear);
+  const [showContext, setShowContext] = useState(false);
 
   useEffect(() => {
     void init().then(() => load(pr.id));
   }, [pr.id, init, load]);
+
+  // Chat events keep the running total live (see chatStore); this covers the
+  // rest: opening the panel, a new head, and an analysis landing — which
+  // rewrites the system prompt without touching the conversation.
+  useEffect(() => {
+    void loadContext(pr.id).catch(() => {});
+  }, [pr.id, pr.headSha, loadContext]);
 
   // The L1 analysis run's steps — live during a run, the trace afterwards.
   const run = useAnalysisStore((s) => s.runs[analysisKey(pr.id, "context")]);
@@ -233,8 +245,47 @@ export function AssistantPanel({
           <IconArrowUp />
         </button>
       </div>
+
+      <ContextMeter context={context} onOpen={() => setShowContext(true)} />
+      <ContextDrawer prId={pr.id} open={showContext} onClose={() => setShowContext(false)} />
         </>
       )}
     </aside>
+  );
+}
+
+/** Running total of what the next turn will carry, under the composer. It
+ *  moves as the conversation does: each tool result, reply and finished
+ *  analysis is announced, and the store refetches (debounced). */
+function ContextMeter({
+  context,
+  onOpen,
+}: {
+  context: ChatContext | undefined;
+  onOpen: () => void;
+}) {
+  if (!context) return null;
+  // Projected, not measured: the last request's cost excludes everything
+  // added since (its own reply, the tool results it triggered).
+  const total = context.projectedTokens;
+  const window = context.windowTokens;
+  const pct = window > 0 ? Math.min(100, (total / window) * 100) : null;
+  return (
+    <button
+      className="context-meter"
+      onClick={onOpen}
+      title="See exactly what is in the assistant's context"
+    >
+      <span className="eyebrow">context</span>
+      <span className="mono context-meter-total">≈{formatTokens(total)}</span>
+      {pct != null && (
+        <>
+          <span className="context-meter-bar">
+            <span className={`fill${pct > 80 ? " hot" : ""}`} style={{ width: `${pct}%` }} />
+          </span>
+          <span className="mono context-meter-pct">{Math.round(pct)}%</span>
+        </>
+      )}
+    </button>
   );
 }

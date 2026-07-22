@@ -148,6 +148,7 @@ pub fn run() {
             commands::chat_send,
             commands::chat_confirm,
             commands::chat_clear,
+            commands::get_chat_context,
             commands::get_pr_diff,
             commands::ensure_review_mark,
             commands::set_review_mark,

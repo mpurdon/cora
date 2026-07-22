@@ -626,6 +626,13 @@ pub fn spawn_analysis_task(
                         }
                     }
                 }
+                // A finished assessment is new context for the assistant.
+                // Without this its session keeps the "no analysis yet" prompt
+                // until the head moves — the analysis it should be grounded in
+                // would never reach it.
+                if level == AnalysisLevel::Context {
+                    crate::analysis::chat::invalidate_context(&app, &result.pr_id);
+                }
                 let _ = app.emit(analysis_events::ANALYSIS_COMPLETE, result);
             }
             Err(e) => {
@@ -1190,36 +1197,6 @@ pub fn chat_clear(app: AppHandle, pr_id: String) -> AppResult<()> {
 /// What the assistant will see on its next turn, itemised. `include_text`
 /// false returns sizes only — the panel's running total asks for that on
 /// every chat event, and tool results can be megabytes.
-/// Token spend across every Bedrock request this org has made.
-#[tauri::command]
-pub async fn get_usage_stats(app: AppHandle) -> AppResult<crate::usage::UsageStats> {
-    let store = app.state::<crate::orgs::Orgs>().active();
-    let rows = store.usage_rows()?;
-    let prices = store.settings()?.model_prices;
-    Ok(crate::usage::summarize(&rows, &prices, &chrono::Utc::now().to_rfc3339()))
-}
-
-/// Set (or clear, with a zero rate) the price for one model id.
-#[tauri::command]
-pub fn set_model_price(
-    app: AppHandle,
-    model: String,
-    input_per_mtok: f64,
-    output_per_mtok: f64,
-) -> AppResult<()> {
-    let store = app.state::<crate::orgs::Orgs>().active();
-    let mut settings = store.settings()?;
-    settings.model_prices.retain(|p| p.model != model);
-    if input_per_mtok > 0.0 || output_per_mtok > 0.0 {
-        settings.model_prices.push(crate::models::ModelPrice {
-            model,
-            input_per_mtok,
-            output_per_mtok,
-        });
-    }
-    store.save_settings(&settings)
-}
-
 /// Async so assembling a large context (and serialising it) stays off the
 /// UI thread — sync commands run there.
 #[tauri::command]
