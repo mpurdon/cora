@@ -103,6 +103,8 @@ export const ipc = {
     invoke<void>("add_pr_comment", { prId, body }),
   replyToThread: (threadId: string, body: string) =>
     invoke<void>("reply_to_thread", { threadId, body }),
+  updateComment: (commentId: string, body: string, isReviewComment: boolean) =>
+    invoke<void>("update_comment", { commentId, body, isReviewComment }),
   addDiffComment: (prId: string, path: string, line: number, body: string, startLine?: number) =>
     invoke<void>("add_diff_comment", { prId, path, line, body, startLine: startLine ?? null }),
   toggleReaction: (subjectId: string, content: string, remove: boolean) =>

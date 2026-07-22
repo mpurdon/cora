@@ -832,6 +832,40 @@ pub async fn add_pr_comment(app: AppHandle, pr_id: String, body: String) -> AppR
     Ok(())
 }
 
+/// Edit one of your own comments. GitHub splits this across two mutations by
+/// where the comment lives, so the caller says which.
+#[tauri::command]
+pub async fn update_comment(
+    app: AppHandle,
+    comment_id: String,
+    body: String,
+    is_review_comment: bool,
+) -> AppResult<()> {
+    if body.trim().is_empty() {
+        return Err(AppError::Other("comment is empty".into()));
+    }
+    let store = app.state::<crate::orgs::Orgs>().active();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let doc = if is_review_comment {
+        "mutation($id: ID!, $body: String!) {
+           updatePullRequestReviewComment(input: { pullRequestReviewCommentId: $id, body: $body }) {
+             clientMutationId
+           }
+         }"
+    } else {
+        "mutation($id: ID!, $body: String!) {
+           updateIssueComment(input: { id: $id, body: $body }) { clientMutationId }
+         }"
+    };
+    client
+        .run(doc, &serde_json::json!({ "id": comment_id, "body": body }))
+        .await?;
+    Ok(())
+}
+
 /// Reply to a code review thread.
 #[tauri::command]
 pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) -> AppResult<()> {
@@ -1363,7 +1397,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
         pullRequest(number: $number) {
           comments(first: 100) {
             nodes {
-              id author { login __typename } body createdAt url
+              id author { login __typename } body createdAt url viewerCanUpdate
               reactionGroups { content viewerHasReacted reactors { totalCount } }
             }
           }
@@ -1372,7 +1406,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
               id isResolved isOutdated path line startLine
               comments(first: 100) {
                 nodes {
-                  id author { login __typename } body createdAt url
+                  id author { login __typename } body createdAt url viewerCanUpdate
                   reactionGroups { content viewerHasReacted reactors { totalCount } }
                 }
               }
@@ -1388,7 +1422,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
         .run(doc, &serde_json::json!({ "owner": owner, "name": name, "number": pr.info.number }))
         .await?;
 
-    let parse_comment = |v: &serde_json::Value| -> Option<PrComment> {
+    let parse_comment = |v: &serde_json::Value, is_review_comment: bool| -> Option<PrComment> {
         let author = v
             .pointer("/author/login")
             .and_then(serde_json::Value::as_str)
@@ -1428,13 +1462,18 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
             created_at: v.get("createdAt")?.as_str()?.to_string(),
             url: v.get("url")?.as_str()?.to_string(),
             reactions,
+            viewer_can_edit: v
+                .get("viewerCanUpdate")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            is_review_comment,
         })
     };
 
     let comments = data
         .pointer("/repository/pullRequest/comments/nodes")
         .and_then(serde_json::Value::as_array)
-        .map(|nodes| nodes.iter().filter_map(parse_comment).collect())
+        .map(|nodes| nodes.iter().filter_map(|c| parse_comment(c, false)).collect())
         .unwrap_or_default();
 
     let threads = data
@@ -1454,7 +1493,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
                         comments: t
                             .pointer("/comments/nodes")
                             .and_then(serde_json::Value::as_array)
-                            .map(|nodes| nodes.iter().filter_map(parse_comment).collect())
+                            .map(|nodes| nodes.iter().filter_map(|c| parse_comment(c, true)).collect())
                             .unwrap_or_default(),
                     })
                 })

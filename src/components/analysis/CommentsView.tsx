@@ -83,7 +83,16 @@ export function ReactionBar({
 }
 
 /** GitHub-flavored markdown, with links opening in the system browser. */
-export function CommentBody({ body }: { body: string }) {
+export function CommentBody({
+  body,
+  replacedLines,
+}: {
+  body: string;
+  /** The original lines a suggestion replaces, so the block can show them as
+   *  removed above the added ones — the way GitHub renders a suggestion from
+   *  its diff context. Only the composer knows these; posted threads don't. */
+  replacedLines?: string;
+}) {
   return (
     <div className="comment-body markdown">
       <Markdown
@@ -95,12 +104,19 @@ export function CommentBody({ body }: { body: string }) {
           code: ({ className, children }) => {
             // ```suggestion fences render as an applyable change, like GitHub.
             if ((className ?? "").includes("language-suggestion")) {
-              const text = String(children).replace(/\n$/, "");
+              const added = String(children).replace(/\n$/, "");
+              const removed = replacedLines?.replace(/\n$/, "");
               return (
                 <span className="suggestion-block">
                   <span className="suggestion-head">suggested change</span>
-                  {text.split("\n").map((l, i) => (
-                    <span key={i} className="suggestion-line">
+                  {removed != null &&
+                    removed.split("\n").map((l, i) => (
+                      <span key={`r${i}`} className="suggestion-line removed">
+                        {l || " "}
+                      </span>
+                    ))}
+                  {added.split("\n").map((l, i) => (
+                    <span key={`a${i}`} className="suggestion-line added">
                       {l || " "}
                     </span>
                   ))}
@@ -144,6 +160,7 @@ function Comment({
   onQuoteReply?: (comment: PrComment) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
   // Bot comments clamp aggressively — visible, but never dominant.
   const long = comment.body.length > (comment.isBot ? 400 : 1500);
   return (
@@ -152,7 +169,12 @@ function Comment({
         <span className="comment-author">{comment.author}</span>
         {comment.isBot && <span className="thread-tag">bot</span>}
         <span className="comment-when">{timeAgo(comment.createdAt)} ago</span>
-        {onQuoteReply && (
+        {comment.viewerCanEdit && !editing && (
+          <button className="comment-action" title="Edit this comment" onClick={() => setEditing(true)}>
+            Edit
+          </button>
+        )}
+        {onQuoteReply && !editing && (
           <button
             className="comment-action"
             title="Quote this comment in a reply"
@@ -165,15 +187,32 @@ function Comment({
           ↗
         </a>
       </div>
-      <div className={long && !expanded ? "comment-clamped" : undefined}>
-        <CommentBody body={comment.body} />
-      </div>
-      {long && (
-        <button className="comment-expand" onClick={() => setExpanded((e) => !e)}>
-          {expanded ? "show less" : "show more"}
-        </button>
+      {editing ? (
+        <Composer
+          placeholder="Edit your comment…"
+          submitLabel="Save"
+          autoFocus
+          initialBody={comment.body}
+          onCancel={() => setEditing(false)}
+          onSubmit={async (body) => {
+            await ipc.updateComment(comment.id, body, comment.isReviewComment);
+            setEditing(false);
+            onChanged();
+          }}
+        />
+      ) : (
+        <>
+          <div className={long && !expanded ? "comment-clamped" : undefined}>
+            <CommentBody body={comment.body} />
+          </div>
+          {long && (
+            <button className="comment-expand" onClick={() => setExpanded((e) => !e)}>
+              {expanded ? "show less" : "show more"}
+            </button>
+          )}
+          <ReactionBar comment={comment} onChanged={onChanged} />
+        </>
       )}
-      <ReactionBar comment={comment} onChanged={onChanged} />
     </div>
   );
 }
@@ -195,10 +234,12 @@ export function Composer({
   onCancel?: () => void;
   initialBody?: string;
   autoFocus?: boolean;
-  /** Current content of the anchored line — enables the ± suggestion button. */
+  /** The exact text of the anchored line(s) — enables the ± suggestion
+   *  button, and is shown as the removed lines in the preview. */
   suggestionSeed?: string;
 }) {
   const [body, setBody] = useState(initialBody);
+  const [tab, setTab] = useState<"write" | "preview">("write");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -206,8 +247,11 @@ export function Composer({
   // once a fence is present.
   const hasSuggestion = body.includes("```suggestion");
   const insertSuggestion = () => {
+    // Prefill with the lines being replaced, like GitHub — the reviewer edits
+    // from the current code rather than an empty box.
     const block = `\`\`\`suggestion\n${suggestionSeed ?? ""}\n\`\`\`\n`;
     setBody((b) => (b.trim() ? `${b.replace(/\s+$/, "")}\n\n${block}` : block));
+    setTab("write");
   };
 
   const submit = async () => {
@@ -226,16 +270,37 @@ export function Composer({
 
   return (
     <div className="composer">
-      <textarea
-        placeholder={placeholder}
-        value={body}
-        disabled={busy}
-        autoFocus={autoFocus}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && body.trim()) void submit();
-        }}
-      />
+      <div className="composer-tabs">
+        <button
+          className={`composer-tab${tab === "write" ? " on" : ""}`}
+          onClick={() => setTab("write")}
+        >
+          Write
+        </button>
+        <button
+          className={`composer-tab${tab === "preview" ? " on" : ""}`}
+          disabled={!body.trim()}
+          onClick={() => setTab("preview")}
+        >
+          Preview
+        </button>
+      </div>
+      {tab === "write" ? (
+        <textarea
+          placeholder={placeholder}
+          value={body}
+          disabled={busy}
+          autoFocus={autoFocus}
+          onChange={(e) => setBody(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && body.trim()) void submit();
+          }}
+        />
+      ) : (
+        <div className="composer-preview">
+          <CommentBody body={body} replacedLines={hasSuggestion ? suggestionSeed : undefined} />
+        </div>
+      )}
       {error && <div className="settings-error">{error}</div>}
       <div className="row composer-actions">
         {suggestionSeed != null && (
