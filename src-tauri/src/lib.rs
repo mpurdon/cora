@@ -139,6 +139,7 @@ pub fn run() {
             commands::reopen_pr,
             commands::add_pr_comment,
             commands::reply_to_thread,
+            commands::update_comment,
             commands::add_diff_comment,
             commands::toggle_reaction,
             commands::untrack_pr,

@@ -201,6 +201,7 @@ function InlineThread({
   lineText?: string;
 }) {
   const [replying, setReplying] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   return (
     <div className="inline-thread">
       {thread.comments.map((c) => (
@@ -209,9 +210,36 @@ function InlineThread({
             <span className="comment-author">{c.author}</span>
             {c.isBot && <span className="thread-tag">bot</span>}
             <span className="comment-when">{timeAgo(c.createdAt)} ago</span>
+            {c.viewerCanEdit && editingId !== c.id && (
+              <button
+                className="comment-action"
+                title="Edit this comment"
+                onClick={() => setEditingId(c.id)}
+              >
+                Edit
+              </button>
+            )}
           </div>
-          <CommentBody body={c.body} />
-          <ReactionBar comment={c} onChanged={onChanged} />
+          {editingId === c.id ? (
+            <Composer
+              placeholder="Edit your comment…"
+              submitLabel="Save"
+              autoFocus
+              initialBody={c.body}
+              suggestionSeed={lineText}
+              onCancel={() => setEditingId(null)}
+              onSubmit={async (body) => {
+                await ipc.updateComment(c.id, body, c.isReviewComment);
+                setEditingId(null);
+                onChanged();
+              }}
+            />
+          ) : (
+            <>
+              <CommentBody body={c.body} />
+              <ReactionBar comment={c} onChanged={onChanged} />
+            </>
+          )}
         </div>
       ))}
       {replying ? (
@@ -290,16 +318,67 @@ function FileDiff({
     if (focused) setOpen(true);
   }, [focused]);
 
-  const [composeLine, setComposeLine] = useState<number | null>(null);
+  // The composer anchors to a range of new-side lines. A plain click is a
+  // one-line range; dragging the + button down the gutter grows it, the way
+  // GitHub lets you suggest across several lines. `end` is the line the
+  // comment posts against; `start` (≤ end) the top of the range.
+  const [range, setRange] = useState<{ start: number; end: number } | null>(null);
   const [seedBody, setSeedBody] = useState("");
+  // While the pointer is held on a + button we're extending a selection; the
+  // composer only opens on release, so it doesn't flicker under the moving end.
+  const [selecting, setSelecting] = useState(false);
+  const drag = useRef<{ anchor: number; moved: boolean } | null>(null);
 
   useEffect(() => {
     if (compose) {
       setOpen(true);
       setSeedBody(compose.body);
-      setComposeLine(compose.line);
+      setRange({ start: compose.line, end: compose.line });
     }
   }, [compose]);
+
+  // The current content of every new-side line, so a range can hand the
+  // composer the exact text it would replace in a suggestion.
+  const lineTextByNew = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const l of file.lines) {
+      if (l.newLine != null && l.kind !== "hunk") m.set(l.newLine, l.text);
+    }
+    return m;
+  }, [file]);
+  const rangeText = (r: { start: number; end: number }) => {
+    const out: string[] = [];
+    for (let n = r.start; n <= r.end; n++) {
+      const t = lineTextByNew.get(n);
+      if (t != null) out.push(t);
+    }
+    return out.join("\n");
+  };
+
+  // A drag can end anywhere on the page, so listen globally while one is live.
+  useEffect(() => {
+    const onUp = () => {
+      drag.current = null;
+      setSelecting(false);
+    };
+    window.addEventListener("pointerup", onUp);
+    return () => window.removeEventListener("pointerup", onUp);
+  }, []);
+
+  // Inline threads live inside a max-content scroll layer, so % widths resolve
+  // against the widest code line, not the viewport — that's why they used to
+  // stop short. Publish the body's visible width as a variable the sticky
+  // thread reads, so it always spans exactly the scrollport.
+  const bodyRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const set = () => el.style.setProperty("--diff-visible-w", `${el.clientWidth}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open]);
 
   // Hunk segments: a header line plus its body, for per-hunk collapsing.
   const segments = useMemo(() => {
@@ -321,20 +400,42 @@ function FileDiff({
   const renderLine = (l: DiffLine, key: string) => {
     const threads = l.newLine != null ? threadsByLine.get(l.newLine) : undefined;
     const commentable = l.newLine != null && l.kind !== "hunk";
+    const n = l.newLine;
+    const inRange = n != null && range != null && n >= range.start && n <= range.end;
+    // The composer hangs under the bottom line of the range, once the drag
+    // that selected it has been released.
+    const showComposer = n != null && range != null && range.end === n && !selecting;
     return (
       <div key={key}>
-        <div className={`diff-line ${l.kind}`}>
+        <div className={`diff-line ${l.kind}${inRange ? " in-range" : ""}`}>
           <span className="code-lineno">{l.newLine ?? ""}</span>
           <span className="diff-gutter">
             {l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}
           </span>
-          {commentable ? (
+          {commentable && n != null ? (
             <button
               className="line-comment-btn"
-              title={`Comment on line ${l.newLine}`}
-              onClick={() => {
+              title={`Comment on line ${n} — drag to span several`}
+              // Drag to select a range; a plain click is a one-line range.
+              onPointerDown={(e) => {
+                e.preventDefault();
+                drag.current = { anchor: n, moved: false };
+                setSelecting(true);
                 setSeedBody("");
-                setComposeLine(composeLine === l.newLine ? null : l.newLine);
+                setRange({ start: n, end: n });
+              }}
+              onPointerEnter={() => {
+                if (!drag.current) return;
+                drag.current.moved = true;
+                const a = drag.current.anchor;
+                setRange({ start: Math.min(a, n), end: Math.max(a, n) });
+              }}
+              onClick={() => {
+                // A click with no drag toggles the composer shut if it was
+                // already open on exactly this line.
+                if (!drag.current?.moved && range?.start === n && range?.end === n && !seedBody) {
+                  setRange(null);
+                }
               }}
             >
               +
@@ -349,22 +450,32 @@ function FileDiff({
         {threads?.map((t) => (
           <InlineThread key={t.id} thread={t} onChanged={onChanged} lineText={l.text} />
         ))}
-        {composeLine != null && composeLine === l.newLine && (
+        {showComposer && range != null && (
           <div className="inline-thread">
             <Composer
               key={seedBody ? "seeded" : "manual"}
-              placeholder={`Comment on ${file.path}:${l.newLine}…`}
+              placeholder={
+                range.start === range.end
+                  ? `Comment on ${file.path}:${range.end}…`
+                  : `Comment on ${file.path}:${range.start}–${range.end}…`
+              }
               submitLabel="Comment"
               autoFocus
               initialBody={seedBody}
-              suggestionSeed={l.text}
+              suggestionSeed={rangeText(range)}
               onCancel={() => {
-                setComposeLine(null);
+                setRange(null);
                 setSeedBody("");
               }}
               onSubmit={async (body) => {
-                await ipc.addDiffComment(prId, file.path, composeLine, body);
-                setComposeLine(null);
+                await ipc.addDiffComment(
+                  prId,
+                  file.path,
+                  range.end,
+                  body,
+                  range.start === range.end ? undefined : range.start,
+                );
+                setRange(null);
                 setSeedBody("");
                 onChanged();
               }}
@@ -432,14 +543,17 @@ function FileDiff({
         </label>
       </div>
       {open && (
-        <pre className="diff-body">
+        <pre className="diff-body" ref={bodyRef}>
           <div className="diff-scroll-inner">
           {segments.map((seg, si) => {
             const changed = seg.lines.filter((l) => l.kind === "add" || l.kind === "del");
             // Never hide lines holding a live thread or an open composer.
             const pinnedIn = (lines: DiffLine[]) =>
               lines.some((l) => l.newLine != null && threadsByLine.has(l.newLine)) ||
-              (composeLine != null && lines.some((l) => l.newLine === composeLine));
+              (range != null &&
+                lines.some(
+                  (l) => l.newLine != null && l.newLine >= range.start && l.newLine <= range.end,
+                ));
             const hideChip = (key: string, count: number) => (
               <button
                 key={key}
