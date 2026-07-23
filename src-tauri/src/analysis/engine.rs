@@ -19,10 +19,12 @@ use crate::error::{AppError, AppResult};
 use crate::models::{Settings, TrackedPr};
 
 const MAX_TURNS: usize = 30;
-/// Submissions carry a whole graph + assessment in one tool call — an 8k
-/// ceiling truncated them mid-JSON on big PRs (the "missing assessment"
-/// failures: the tail of the payload is what gets cut).
-const MAX_OUTPUT_TOKENS: i32 = 16384;
+// The per-pass output-token ceilings live in Settings (arch_max_output_tokens,
+// code_max_output_tokens) so they can be tuned to the configured model's cap.
+// Submissions carry a whole graph + assessment in one tool call, so the
+// architecture ceiling must stay generous — an 8k ceiling truncated them
+// mid-JSON on big PRs (the "missing assessment" failures: the tail of the
+// payload is what gets cut).
 
 pub const SYSTEM_PROMPT: &str = r#"You are a principal engineer reviewing a pull request. Your job is to understand the change in relation to the whole system and explain it to a reviewer who lacks full context. Style preferences (naming, ternaries vs if, .reduce vs loops, formatting) are NOT your job — but code-level DEFECTS with real consequences are never "just style": wrong or referentially-unstable hook/memo dependencies, unhandled error or empty states, loosened tests, races, and leaks are material findings when you encounter them.
 
@@ -254,6 +256,20 @@ fn analysis_specs() -> Vec<(&'static str, &'static str, Value)> {
 /// that reject cache points get a cache-free retry, and credential-shaped
 /// errors carry the SSO hint. Used by the analysis run and the chat loop.
 #[allow(clippy::too_many_arguments)]
+/// True when a Bedrock error's (lowercased) text says the requested max_tokens
+/// exceeds the model's hard output cap — distinct from a credential/SSO error,
+/// which also contains "token" but none of these "over the limit" signals.
+/// Covers the phrasings Bedrock/Anthropic emit: "…exceeds the model limit of
+/// 8192", "…the maximum allowed number of output tokens", and the JSON-schema
+/// form "maxTokens: 32000 is not less or equal to 8192".
+fn is_max_tokens_over_cap(lower: &str) -> bool {
+    lower.contains("token")
+        && (lower.contains("exceed")
+            || lower.contains("maximum allowed")
+            || lower.contains("less or equal")
+            || lower.contains("not less"))
+}
+
 pub(crate) async fn converse_once(
     app: &AppHandle,
     log_scope: &str,
@@ -296,6 +312,27 @@ pub(crate) async fn converse_once(
                     devlog::warn(app, log_scope, "model rejected prompt caching — disabling");
                     *use_cache = false;
                     continue;
+                }
+                // The requested max_tokens is above the model's hard output cap —
+                // the likeliest failure now that the per-pass ceilings are
+                // user-editable. Catch it before the SSO/credential hint below,
+                // which also matches "token" and would mislead. The inference
+                // profile hides the model, so we can't validate ahead of time;
+                // name the exact setting to lower instead.
+                if is_max_tokens_over_cap(&lower) {
+                    let which = match log_scope {
+                        "code-pass" => "the code-pass output-token ceiling",
+                        "chat" => "the chat output limit (built-in)",
+                        _ => "the architecture output-token ceiling",
+                    };
+                    devlog::warn(
+                        app,
+                        log_scope,
+                        format!("max_tokens={max_tokens} exceeds the model's output cap"),
+                    );
+                    return Err(AppError::Other(format!(
+                        "Bedrock rejected max_tokens={max_tokens}: it exceeds this model's hard output cap. Lower {which} in Settings → Bedrock to at or below the model's limit. ({detail})"
+                    )));
                 }
                 let hint = if lower.contains("token")
                     || lower.contains("expired")
@@ -616,7 +653,7 @@ pub async fn run(
             &system_prompt,
             &messages,
             &specs,
-            MAX_OUTPUT_TOKENS,
+            settings.arch_max_output_tokens as i32,
             &mut use_cache,
             &settings.aws_profile,
         )
@@ -830,24 +867,30 @@ pub async fn run(
             continue;
         }
 
-        // Model stopped without calling submit_analysis: nudge once.
-        if matches!(resp.stop_reason(), StopReason::EndTurn) {
+        // No tool calls and no submission: the conversation now ends on an
+        // assistant message, which some Bedrock models reject as a prefill
+        // ("the conversation must end with a user message"). We must append a
+        // user turn before looping. A MaxTokens truncation cut the turn short
+        // before a tool call landed — tell it to continue. A clean stop
+        // without submission gets one reminder before we give up.
+        let nudge = if matches!(resp.stop_reason(), StopReason::MaxTokens) {
+            "Your previous response was cut off by the output-token limit. Continue, and call submit_analysis with your complete result."
+        } else {
             if nudged {
                 return Err(AppError::Other(
                     "analysis ended without submit_analysis".into(),
                 ));
             }
             nudged = true;
-            messages.push(
-                Message::builder()
-                    .role(ConversationRole::User)
-                    .content(ContentBlock::Text(
-                        "Call submit_analysis now with your complete result.".into(),
-                    ))
-                    .build()
-                    .map_err(|e| AppError::Other(e.to_string()))?,
-            );
-        }
+            "Call submit_analysis now with your complete result."
+        };
+        messages.push(
+            Message::builder()
+                .role(ConversationRole::User)
+                .content(ContentBlock::Text(nudge.into()))
+                .build()
+                .map_err(|e| AppError::Other(e.to_string()))?,
+        );
     }
 
     Err(AppError::Other(format!(
@@ -1003,7 +1046,7 @@ pub async fn code_findings(
             &system,
             &messages,
             &specs,
-            MAX_OUTPUT_TOKENS,
+            settings.code_max_output_tokens as i32,
             &mut use_cache,
             &settings.aws_profile,
         )
@@ -1100,17 +1143,23 @@ pub async fn code_findings(
             );
             continue;
         }
-        if matches!(resp.stop_reason(), StopReason::EndTurn) {
-            messages.push(
-                Message::builder()
-                    .role(ConversationRole::User)
-                    .content(ContentBlock::Text(
-                        "Call submit_code_findings now with your complete result.".into(),
-                    ))
-                    .build()
-                    .map_err(|e| AppError::Other(e.to_string()))?,
-            );
-        }
+        // No tool calls and no submission — the conversation ends on an
+        // assistant message, which some Bedrock models reject as a prefill
+        // ("the conversation must end with a user message"). Always append a
+        // user turn before looping. A MaxTokens truncation cut the turn short
+        // before submit_code_findings landed; tell it to continue tighter.
+        let nudge = if matches!(resp.stop_reason(), StopReason::MaxTokens) {
+            "Your previous response was cut off by the output-token limit. Continue, and call submit_code_findings with your complete result — keep only the strongest findings, one short sentence each."
+        } else {
+            "Call submit_code_findings now with your complete result."
+        };
+        messages.push(
+            Message::builder()
+                .role(ConversationRole::User)
+                .content(ContentBlock::Text(nudge.into()))
+                .build()
+                .map_err(|e| AppError::Other(e.to_string()))?,
+        );
     }
     Err(AppError::Other(format!(
         "code pass did not complete within {MAX_CODE_TURNS} turns"
@@ -1640,6 +1689,31 @@ fn build_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_max_tokens_over_cap() {
+        // Real Bedrock/Anthropic phrasings for an over-cap max_tokens.
+        for s in [
+            "the maximum tokens you requested exceeds the model limit of 8192.",
+            "max_tokens: 32000 > 8192, which is the maximum allowed number of output tokens",
+            "malformed input request: #/inferenceconfig/maxtokens: 32000 is not less or equal to 8192, please reformat",
+        ] {
+            assert!(is_max_tokens_over_cap(&s.to_lowercase()), "should flag: {s}");
+        }
+    }
+
+    #[test]
+    fn credential_errors_are_not_mistaken_for_over_cap() {
+        // These contain "token" but are auth failures — must NOT match, or the
+        // user gets sent to lower a ceiling when their SSO session expired.
+        for s in [
+            "the security token included in the request is expired",
+            "unable to load credentials; your sso session token is invalid",
+            "throttlingexception: rate exceeded",
+        ] {
+            assert!(!is_max_tokens_over_cap(&s.to_lowercase()), "should not flag: {s}");
+        }
+    }
 
     #[test]
     fn kebab_normalizes_model_drift() {
