@@ -341,6 +341,28 @@ pub struct Settings {
     #[serde(default = "default_background_poll_secs")]
     #[ts(type = "number")]
     pub background_poll_secs: u64,
+    /// Output-token ceiling for the architecture pass (graph + assessment +
+    /// Well-Architected pillar findings, all in one submission — the large
+    /// output). A ceiling, not a reservation: costs nothing unless the model
+    /// generates that many. Raise only as high as your configured Bedrock
+    /// model's hard output cap allows — set above it and Bedrock errors.
+    #[serde(default = "default_arch_max_tokens")]
+    #[ts(type = "number")]
+    pub arch_max_output_tokens: u64,
+    /// Output-token ceiling for the code-level findings pass. Its submission
+    /// is small; the budget is mostly the model's reasoning before it calls
+    /// submit_code_findings. Same caveat as the architecture ceiling.
+    #[serde(default = "default_code_max_tokens")]
+    #[ts(type = "number")]
+    pub code_max_output_tokens: u64,
+}
+
+fn default_arch_max_tokens() -> u64 {
+    16384
+}
+
+fn default_code_max_tokens() -> u64 {
+    16384
 }
 
 fn default_background_poll_secs() -> u64 {
@@ -449,6 +471,8 @@ impl Default for Settings {
             code_findings_pass: true,
             pr_max_age_days: default_pr_max_age_days(),
             background_poll_secs: default_background_poll_secs(),
+            arch_max_output_tokens: default_arch_max_tokens(),
+            code_max_output_tokens: default_code_max_tokens(),
         }
     }
 }

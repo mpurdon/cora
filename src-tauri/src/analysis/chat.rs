@@ -1354,6 +1354,19 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
             set_busy(app, pr_id, false);
             return Ok(());
         }
+
+        // The turn produced no tool results and didn't cleanly end — most often
+        // a MaxTokens truncation. Looping now would re-send a conversation
+        // ending on an assistant message, which some Bedrock models reject as a
+        // prefill ("must end with a user message"). Append a user turn so the
+        // model can continue where it was cut off.
+        push_results(
+            app,
+            pr_id,
+            vec![ContentBlock::Text(
+                "Your previous response was cut off by the output-token limit. Continue your answer.".into(),
+            )],
+        )?;
     }
 
     push_item(

@@ -162,6 +162,26 @@ function sliderFill(idx: number, maxIdx: number): React.CSSProperties {
   return { "--fill": `${(idx / maxIdx) * 100}%` } as React.CSSProperties;
 }
 
+// Output-token ceiling steps, chosen to land on real Claude-on-Bedrock hard
+// output caps: 4k/8k (older Claude), 16k, and 24k–64k (newer models). The
+// model behind an inference-profile ARN is opaque, so we can't know which cap
+// applies — picking a real value keeps the choice meaningful, and the
+// over-cap Bedrock error (engine.rs) is the backstop if a step is too high.
+const TOKEN_STEPS = [4096, 8192, 16384, 24576, 32768, 49152, 65536];
+
+function fmtTokens(n: number): string {
+  const k = n / 1024;
+  return Number.isInteger(k) ? `${k}k` : `${k.toFixed(1)}k`;
+}
+
+function nearestTokenIdx(n: number): number {
+  let best = 0;
+  TOKEN_STEPS.forEach((v, i) => {
+    if (Math.abs(v - n) < Math.abs(TOKEN_STEPS[best] - n)) best = i;
+  });
+  return best;
+}
+
 function Field({
   label,
   hint,
@@ -1246,6 +1266,54 @@ function AwsPane({ settings, save }: PaneProps) {
           value={settings.bedrockDrillModelId}
           onChange={(e) => void save({ bedrockDrillModelId: e.target.value })}
         />
+      </Field>
+
+      <Field
+        label={`Architecture output ceiling — ${fmtTokens(settings.archMaxOutputTokens || 16384)} tokens`}
+        hint="Max output for the architecture pass (graph + assessment + pillar findings — the large submission). A ceiling, not a reservation: no cost unless reached. Keep it at or below your model's hard output cap, or Bedrock rejects the request."
+      >
+        <input
+          type="range"
+          className="interval-slider"
+          min={0}
+          max={TOKEN_STEPS.length - 1}
+          value={nearestTokenIdx(settings.archMaxOutputTokens || 16384)}
+          style={sliderFill(
+            nearestTokenIdx(settings.archMaxOutputTokens || 16384),
+            TOKEN_STEPS.length - 1,
+          )}
+          onChange={(e) => void save({ archMaxOutputTokens: TOKEN_STEPS[Number(e.target.value)] })}
+        />
+        <div className="interval-scale mono">
+          <span>4k</span>
+          <span>16k</span>
+          <span>32k</span>
+          <span>64k</span>
+        </div>
+      </Field>
+
+      <Field
+        label={`Code-pass output ceiling — ${fmtTokens(settings.codeMaxOutputTokens || 16384)} tokens`}
+        hint="Max output for the code-level findings pass. Its submission is short — this mostly bounds the model's reasoning before it submits. Same hard-cap caveat as above."
+      >
+        <input
+          type="range"
+          className="interval-slider"
+          min={0}
+          max={TOKEN_STEPS.length - 1}
+          value={nearestTokenIdx(settings.codeMaxOutputTokens || 16384)}
+          style={sliderFill(
+            nearestTokenIdx(settings.codeMaxOutputTokens || 16384),
+            TOKEN_STEPS.length - 1,
+          )}
+          onChange={(e) => void save({ codeMaxOutputTokens: TOKEN_STEPS[Number(e.target.value)] })}
+        />
+        <div className="interval-scale mono">
+          <span>4k</span>
+          <span>16k</span>
+          <span>32k</span>
+          <span>64k</span>
+        </div>
       </Field>
     </section>
   );
