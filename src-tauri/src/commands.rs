@@ -1899,8 +1899,25 @@ pub fn toggle_callout(app: AppHandle) -> AppResult<()> {
             crate::flush_window_state(&app);
             let _ = callout.hide();
         } else {
+            // A monitor may have changed while it was hidden — make sure it
+            // comes back somewhere reachable.
+            crate::ensure_callout_on_screen(&callout);
             let _ = callout.show();
         }
+    }
+    Ok(())
+}
+
+/// Force the callout back to a visible, grabbable spot — recovery for when a
+/// monitor change has stranded it off-screen and it's still "visible" (so a
+/// toggle wouldn't re-place it). Reachable from the tray.
+#[tauri::command]
+pub fn reset_callout_position(app: AppHandle) -> AppResult<()> {
+    if let Some(callout) = app.get_webview_window("callout") {
+        crate::ensure_callout_on_screen(&callout);
+        let _ = callout.show();
+        let _ = callout.set_focus();
+        crate::flush_window_state(&app);
     }
     Ok(())
 }
