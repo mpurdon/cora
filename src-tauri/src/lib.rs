@@ -26,6 +26,72 @@ pub(crate) fn flush_window_state(app: &tauri::AppHandle) {
     let _ = app.save_window_state(StateFlags::all() - StateFlags::VISIBLE);
 }
 
+/// Minimum horizontal strip of the header that must stay on a monitor to remain
+/// grabbable (physical px). The callout is frameless, so if its top edge lands
+/// off every screen there's no titlebar to drag it back.
+const CALLOUT_MIN_HEADER_VISIBLE: i32 = 120;
+
+/// Restored geometry can land the callout off every screen after a monitor
+/// change (e.g. unplugging an external display) — and with no decorations there
+/// is no way to drag it back. If its header isn't grabbable on any monitor,
+/// clamp the window fully onto the screen it most overlaps (else the primary).
+/// No-op when the header is already reachable, so a deliberately edge-tucked
+/// callout is left alone.
+pub(crate) fn ensure_callout_on_screen(window: &tauri::WebviewWindow) {
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let monitors = window.available_monitors().unwrap_or_default();
+    if monitors.is_empty() {
+        return;
+    }
+    let (w, h) = (size.width as i32, size.height as i32);
+
+    // Already reachable? Need the top edge on a monitor with room below it, and
+    // a wide enough strip of the top exposed to click.
+    let header_reachable = monitors.iter().any(|m| {
+        let (mp, ms) = (m.position(), m.size());
+        let top_on = pos.y >= mp.y && pos.y <= mp.y + ms.height as i32 - 20;
+        let x_strip = (pos.x + w).min(mp.x + ms.width as i32) - pos.x.max(mp.x);
+        top_on && x_strip >= CALLOUT_MIN_HEADER_VISIBLE
+    });
+    if header_reachable {
+        return;
+    }
+
+    // Reposition onto the most-overlapping monitor, falling back to the primary
+    // (or the first available) when the window overlaps none.
+    let overlap = |m: &tauri::Monitor| -> i64 {
+        let (mp, ms) = (m.position(), m.size());
+        let ix = ((pos.x + w).min(mp.x + ms.width as i32) - pos.x.max(mp.x)).max(0) as i64;
+        let iy = ((pos.y + h).min(mp.y + ms.height as i32) - pos.y.max(mp.y)).max(0) as i64;
+        ix * iy
+    };
+    let target = monitors
+        .iter()
+        .max_by_key(|m| overlap(m))
+        .filter(|m| overlap(m) > 0)
+        .cloned()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .unwrap_or_else(|| monitors[0].clone());
+
+    let (mp, ms) = (target.position(), target.size());
+    let top_inset = 4; // keep the header off the very top edge / menu bar
+    let nx = if w >= ms.width as i32 {
+        mp.x
+    } else {
+        pos.x.clamp(mp.x, mp.x + ms.width as i32 - w)
+    };
+    let ny = if h >= ms.height as i32 {
+        mp.y + top_inset
+    } else {
+        pos.y.clamp(mp.y + top_inset, mp.y + ms.height as i32 - h)
+    };
+    if nx != pos.x || ny != pos.y {
+        let _ = window.set_position(tauri::PhysicalPosition::new(nx, ny));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -89,6 +155,10 @@ pub fn run() {
             // Persist explicitly: throttled while dragging/resizing, and on
             // every focus loss (catches the end of a drag).
             if let Some(callout) = app.get_webview_window("callout") {
+                // The window-state plugin has restored geometry by now; pull the
+                // callout back on-screen if that geometry is off every monitor.
+                ensure_callout_on_screen(&callout);
+
                 let handle = app.handle().clone();
                 let last_save = std::sync::Mutex::new(std::time::Instant::now());
                 callout.on_window_event(move |event| match event {
@@ -172,6 +242,7 @@ pub fn run() {
             commands::show_main_window,
             commands::show_main_filtered,
             commands::toggle_callout,
+            commands::reset_callout_position,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -185,10 +256,17 @@ pub fn run() {
 
 fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let toggle = MenuItem::with_id(app, "toggle-callout", "Toggle Callout", true, None::<&str>)?;
+    let reset = MenuItem::with_id(
+        app,
+        "reset-callout",
+        "Reset Callout Position",
+        true,
+        None::<&str>,
+    )?;
     let open = MenuItem::with_id(app, "open-main", "Open CORA", true, None::<&str>)?;
     let poll = MenuItem::with_id(app, "poll-now", "Refresh Now", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit CORA", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &open, &poll, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &reset, &open, &poll, &quit])?;
 
     TrayIconBuilder::with_id("cora-tray")
         .icon(app.default_window_icon().expect("bundled icon").clone())
@@ -197,6 +275,9 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle-callout" => {
                 let _ = commands::toggle_callout(app.clone());
+            }
+            "reset-callout" => {
+                let _ = commands::reset_callout_position(app.clone());
             }
             "open-main" => {
                 let _ = commands::show_main_window(app.clone(), None);
