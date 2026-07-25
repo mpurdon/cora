@@ -4758,8 +4758,8 @@ button.diff-file-header:hover {
 
 .interval-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
+  width: var(--thumb-w, 14px);
+  height: var(--thumb-w, 14px);
   border-radius: 50%;
   border: none;
   background: var(--text);
@@ -4779,6 +4779,58 @@ button.diff-file-header:hover {
   font-size: 9px;
   color: var(--idle);
   margin-top: 2px;
+}
+
+/* Discrete step slider (.step-slider): the native WKWebView range thumb sits
+   at a position that doesn't track the standard geometry, so external labels
+   can't be aligned to it. We hide it and draw our own thumb plus one tick label
+   per step, all from the same geometry — thumb left edge at frac·(track − thumb),
+   label centre at frac·(track − thumb) + thumb/2. They align by construction, at
+   any CSS zoom. --thumb-w is the single source for that width (also inherited by
+   the hidden native thumb and the tick labels; StepSlider reads it in TSX). */
+.step-slider {
+  --thumb-w: 14px;
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+}
+
+.step-slider-input::-webkit-slider-thumb {
+  opacity: 0; /* hidden but still draggable — our .step-slider-thumb is the visual */
+}
+
+.step-slider-thumb {
+  position: absolute;
+  top: calc((16px - var(--thumb-w)) / 2); /* centre on the 16px input's track */
+  left: calc(var(--frac, 0) * (100% - var(--thumb-w)));
+  width: var(--thumb-w);
+  height: var(--thumb-w);
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.step-slider-input:focus-visible ~ .step-slider-thumb {
+  outline: 2px solid color-mix(in srgb, var(--ok) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* One tick label per discrete step, centred under its thumb position. A block
+   child of .step-slider, so it inherits the wrapper's width/cap. */
+.slider-scale {
+  position: relative;
+  height: 11px;
+  margin-top: 2px;
+  font-size: 9px;
+  color: var(--idle);
+}
+
+.slider-scale span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
 }
 
 /* ---------- code findings (assessment second stage) ---------- */

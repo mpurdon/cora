@@ -88,4 +88,11 @@ archMaxOutputTokens: number,
  * is small; the budget is mostly the model's reasoning before it calls
  * submit_code_findings. Same caveat as the architecture ceiling.
  */
-codeMaxOutputTokens: number, };
+codeMaxOutputTokens: number, 
+/**
+ * How many activity rows the callout keeps and shows. Drives both the
+ * on-insert retention trim and the feed query, so we never store more
+ * than we'd display — a shorter feed is easier to reach the bottom of
+ * and keeps the per-org database small.
+ */
+calloutFeedLimit: number, };

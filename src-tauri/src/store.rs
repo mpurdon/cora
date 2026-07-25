@@ -18,6 +18,14 @@ pub const MECHANICAL_KINDS: &[&str] = &["new", "ready", "commits", "ci", "review
 /// deleted after `PURGE_READ_AFTER_HOURS` instead of lingering in the feed.
 const EPHEMERAL_KINDS: &[&str] = &["analysis"];
 const PURGE_READ_AFTER_HOURS: i64 = 1;
+/// Hard upper bound on stored activity rows — a runaway guard, not the feed
+/// length. The callout's feed limit only caps the query (get_activity), so
+/// history stays in SQLite; this just prevents unbounded growth over years.
+const ACTIVITY_RETENTION_CAP: i64 = 5000;
+/// The retention trim scans the table, so running it on every insert is waste
+/// when it almost never deletes. Run it once every N inserts instead; ids are
+/// monotonic, so stored rows stay within the cap plus this interval.
+const RETENTION_TRIM_EVERY: i64 = 256;
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -614,10 +622,18 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![at, pr.id, pr.repo, pr.number, pr.title, kind, actor, summary, comment_id, important, read],
         )?;
-        conn.execute(
-            "DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT 500)",
-            [],
-        )?;
+        // Retention is NOT the user's feed limit — that only caps the query, so
+        // shrinking the callout never destroys history. Rows are small (a few
+        // short text fields), so we keep everything up to a high runaway guard
+        // that only ever fires on pathological, years-long accumulation — and
+        // only check it every RETENTION_TRIM_EVERY inserts, since the trim is a
+        // table scan that almost always deletes nothing.
+        if conn.last_insert_rowid() % RETENTION_TRIM_EVERY == 0 {
+            conn.execute(
+                "DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT ?1)",
+                params![ACTIVITY_RETENTION_CAP],
+            )?;
+        }
         Ok(())
     }
 

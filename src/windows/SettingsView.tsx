@@ -124,14 +124,6 @@ function fmtInterval(sec: number): string {
   return r ? `${h}h ${r}m` : `${h}h`;
 }
 
-function nearestStepIdx(sec: number): number {
-  let best = 0;
-  POLL_STEPS.forEach((v, i) => {
-    if (Math.abs(v - sec) < Math.abs(POLL_STEPS[best] - sec)) best = i;
-  });
-  return best;
-}
-
 /** PR-window ladder: 1d, 2d, 3d, 5d, 1w, 2w, 3w, 1m, 2m, 3m, 6m, 1y. */
 const AGE_STEPS = [1, 2, 3, 5, 7, 14, 21, 30, 61, 91, 183, 365];
 
@@ -149,13 +141,6 @@ function fmtAge(days: number): string {
   return "1 year";
 }
 
-function nearestAgeIdx(days: number): number {
-  let best = 0;
-  AGE_STEPS.forEach((v, i) => {
-    if (Math.abs(v - days) < Math.abs(AGE_STEPS[best] - days)) best = i;
-  });
-  return best;
-}
 
 /** Filled-track percentage for the custom slider (see .interval-slider). */
 function sliderFill(idx: number, maxIdx: number): React.CSSProperties {
@@ -174,12 +159,68 @@ function fmtTokens(n: number): string {
   return Number.isInteger(k) ? `${k}k` : `${k.toFixed(1)}k`;
 }
 
-function nearestTokenIdx(n: number): number {
+// How many rows the callout shows — a query cap only (get_activity). Older
+// rows stay in SQLite up to a high runaway guard, so shrinking this shortens
+// the feed without deleting history.
+const FEED_STEPS = [50, 100, 150, 200, 300, 500];
+
+function nearestIdx(steps: number[], value: number): number {
   let best = 0;
-  TOKEN_STEPS.forEach((v, i) => {
-    if (Math.abs(v - n) < Math.abs(TOKEN_STEPS[best] - n)) best = i;
+  steps.forEach((v, i) => {
+    if (Math.abs(v - value) < Math.abs(steps[best] - value)) best = i;
   });
   return best;
+}
+
+/** A slider over a small set of discrete `steps`, with a tick label under each
+ *  value. WKWebView (Tauri's macOS engine) paints the native range thumb at a
+ *  position that doesn't track the standard geometry, so external labels can't
+ *  be aligned to it. We hide the native thumb and draw our own thumb and labels
+ *  from one shared formula — thumb left edge at frac·(track − thumb), label
+ *  centre at frac·(track − thumb) + thumb/2 — so they align by construction at
+ *  any CSS zoom. The thumb width lives once in CSS as --thumb-w. */
+function StepSlider({
+  steps,
+  value,
+  onChange,
+  fmt,
+}: {
+  steps: number[];
+  value: number;
+  onChange: (v: number) => void;
+  fmt?: (v: number) => string;
+}) {
+  const fracOf = (i: number) => (steps.length > 1 ? i / (steps.length - 1) : 0);
+  const idx = nearestIdx(steps, value);
+  // --frac positions the custom thumb; --fill (same ratio, as a %) colours the
+  // native track gradient. Both derive from one computation here.
+  const style = {
+    "--frac": String(fracOf(idx)),
+    "--fill": `${fracOf(idx) * 100}%`,
+  } as React.CSSProperties;
+  return (
+    <div className="step-slider" style={style}>
+      <input
+        type="range"
+        className="interval-slider step-slider-input"
+        min={0}
+        max={steps.length - 1}
+        value={idx}
+        onChange={(e) => onChange(steps[Number(e.target.value)])}
+      />
+      <span className="step-slider-thumb" aria-hidden="true" />
+      <div className="slider-scale mono">
+        {steps.map((v, i) => (
+          <span
+            key={v}
+            style={{ left: `calc(${fracOf(i)} * (100% - var(--thumb-w)) + var(--thumb-w) / 2)` }}
+          >
+            {fmt ? fmt(v) : v}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function Field({
@@ -486,6 +527,8 @@ function GitHubPane({ settings, save }: PaneProps) {
     }
   };
 
+  const feedLimit = settings.calloutFeedLimit || 150;
+
   return (
     <section className="pane-section">
       <h2>GitHub</h2>
@@ -550,8 +593,8 @@ function GitHubPane({ settings, save }: PaneProps) {
           className="interval-slider"
           min={0}
           max={POLL_STEPS.length - 1}
-          value={nearestStepIdx(settings.pollIntervalSecs)}
-          style={sliderFill(nearestStepIdx(settings.pollIntervalSecs), POLL_STEPS.length - 1)}
+          value={nearestIdx(POLL_STEPS, settings.pollIntervalSecs)}
+          style={sliderFill(nearestIdx(POLL_STEPS, settings.pollIntervalSecs), POLL_STEPS.length - 1)}
           onChange={(e) => void save({ pollIntervalSecs: POLL_STEPS[Number(e.target.value)] })}
         />
         <div className="interval-scale mono">
@@ -572,8 +615,8 @@ function GitHubPane({ settings, save }: PaneProps) {
           className="interval-slider"
           min={0}
           max={POLL_STEPS.length - 1}
-          value={nearestStepIdx(settings.backgroundPollSecs || 300)}
-          style={sliderFill(nearestStepIdx(settings.backgroundPollSecs || 300), POLL_STEPS.length - 1)}
+          value={nearestIdx(POLL_STEPS, settings.backgroundPollSecs || 300)}
+          style={sliderFill(nearestIdx(POLL_STEPS, settings.backgroundPollSecs || 300), POLL_STEPS.length - 1)}
           onChange={(e) => void save({ backgroundPollSecs: POLL_STEPS[Number(e.target.value)] })}
         />
         <div className="interval-scale mono">
@@ -594,8 +637,8 @@ function GitHubPane({ settings, save }: PaneProps) {
           className="interval-slider"
           min={0}
           max={AGE_STEPS.length - 1}
-          value={nearestAgeIdx(settings.prMaxAgeDays || 365)}
-          style={sliderFill(nearestAgeIdx(settings.prMaxAgeDays || 365), AGE_STEPS.length - 1)}
+          value={nearestIdx(AGE_STEPS, settings.prMaxAgeDays || 365)}
+          style={sliderFill(nearestIdx(AGE_STEPS, settings.prMaxAgeDays || 365), AGE_STEPS.length - 1)}
           onChange={(e) => void save({ prMaxAgeDays: AGE_STEPS[Number(e.target.value)] })}
         />
         <div className="interval-scale mono">
@@ -605,6 +648,17 @@ function GitHubPane({ settings, save }: PaneProps) {
           <span>3m</span>
           <span>1y</span>
         </div>
+      </Field>
+
+      <Field
+        label={`Callout feed — show ${feedLimit} items`}
+        hint="How many activity rows the callout shows. A shorter feed is easier to reach the bottom of. Older rows stay in the local database — lowering this just shortens the list, it doesn't delete history."
+      >
+        <StepSlider
+          steps={FEED_STEPS}
+          value={feedLimit}
+          onChange={(v) => void save({ calloutFeedLimit: v })}
+        />
       </Field>
     </section>
   );
@@ -1181,6 +1235,9 @@ function AwsPane({ settings, save }: PaneProps) {
     }
   };
 
+  const archLimit = settings.archMaxOutputTokens || 16384;
+  const codeLimit = settings.codeMaxOutputTokens || 16384;
+
   return (
     <section className="pane-section">
       <h2>AWS</h2>
@@ -1269,51 +1326,27 @@ function AwsPane({ settings, save }: PaneProps) {
       </Field>
 
       <Field
-        label={`Architecture output ceiling — ${fmtTokens(settings.archMaxOutputTokens || 16384)} tokens`}
+        label={`Architecture output ceiling — ${fmtTokens(archLimit)} tokens`}
         hint="Max output for the architecture pass (graph + assessment + pillar findings — the large submission). A ceiling, not a reservation: no cost unless reached. Keep it at or below your model's hard output cap, or Bedrock rejects the request."
       >
-        <input
-          type="range"
-          className="interval-slider"
-          min={0}
-          max={TOKEN_STEPS.length - 1}
-          value={nearestTokenIdx(settings.archMaxOutputTokens || 16384)}
-          style={sliderFill(
-            nearestTokenIdx(settings.archMaxOutputTokens || 16384),
-            TOKEN_STEPS.length - 1,
-          )}
-          onChange={(e) => void save({ archMaxOutputTokens: TOKEN_STEPS[Number(e.target.value)] })}
+        <StepSlider
+          steps={TOKEN_STEPS}
+          value={archLimit}
+          onChange={(v) => void save({ archMaxOutputTokens: v })}
+          fmt={fmtTokens}
         />
-        <div className="interval-scale mono">
-          <span>4k</span>
-          <span>16k</span>
-          <span>32k</span>
-          <span>64k</span>
-        </div>
       </Field>
 
       <Field
-        label={`Code-pass output ceiling — ${fmtTokens(settings.codeMaxOutputTokens || 16384)} tokens`}
+        label={`Code-pass output ceiling — ${fmtTokens(codeLimit)} tokens`}
         hint="Max output for the code-level findings pass. Its submission is short — this mostly bounds the model's reasoning before it submits. Same hard-cap caveat as above."
       >
-        <input
-          type="range"
-          className="interval-slider"
-          min={0}
-          max={TOKEN_STEPS.length - 1}
-          value={nearestTokenIdx(settings.codeMaxOutputTokens || 16384)}
-          style={sliderFill(
-            nearestTokenIdx(settings.codeMaxOutputTokens || 16384),
-            TOKEN_STEPS.length - 1,
-          )}
-          onChange={(e) => void save({ codeMaxOutputTokens: TOKEN_STEPS[Number(e.target.value)] })}
+        <StepSlider
+          steps={TOKEN_STEPS}
+          value={codeLimit}
+          onChange={(v) => void save({ codeMaxOutputTokens: v })}
+          fmt={fmtTokens}
         />
-        <div className="interval-scale mono">
-          <span>4k</span>
-          <span>16k</span>
-          <span>32k</span>
-          <span>64k</span>
-        </div>
       </Field>
     </section>
   );

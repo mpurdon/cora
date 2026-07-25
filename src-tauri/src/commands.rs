@@ -343,8 +343,14 @@ pub fn get_activity(
     orgs: State<'_, crate::orgs::Orgs>,
 ) -> AppResult<Vec<crate::models::ActivityItem>> {
     let store = orgs.active();
-    // Pure read — feed hygiene runs once per poll cycle and on untrack.
-    store.list_activity(300)
+    // Pure read — feed hygiene runs once per poll cycle and on untrack. This
+    // only caps the query; older rows stay in SQLite (see ACTIVITY_RETENTION_CAP).
+    let limit = store
+        .settings()
+        .map(|s| s.callout_feed_limit)
+        .unwrap_or_else(|_| crate::models::Settings::default().callout_feed_limit)
+        as i64;
+    store.list_activity(limit)
 }
 
 /// Empty `ids` marks the whole feed.
