@@ -355,6 +355,17 @@ pub struct Settings {
     #[serde(default = "default_code_max_tokens")]
     #[ts(type = "number")]
     pub code_max_output_tokens: u64,
+    /// How many activity rows the callout shows — a query cap only. Older
+    /// rows stay in the local database (kept up to a high runaway guard, not
+    /// deleted), so shrinking the feed just makes it easier to reach the
+    /// bottom; it never throws away history.
+    #[serde(default = "default_callout_feed_limit")]
+    #[ts(type = "number")]
+    pub callout_feed_limit: u64,
+}
+
+fn default_callout_feed_limit() -> u64 {
+    150
 }
 
 fn default_arch_max_tokens() -> u64 {
@@ -473,6 +484,7 @@ impl Default for Settings {
             background_poll_secs: default_background_poll_secs(),
             arch_max_output_tokens: default_arch_max_tokens(),
             code_max_output_tokens: default_code_max_tokens(),
+            callout_feed_limit: default_callout_feed_limit(),
         }
     }
 }
