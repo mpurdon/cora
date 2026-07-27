@@ -4916,6 +4916,22 @@ button.diff-file-header:hover {
   margin-top: 2px;
 }
 
+/* explain + comment sit together at the right of the badge line. The wrapper
+   does the right-push; the buttons' own margin-left:auto would fight inside it,
+   so drop it here. */
+.code-finding-row .finding-actions {
+  order: 0;
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.code-finding-row .finding-actions .finding-comment-btn {
+  margin-left: 0;
+}
+
 .code-finding-row .finding-comment-btn {
   align-self: center;
 }
