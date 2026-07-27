@@ -4,6 +4,7 @@ import type { ChatPendingAction } from "../../bindings/ChatPendingAction";
 import type { TrackedPr } from "../../bindings/TrackedPr";
 import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
 import { useChatStore } from "../../state/chatStore";
+import { eli5Prompt } from "../../lib/comments";
 import { CommentBody } from "./CommentsView";
 import { ContextDrawer } from "./ContextDrawer";
 import { FileInsights } from "./FileInsights";
@@ -123,7 +124,17 @@ export function AssistantPanel({
       </header>
 
       {view === "insights" ? (
-        <FileInsights pr={pr} />
+        <FileInsights
+          pr={pr}
+          onExplain={(f) => {
+            // Hand the finding to the chat and surface it: the reviewer asked
+            // for a plain-language, actionable read, and the answer lands where
+            // they can keep the conversation going.
+            setView("chat");
+            setSendError(null);
+            void send(pr.id, eli5Prompt(f)).catch((e) => setSendError(String(e)));
+          }}
+        />
       ) : (
         <>
       <div className="assistant-activity">

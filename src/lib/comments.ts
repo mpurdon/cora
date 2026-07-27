@@ -18,6 +18,27 @@ export function findingSeed(f: CodeFinding): string {
   return `${firstSentence(f.finding)}\n\n${firstSentence(f.suggestion)}`;
 }
 
+/** The message the "explain" button sends to the assistant. Asks for a
+ *  plain-language read that's actionable in a single turn — what the finding
+ *  means, whether it actually warrants a change on this PR, and the concrete
+ *  fix if so — grounded in the real code, so the reviewer can act (edit, write
+ *  the comment, or dismiss it) without a few clarifying round-trips first. */
+export function eli5Prompt(f: CodeFinding): string {
+  const where = f.line != null ? `${f.path}:${f.line}` : f.path;
+  return [
+    `Explain this ${f.kind} finding in plain language — assume I don't yet know this corner of the codebase — and make it actionable enough that I can decide what to do right now, without more back-and-forth.`,
+    ``,
+    `Finding (${f.severity}) at ${where}:`,
+    `> ${f.finding}`,
+    `Suggested fix: ${f.suggestion}`,
+    ``,
+    `Read the code at ${where} to ground it, then cover, briefly:`,
+    `1. What the problem actually is, in everyday terms.`,
+    `2. Why it matters — the concrete consequence if it ships as-is, or say plainly if it's low-stakes or arguably fine to leave.`,
+    `3. Whether it needs a change on THIS PR, and if so exactly what to change — enough that I could make the edit or write the review comment straight away.`,
+  ].join("\n");
+}
+
 /** Where the viewer has already commented, from the live PR conversation:
  *  - `lines`: exact "path:line" keys, for line-anchored findings.
  *  - `files`: paths commented on at all, for file-level (null-line) findings —

@@ -12,8 +12,15 @@ import { findingSeed, isFindingCommented, viewerComments } from "../../lib/comme
 
 /** Per-file insights for the file currently in view on the Diff tab —
  *  follows the scroll spy, so it always describes what the reviewer is
- *  reading: why it was ranked and its code findings. */
-export function FileInsights({ pr }: { pr: TrackedPr }) {
+ *  reading: why it was ranked and its code findings. `onExplain` hands a
+ *  finding to the assistant chat for a plain-language, actionable read. */
+export function FileInsights({
+  pr,
+  onExplain,
+}: {
+  pr: TrackedPr;
+  onExplain: (f: CodeFinding) => void;
+}) {
   const visiblePath = useDiffStore((s) => s.visiblePath);
   const entry = useDiffStore((s) => s.entries[pr.id]);
   const requestFocusFile = useDiffStore((s) => s.requestFocusFile);
@@ -123,24 +130,34 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
                   </div>
                   <div className="code-finding-suggestion">→ {f.suggestion}</div>
                 </div>
-                {isCommented ? (
-                  <span
-                    className="finding-comment-btn commented"
-                    aria-disabled="true"
-                    title="You have a review comment at this line"
-                  >
-                    ✓ commented
-                  </span>
-                ) : (
+                <div className="finding-actions">
                   <span
                     className="finding-comment-btn"
                     role="button"
-                    title="Draft a review comment from this finding"
-                    onClick={() => commentCode(f)}
+                    title="Explain this finding in plain terms — and what to do about it — in the assistant chat"
+                    onClick={() => onExplain(f)}
                   >
-                    ± comment
+                    explain
                   </span>
-                )}
+                  {isCommented ? (
+                    <span
+                      className="finding-comment-btn commented"
+                      aria-disabled="true"
+                      title="You have a review comment at this line"
+                    >
+                      ✓ commented
+                    </span>
+                  ) : (
+                    <span
+                      className="finding-comment-btn"
+                      role="button"
+                      title="Draft a review comment from this finding"
+                      onClick={() => commentCode(f)}
+                    >
+                      ± comment
+                    </span>
+                  )}
+                </div>
               </div>
             );
           })}
