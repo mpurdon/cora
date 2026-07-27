@@ -416,9 +416,17 @@ function FileDiff({
             <button
               className="line-comment-btn"
               title={`Comment on line ${n} — drag to span several`}
-              // Drag to select a range; a plain click is a one-line range.
+              // Press to open a one-line composer; drag down the gutter to span
+              // a range (the composer opens on release). Pressing the + of a
+              // line whose one-line composer is already open closes it again —
+              // decided here, before we overwrite the range, because by click
+              // time the global pointerup has already cleared the drag ref.
               onPointerDown={(e) => {
                 e.preventDefault();
+                if (range?.start === n && range?.end === n && !seedBody) {
+                  setRange(null);
+                  return;
+                }
                 drag.current = { anchor: n, moved: false };
                 setSelecting(true);
                 setSeedBody("");
@@ -429,13 +437,6 @@ function FileDiff({
                 drag.current.moved = true;
                 const a = drag.current.anchor;
                 setRange({ start: Math.min(a, n), end: Math.max(a, n) });
-              }}
-              onClick={() => {
-                // A click with no drag toggles the composer shut if it was
-                // already open on exactly this line.
-                if (!drag.current?.moved && range?.start === n && range?.end === n && !seedBody) {
-                  setRange(null);
-                }
               }}
             >
               +
