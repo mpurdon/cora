@@ -116,7 +116,7 @@ export function PrFilesRail({
           key={`f:${f.path}`}
           className={`tree-row tree-file${f.path === visiblePath ? " active" : ""}${viewed ? " viewed" : ""}${skipped ? " skipped" : ""}${f.deleted ? " deleted" : ""}`}
           style={{ paddingLeft: 8 + depth * 12 }}
-          title={`${f.oldPath ? `${f.oldPath} → ` : ""}${f.path}${f.deleted ? " · deleted" : f.added ? " · new" : ""}${
+          data-tip={`${f.oldPath ? `${f.oldPath} → ` : ""}${f.path}${f.deleted ? " · deleted" : f.added ? " · new" : ""}${
             plan ? `\n\n${plan.significance.toUpperCase()} — ${planTooltip(plan) ?? ""}` : ""
           }`}
           onClick={() => onOpenFile(f.path)}
@@ -125,7 +125,7 @@ export function PrFilesRail({
             className={`tree-check${viewed ? " on" : ""}`}
             role="checkbox"
             aria-checked={viewed}
-            title={viewed ? "Viewed — click to unmark" : "Mark as viewed"}
+            data-tip={viewed ? "Viewed — click to unmark" : "Mark as viewed"}
             onClick={(e) => {
               e.stopPropagation();
               const digest = digests.get(f.path);
@@ -159,7 +159,7 @@ export function PrFilesRail({
   return (
     <>
       <div className="files-rail-header">
-        <button className="files-back" onClick={onBack} title="Back to the pull-request list">
+        <button className="files-back" onClick={onBack} data-tip="Back to the pull-request list">
           ‹ All pull requests
         </button>
         <span className="eyebrow">

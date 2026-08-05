@@ -91,7 +91,7 @@ export function ContextDrawer({ prId, onClose }: { prId: string; onClose: () => 
               </span>
             )}
           </div>
-          <button className="icon-btn" title="Close" onClick={onClose}>
+          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
             ✕
           </button>
         </header>

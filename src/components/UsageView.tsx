@@ -72,7 +72,7 @@ function DailySpend({ days }: { days: UsageGroup[] }) {
               key={d.key}
               className={`usage-bar-slot${hover === i ? " on" : ""}`}
               onMouseEnter={() => setHover(i)}
-              title={`${d.label} · ${d.totals.requests === 0 ? "nothing" : usd(d.totals.cost)}`}
+              data-tip={`${d.label} · ${d.totals.requests === 0 ? "nothing" : usd(d.totals.cost)}`}
             >
               <span className="usage-bar" style={{ height: `${pct}%` }} />
             </div>

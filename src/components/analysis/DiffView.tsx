@@ -89,7 +89,8 @@ export function CopyButton({
     <button
       className="icon-btn"
       disabled={text == null}
-      title={title}
+      data-tip={title}
+      aria-label={title}
       onClick={() => {
         if (text == null) return;
         void navigator.clipboard
@@ -252,7 +253,7 @@ export function DiffJump({ text }: { text: string }) {
   // Preserve leading whitespace — it's the function's real indent.
   const context = (text.match(HUNK_RE)?.[2] ?? "").replace(/\s+$/, "");
   return (
-    <div className="diff-jump" title={text}>
+    <div className="diff-jump" data-tip={text}>
       <span className="diff-jump-rule" />
       {context && <span className="diff-jump-label">{context}</span>}
       <span className="diff-jump-rule" />
@@ -294,7 +295,8 @@ function InlineThread({
             {c.viewerCanEdit && editingId !== c.id && (
               <button
                 className="comment-action"
-                title="Edit this comment"
+                data-tip="Edit this comment"
+                aria-label="Edit this comment"
                 onClick={() => setEditingId(c.id)}
               >
                 Edit
@@ -504,7 +506,8 @@ function FileDiff({
           {commentable && n != null ? (
             <button
               className="line-comment-btn"
-              title={`Comment on line ${n} — drag to span several`}
+              data-tip={`Comment on line ${n} — drag to span several`}
+              aria-label={`Comment on line ${n} — drag to span several`}
               // Press to open a one-line composer; drag down to span a range
               // (the composer opens on release). Pressing the + of a line whose
               // one-line composer is already open closes it again — decided
@@ -596,7 +599,7 @@ function FileDiff({
       <div className="diff-file-header">
         <button className="diff-file-toggle" onClick={() => setOpen((o) => !o)}>
           <span className="chevron">{open ? "▾" : "▸"}</span>
-          <span className="diff-path mono" title={file.path}>
+          <span className="diff-path mono" data-tip={file.path}>
             {file.oldPath ? `${file.oldPath} → ` : ""}
             {file.path.includes("/") && (
               <span className="diff-path-dir">
@@ -608,17 +611,17 @@ function FileDiff({
             </span>
           </span>
           {file.deleted && (
-            <span className="file-state-tag deleted" title="This file was deleted in this PR">
+            <span className="file-state-tag deleted" data-tip="This file was deleted in this PR">
               deleted
             </span>
           )}
           {file.added && (
-            <span className="file-state-tag added" title="This file is new in this PR">
+            <span className="file-state-tag added" data-tip="This file is new in this PR">
               new
             </span>
           )}
           {plan && (
-            <span className={`plan-chip ${plan.significance}`} title={planTooltip(plan)}>
+            <span className={`plan-chip ${plan.significance}`} data-tip={planTooltip(plan)}>
               {plan.significance}
             </span>
           )}
@@ -633,13 +636,14 @@ function FileDiff({
         {!file.deleted && (
           <button
             className="icon-btn file-expand-btn"
-            title="View the whole file with changes overlaid"
+            data-tip="View the whole file with changes overlaid"
+            aria-label="View the whole file with changes overlaid"
             onClick={onExpand}
           >
             ⤢
           </button>
         )}
-        <label className="viewed-check check-row" title="Mark as viewed — clears if the file changes again">
+        <label className="viewed-check check-row" data-tip="Mark as viewed — clears if the file changes again">
           <input
             type="checkbox"
             checked={viewed}
@@ -664,7 +668,7 @@ function FileDiff({
               <button
                 key={key}
                 className="trivial-collapsed"
-                title="Import/housekeeping-only changes, hidden to save review time"
+                data-tip="Import/housekeeping-only changes, hidden to save review time"
                 onClick={() => setRevealed((prev) => new Set(prev).add(key))}
               >
                 ⋯ {count} import/housekeeping line{count === 1 ? "" : "s"} hidden — show
@@ -1021,14 +1025,14 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
         <span className="spacer" />
         <button
           className={`chip${hideTrivial ? " on" : ""}`}
-          title="Collapse hunks that only touch imports/housekeeping — the whole-file view (⤢) always shows everything"
+          data-tip="Collapse hunks that only touch imports/housekeeping — the whole-file view (⤢) always shows everything"
           onClick={toggleTrivial}
         >
           hide import-only hunks
         </button>
         <button
           className={`chip${wrap ? " on" : ""}`}
-          title="Soft-wrap long lines instead of scrolling them sideways"
+          data-tip="Soft-wrap long lines instead of scrolling them sideways"
           onClick={toggleWrap}
         >
           wrap lines
@@ -1166,7 +1170,7 @@ function FullFileView({
   return (
     <div className="diff-file full-file">
       <div className="diff-file-header">
-        <span className="diff-path mono" title={file.path}>
+        <span className="diff-path mono" data-tip={file.path}>
           {dirIdx >= 0 && (
             <span className="diff-path-dir">{file.path.slice(0, dirIdx + 1)}</span>
           )}
@@ -1179,7 +1183,7 @@ function FullFileView({
           <span className="del">−{file.deletions}</span>
         </span>
         <CopyButton text={content} what={`the contents of ${file.path}`} />
-        <button className="icon-btn" title="Back to the diff (esc)" onClick={onClose}>
+        <button className="icon-btn" data-tip="Back to the diff (esc)" aria-label="Back to the diff (esc)" onClick={onClose}>
           ✕
         </button>
       </div>

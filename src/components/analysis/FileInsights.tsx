@@ -77,7 +77,7 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
   const slash = file.path.lastIndexOf("/");
   return (
     <div className="insights">
-      <div className="insights-file" title={file.path}>
+      <div className="insights-file" data-tip={file.path}>
         {slash >= 0 && (
           <div className="insights-dir mono">{file.path.slice(0, slash + 1)}</div>
         )}
@@ -131,7 +131,7 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
                   <span
                     className="finding-comment-btn"
                     role="button"
-                    title="Explain this finding in plain terms — and what to do about it — in the assistant chat"
+                    data-tip="Explain this finding in plain terms — and what to do about it — in the assistant chat"
                     onClick={() => explainCode(f)}
                   >
                     explain
@@ -140,7 +140,7 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
                     <span
                       className="finding-comment-btn commented"
                       aria-disabled="true"
-                      title="You have a review comment at this line"
+                      data-tip="You have a review comment at this line"
                     >
                       ✓ commented
                     </span>
@@ -148,7 +148,7 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
                     <span
                       className="finding-comment-btn"
                       role="button"
-                      title="Draft a review comment from this finding"
+                      data-tip="Draft a review comment from this finding"
                       onClick={() => commentCode(f)}
                     >
                       ± comment
@@ -168,7 +168,7 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
             <button
               key={path}
               className="insights-other mono"
-              title={`Jump to ${path}`}
+              data-tip={`Jump to ${path}`}
               onClick={() => requestFocusFile(path)}
             >
               <span className="anchor-name">{path.slice(path.lastIndexOf("/") + 1)}</span>
