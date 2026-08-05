@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ActivityItem } from "../bindings/ActivityItem";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import { ACTION_META, ACTION_ORDER, inBucket, type ActionKind } from "../lib/actions";
+import { FLAG_LABEL } from "../lib/flags";
 import {
   IconAlertTriangle,
   IconChat,
@@ -50,11 +51,6 @@ function Tile({
     </button>
   );
 }
-
-const FLAG_LABEL: Record<string, string> = {
-  "must-review": "must review",
-  "follow-up": "follow up with author",
-};
 
 /** Teams-style day buckets: today, weekday names back through the week,
  *  then coarser blocks. */
