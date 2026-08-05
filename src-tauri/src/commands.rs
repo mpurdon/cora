@@ -773,10 +773,16 @@ pub fn set_pr_priority(
 /// On-demand refresh of a single PR (the ⟳ button in the PR panel).
 #[tauri::command]
 pub async fn refresh_pr(app: AppHandle, pr_id: String) -> AppResult<TrackedPr> {
-    refresh_pr_inner(&app, &pr_id).await
+    refresh_pr_inner(&app, &pr_id, false).await
 }
 
-async fn refresh_pr_inner(app: &AppHandle, pr_id: &str) -> AppResult<TrackedPr> {
+/// `self_acted` marks a refresh that follows your own merge/close, so the
+/// terminal feed row it may write arrives already read.
+async fn refresh_pr_inner(
+    app: &AppHandle,
+    pr_id: &str,
+    self_acted: bool,
+) -> AppResult<TrackedPr> {
     let app = app.clone();
     let pr_id = pr_id.to_string();
     let store = app.state::<crate::orgs::Orgs>().active();
@@ -809,6 +815,22 @@ async fn refresh_pr_inner(app: &AppHandle, pr_id: &str) -> AppResult<TrackedPr> 
     }
     let now = Utc::now().to_rfc3339();
     let stored = store.upsert_pr(&info, &[], &changes, &now)?;
+    // Same rule the poller applies to a finished PR — see Store::retire_finished.
+    if let Some(terminal) = crate::models::terminal_kind(&stored.info.state) {
+        // Whoever sees the ending first has to report it. A refresh can beat the
+        // poller to it (the ⟳ button, the assistant), and once this row reads
+        // CLOSED/MERGED the poller computes no transition and stays silent
+        // forever — the PR would finish with nothing to say it ever had. When
+        // you are the one who ended it the row arrives pre-read: a record, not
+        // news. (`pre_read` is the same lever the poller uses for other
+        // people's red CI.)
+        if changes.iter().any(|c| matches!(c, ChangeKind::Closed | ChangeKind::Merged)) {
+            let _ =
+                store.add_activity(&now, &info, terminal, "", terminal, "", false, self_acted);
+        }
+        store.retire_finished(&pr_id, terminal)?;
+        let _ = app.emit(events::ACTIVITY_CHANGED, ());
+    }
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     // Covers every "review state may have moved" path that funnels through a
     // refresh: manual refresh button, submitted reviews, assistant actions.
@@ -869,6 +891,11 @@ pub async fn update_comment(
     client
         .run(doc, &serde_json::json!({ "id": comment_id, "body": body }))
         .await?;
+    // An edit can flip the approve gate: `my_open_threads` is computed from the
+    // *first* comment of each thread, so adding a `(non-blocking)` marker to one
+    // stops it holding up your approval. Without this the conversation reloads
+    // and shows the new tag while the gate keeps its stale count.
+    let _ = app.emit(events::REVIEWS_CHANGED, ());
     Ok(())
 }
 
@@ -1129,7 +1156,7 @@ pub async fn submit_review(
         events::REVIEW_SUBMITTED,
         crate::models::ReviewSubmittedEvent { pr_id: pr_id.clone(), verdict: verdict.clone() },
     );
-    refresh_pr_inner(&app, &pr_id).await?;
+    refresh_pr_inner(&app, &pr_id, false).await?;
     Ok(verdict)
 }
 
@@ -1156,7 +1183,7 @@ pub async fn merge_pr(app: AppHandle, pr_id: String, method: String) -> AppResul
     client.run(&doc, &serde_json::json!({ "prId": pr_id })).await?;
     let label = pr_label(&store, &pr_id);
     store.add_audit("merged", &pr_id, &label, "open", &format!("merged ({method})"))?;
-    refresh_pr_inner(&app, &pr_id).await?;
+    refresh_pr_inner(&app, &pr_id, true).await?;
     Ok(())
 }
 
@@ -1177,7 +1204,7 @@ pub async fn close_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
         .await?;
     let label = pr_label(&store, &pr_id);
     store.add_audit("closed", &pr_id, &label, "open", "closed")?;
-    refresh_pr_inner(&app, &pr_id).await?;
+    refresh_pr_inner(&app, &pr_id, true).await?;
     Ok(())
 }
 
@@ -1196,9 +1223,13 @@ pub async fn reopen_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
             &serde_json::json!({ "prId": pr_id }),
         )
         .await?;
+    // Closing untracked it, so bring it back before anything reads the stored
+    // row — the label, the audit entry and the refresh all go through `get_pr`,
+    // which only sees tracked PRs.
+    store.retrack(&pr_id)?;
     let label = pr_label(&store, &pr_id);
     store.add_audit("reopened", &pr_id, &label, "closed", "open")?;
-    refresh_pr_inner(&app, &pr_id).await?;
+    refresh_pr_inner(&app, &pr_id, false).await?;
     Ok(())
 }
 
@@ -1317,6 +1348,74 @@ fn repo_tools_for(
     Ok((tools, pr))
 }
 
+/// New-side (RIGHT) line numbers a review comment can anchor to for `path`:
+/// every added and context line inside a hunk. GitHub rejects an anchor on any
+/// other line — unchanged code outside the changed hunks, or the removed side.
+fn commentable_new_lines(diff: &str, path: &str) -> Vec<i64> {
+    let mut out = Vec::new();
+    let mut in_file = false;
+    let mut in_hunk = false;
+    let mut new_ln = 0i64;
+    for raw in diff.lines() {
+        if raw.starts_with("diff --git ") {
+            in_file = false;
+            in_hunk = false;
+        } else if let Some(p) = raw.strip_prefix("+++ b/") {
+            in_file = p == path;
+            in_hunk = false;
+        } else if raw.starts_with("+++ ") || raw.starts_with("--- ") {
+            in_hunk = false;
+        } else if in_file && raw.starts_with("@@") {
+            new_ln = hunk_new_start(raw);
+            in_hunk = true;
+        } else if in_file && in_hunk {
+            match raw.as_bytes().first() {
+                // Added or context line: present on the RIGHT side, commentable.
+                Some(b'+') | Some(b' ') => {
+                    out.push(new_ln);
+                    new_ln += 1;
+                }
+                Some(b'-') => {} // removed: left side, no new-side line
+                Some(b'\\') => {} // "\ No newline at end of file"
+                _ => in_hunk = false, // blank/other → past the hunk body
+            }
+        }
+    }
+    out
+}
+
+/// The new-side start line `c` from a `@@ -a,b +c,d @@` hunk header.
+fn hunk_new_start(hunk: &str) -> i64 {
+    hunk
+        .split('+')
+        .nth(1)
+        .and_then(|s| s.split([',', ' ']).next())
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(1)
+}
+
+/// Collapse a sorted line list into compact ranges: `[1,2,3,7] → "1-3, 7"`.
+fn format_line_ranges(lines: &[i64]) -> String {
+    let mut v = lines.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    let mut parts = Vec::new();
+    let mut i = 0;
+    while i < v.len() {
+        let start = v[i];
+        while i + 1 < v.len() && v[i + 1] == v[i] + 1 {
+            i += 1;
+        }
+        parts.push(if v[i] == start {
+            start.to_string()
+        } else {
+            format!("{start}-{}", v[i])
+        });
+        i += 1;
+    }
+    parts.join(", ")
+}
+
 /// New line-anchored review comment from the diff view. Uses the REST
 /// endpoint because it creates a standalone comment without a pending review.
 #[tauri::command]
@@ -1346,12 +1445,34 @@ pub async fn add_diff_comment(
         payload["start_line"] = serde_json::json!(start);
         payload["start_side"] = serde_json::json!("RIGHT");
     }
-    tools
-        .post(
-            &format!("repos/{}/pulls/{}/comments", tools.repo(), tools.pr_number()),
-            &payload,
-        )
-        .await?;
+    let url = format!("repos/{}/pulls/{}/comments", tools.repo(), tools.pr_number());
+    if let Err(e) = tools.post(&url, &payload).await {
+        // A review comment must anchor to a line in the diff's changed hunks
+        // (RIGHT side); GitHub's 422 for a bad anchor is opaque, and the caller
+        // otherwise re-reads the whole diff to recover. When that's the cause,
+        // replace the error with the lines that ARE commentable, so it (the
+        // assistant, or a user) re-anchors in one step. Other errors pass through.
+        let es = e.to_string();
+        if es.contains("422") || es.to_lowercase().contains("line") {
+            if let Ok(diff) = tools.pr_diff_full().await {
+                let allowed = commentable_new_lines(&diff, &path);
+                let anchor_bad = !allowed.contains(&line)
+                    || start_line.is_some_and(|s| s < line && !allowed.contains(&s));
+                if allowed.is_empty() {
+                    return Err(AppError::Other(format!(
+                        "Can't anchor a review comment on {path} — it has no changed lines in this PR's diff. Comment in the PR conversation instead."
+                    )));
+                }
+                if anchor_bad {
+                    return Err(AppError::Other(format!(
+                        "Can't anchor a review comment at {path}:{line} — that line isn't in the PR diff, so GitHub rejected it. Anchor to a changed line; commentable new-side lines for {path}: {}.",
+                        format_line_ranges(&allowed),
+                    )));
+                }
+            }
+        }
+        return Err(e);
+    }
     // A new thread of yours can gate Approve — tell the UI to refetch.
     let _ = app.emit(events::REVIEWS_CHANGED, ());
     Ok(())
@@ -1920,4 +2041,59 @@ pub fn reset_callout_position(app: AppHandle) -> AppResult<()> {
         crate::flush_window_state(&app);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DIFF: &str = "\
+diff --git a/foo.ts b/foo.ts
+index e69de29..abc1234 100644
+--- a/foo.ts
++++ b/foo.ts
+@@ -1,3 +1,4 @@
+ line1
++added2
+ line3
+ line4
+@@ -20,2 +21,3 @@
+ ctx21
++added22
+ ctx23
+diff --git a/bar.ts b/bar.ts
+index 111..222 100644
+--- a/bar.ts
++++ b/bar.ts
+@@ -5,2 +5,2 @@
+-gone
++new6
+ ctx7
+";
+
+    #[test]
+    fn commentable_lines_are_added_and_context_only() {
+        // Added + context on the RIGHT side; removed lines don't advance it.
+        assert_eq!(commentable_new_lines(DIFF, "foo.ts"), vec![1, 2, 3, 4, 21, 22, 23]);
+        assert_eq!(commentable_new_lines(DIFF, "bar.ts"), vec![5, 6]);
+    }
+
+    #[test]
+    fn a_file_not_in_the_diff_has_none() {
+        assert!(commentable_new_lines(DIFF, "nope.ts").is_empty());
+    }
+
+    #[test]
+    fn hunk_start_parses_the_new_side() {
+        assert_eq!(hunk_new_start("@@ -1,3 +1,4 @@"), 1);
+        assert_eq!(hunk_new_start("@@ -20,2 +21,3 @@ fn foo()"), 21);
+        assert_eq!(hunk_new_start("@@ -0,0 +1 @@"), 1);
+    }
+
+    #[test]
+    fn ranges_collapse_contiguous_runs() {
+        assert_eq!(format_line_ranges(&[1, 2, 3, 4, 21, 22, 23]), "1-4, 21-23");
+        assert_eq!(format_line_ranges(&[5]), "5");
+        assert_eq!(format_line_ranges(&[3, 1, 2, 7]), "1-3, 7");
+    }
 }

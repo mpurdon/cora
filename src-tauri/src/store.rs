@@ -108,6 +108,9 @@ CREATE TABLE IF NOT EXISTS activity (
   read       INTEGER NOT NULL DEFAULT 0,
   flag       TEXT NOT NULL DEFAULT ''
 );
+-- Every per-PR feed sweep (supersede/retire) filters on pr_id; without this
+-- each one scans the whole activity table.
+CREATE INDEX IF NOT EXISTS activity_pr_id ON activity(pr_id);
 ";
 
 impl Store {
@@ -704,17 +707,50 @@ impl Store {
         if kinds.is_empty() {
             return Ok(());
         }
+        self.retire(pr_id, kinds, false)
+    }
+
+    /// Mark unread rows read for one PR. `negate` flips the kind list from
+    /// "these kinds" to "everything but these kinds". The flag/read guards and
+    /// the kind-quoting rule live here so the two public wrappers can't drift.
+    fn retire(&self, pr_id: &str, kinds: &[&str], negate: bool) -> AppResult<()> {
         // Kinds are internal constants ("ci", "commits", …), never user input.
         let list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
+        let clause = if kinds.is_empty() {
+            String::new()
+        } else if negate {
+            format!(" AND kind NOT IN ({list})")
+        } else {
+            format!(" AND kind IN ({list})")
+        };
         let conn = self.conn.lock().unwrap();
         conn.execute(
             &format!(
                 "UPDATE activity SET read = 1
-                 WHERE pr_id = ?1 AND read = 0 AND flag = '' AND kind IN ({list})"
+                 WHERE pr_id = ?1 AND read = 0 AND flag = ''{clause}"
             ),
             params![pr_id],
         )?;
         Ok(())
+    }
+
+    /// The inverse of `supersede_activity`: retire every unread row for a PR
+    /// *except* the kinds named — comments included. The caller knows the PR has
+    /// nothing left to say (it closed), so the "words deserve reading"
+    /// exemption doesn't apply: a conversation on a dead branch is not a to-do.
+    /// `keep` is how the row carrying the news survives its own sweep. Flagged
+    /// rows still survive too, as everywhere — the user pinned those on purpose.
+    pub fn supersede_activity_except(&self, pr_id: &str, keep: &[&str]) -> AppResult<()> {
+        self.retire(pr_id, keep, true)
+    }
+
+    /// A finished PR is settled: it carries no unread rows but the one saying
+    /// how it ended, and no PR-level badge. Both paths that can observe the
+    /// ending — the poll cycle and `refresh_pr_inner` — call this, so the rule
+    /// exists once and can't drift between them.
+    pub fn retire_finished(&self, pr_id: &str, terminal: &str) -> AppResult<()> {
+        self.supersede_activity_except(pr_id, &[terminal])?;
+        self.mark_read(pr_id)
     }
 
     /// Feed hygiene: a mechanical row (commits, CI, review state…) for a PR
@@ -833,10 +869,20 @@ impl Store {
     }
 
     /// Ids of tracked PRs we must keep querying individually even when they
-    /// stop matching the open-PR searches (chat/manual adds, just-closed PRs).
+    /// stop matching the open-PR searches (chat/manual adds, PRs whose close we
+    /// haven't observed yet).
+    ///
+    /// Finished PRs are excluded. They stay tracked so the rail's "finished"
+    /// chip can reveal them, but their state can no longer change, and
+    /// re-fetching them would grow the per-cycle round-trip count without
+    /// bound — they only leave the tracked set once they age out. A PR reopened
+    /// on github.com comes back through the `is:open` search scopes.
     pub fn tracked_ids(&self) -> AppResult<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id FROM prs WHERE tracked = 1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM prs
+             WHERE tracked = 1 AND json_extract(data, '$.state') = 'OPEN'",
+        )?;
         let ids = stmt
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -966,5 +1012,54 @@ mod tests {
         assert!(summaries.contains(&"fresh read".into()), "recent read analysis kept");
         assert!(summaries.contains(&"old unread".into()), "unread analysis kept");
         assert!(summaries.contains(&"old flagged".into()), "flagged analysis kept");
+    }
+
+    #[test]
+    fn a_close_retires_everything_but_the_close_itself() {
+        let store = Store::open_in_memory().unwrap();
+        let p = pr("PR_1");
+        let now = "2026-01-01T00:00:00Z";
+        store.upsert_pr(&p, &[PrSource::Authored], &[ChangeKind::New], now).unwrap();
+        store.add_activity(now, &p, "comment", "dev", "a comment", "", true, false).unwrap();
+        store.add_activity(now, &p, "commits", "dev", "pushed", "", true, false).unwrap();
+        store.add_activity(now, &p, "comment", "dev", "a flagged comment", "", true, false).unwrap();
+        store.add_activity(now, &p, "closed", "", "closed", "", true, false).unwrap();
+        let flagged_id = store
+            .list_activity(100)
+            .unwrap()
+            .into_iter()
+            .find(|a| a.summary == "a flagged comment")
+            .unwrap()
+            .id;
+        store.set_activity_flag(flagged_id, "pin").unwrap();
+
+        let unread = |store: &Store| -> Vec<String> {
+            store
+                .list_activity(100)
+                .unwrap()
+                .into_iter()
+                .filter(|a| !a.read)
+                .map(|a| a.summary)
+                .collect()
+        };
+
+        // The kind-scoped sweep spares comments — that's the "words deserve
+        // reading" rule the closed path deliberately overrides.
+        store.supersede_activity("PR_1", MECHANICAL_KINDS).unwrap();
+        assert_eq!(unread(&store), vec!["closed", "a flagged comment", "a comment"]);
+
+        store.supersede_activity_except("PR_1", &["closed"]).unwrap();
+        assert_eq!(
+            unread(&store),
+            vec!["closed", "a flagged comment"],
+            "a close leaves only its own row and anything flagged"
+        );
+
+        // Another PR's rows are never touched.
+        let other = pr("PR_2");
+        store.upsert_pr(&other, &[PrSource::Authored], &[ChangeKind::New], now).unwrap();
+        store.add_activity(now, &other, "comment", "dev", "elsewhere", "", true, false).unwrap();
+        store.supersede_activity_except("PR_1", &["closed"]).unwrap();
+        assert!(unread(&store).contains(&"elsewhere".to_string()));
     }
 }

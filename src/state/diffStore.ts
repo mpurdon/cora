@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { ipc } from "../lib/ipc";
+import type { CodeFinding } from "../bindings/CodeFinding";
 
 /** One PR's raw diff + viewed-file digests, shared between the file rail and
  *  the Diff tab so opening a PR fetches from GitHub once, not per consumer. */
@@ -23,11 +24,21 @@ export interface ComposeRequest {
   seed: string;
 }
 
+/** One-shot "explain this finding in the assistant chat" request, raised from a
+ *  finding row. `MainApp` opens the assistant panel; `AssistantPanel` sends the
+ *  seeded prompt and switches to the chat. Carries the PR id so a stale request
+ *  can't fire against a different PR's panel. */
+export interface ExplainRequest {
+  prId: string;
+  finding: CodeFinding;
+}
+
 interface DiffState {
   entries: Record<string, DiffEntry>;
   /** One-shot "scroll the Diff tab to this file" request from the file rail. */
   focusPath: string | null;
   composeRequest: ComposeRequest | null;
+  explainRequest: ExplainRequest | null;
   /** File currently at the top of the Diff tab's viewport — the file rail
    *  highlights it and keeps it in view (scroll spy). */
   visiblePath: string | null;
@@ -37,6 +48,8 @@ interface DiffState {
   clearFocusFile: () => void;
   requestCompose: (req: ComposeRequest) => void;
   clearCompose: () => void;
+  requestExplain: (prId: string, finding: CodeFinding) => void;
+  clearExplain: () => void;
   setVisiblePath: (path: string | null) => void;
   /** Org switch: drop every cached diff and transient focus state. */
   reset: () => void;
@@ -46,10 +59,17 @@ export const useDiffStore = create<DiffState>((set, get) => ({
   entries: {},
   focusPath: null,
   composeRequest: null,
+  explainRequest: null,
   visiblePath: null,
 
   reset: () =>
-    set({ entries: {}, focusPath: null, composeRequest: null, visiblePath: null }),
+    set({
+      entries: {},
+      focusPath: null,
+      composeRequest: null,
+      explainRequest: null,
+      visiblePath: null,
+    }),
 
   ensure: async (prId, headSha) => {
     const existing = get().entries[prId];
@@ -111,5 +131,7 @@ export const useDiffStore = create<DiffState>((set, get) => ({
   clearFocusFile: () => set({ focusPath: null }),
   requestCompose: (req) => set({ composeRequest: req }),
   clearCompose: () => set({ composeRequest: null }),
+  requestExplain: (prId, finding) => set({ explainRequest: { prId, finding } }),
+  clearExplain: () => set({ explainRequest: null }),
   setVisiblePath: (path) => set({ visiblePath: path }),
 }));
