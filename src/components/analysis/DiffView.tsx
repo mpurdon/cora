@@ -3,6 +3,7 @@ import type { PrConversation } from "../../bindings/PrConversation";
 import type { ReviewMark } from "../../bindings/ReviewMark";
 import type { ReviewPlanEntry } from "../../bindings/ReviewPlanEntry";
 import type { ReviewThread } from "../../bindings/ReviewThread";
+import { IconCheck, IconClipboard } from "../icons";
 import { treeFileOrder } from "../../lib/fileTree";
 import { matchesAny } from "../../lib/globs";
 import { ipc } from "../../lib/ipc";
@@ -24,6 +25,14 @@ export interface DiffFile {
   additions: number;
   deletions: number;
   lines: DiffLine[];
+  /** Where this file's slice of the original unified diff sits in `src` —
+   *  including the `diff --git` / `index` / mode headers the parser otherwise
+   *  drops. Offsets rather than a copy: every file shares one reference to the
+   *  raw diff, so nothing is duplicated or re-joined at parse time, and the
+   *  patch text is built only when someone actually asks for it. */
+  src: string;
+  patchStart: number;
+  patchEnd: number;
   /** The whole file was deleted — every line is a removal. */
   deleted?: boolean;
   /** The whole file is new in this PR. */
@@ -41,13 +50,81 @@ export function fileDigest(file: DiffFile): string {
   return `${h.toString(36)}:${s.length}`;
 }
 
+/** A file's unified diff, cut from the raw diff on demand. Null for a DiffFile
+ *  that predates these offsets — one parsed by an older build of this module and
+ *  still held in a React memo across a hot reload — which disables the copy
+ *  button rather than putting "undefined" on the clipboard. */
+export function filePatch(file: DiffFile): string | null {
+  if (file.src == null) return null;
+  // Exactly one trailing newline: the slice ends wherever the next file's
+  // header begins, and patches are line-terminated files.
+  return `${file.src.slice(file.patchStart, file.patchEnd).replace(/\n+$/, "")}\n`;
+}
+
+/** Clipboard button with inline feedback, shared by every "copy this" affordance
+ *  — a file's patch, a whole file, a PR link. `text` is null when there is
+ *  nothing to copy yet (content still fetching), which disables the button
+ *  rather than putting a placeholder on the clipboard. */
+export function CopyButton({
+  text,
+  what,
+  icon,
+}: {
+  text: string | null;
+  what: string;
+  icon?: React.ReactNode;
+}) {
+  // One tri-state rather than two booleans that must never both be true.
+  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const title =
+    text == null
+      ? "Nothing to copy yet"
+      : status === "copied"
+        ? "Copied!"
+        : status === "failed"
+          ? "Couldn't copy — clipboard unavailable"
+          : `Copy ${what}`;
+  return (
+    <button
+      className="icon-btn"
+      disabled={text == null}
+      title={title}
+      onClick={() => {
+        if (text == null) return;
+        void navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            setStatus("copied");
+            setTimeout(() => setStatus("idle"), 1500);
+          })
+          .catch(() => {
+            setStatus("failed");
+            setTimeout(() => setStatus("idle"), 2500);
+          });
+      }}
+    >
+      {status === "copied" ? <IconCheck /> : (icon ?? <IconClipboard />)}
+    </button>
+  );
+}
+
 export function parseDiff(raw: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
   let newLine = 0;
+  // Byte offset of the line being read, so each file can record where its slice
+  // of `raw` starts and ends instead of copying the text.
+  let offset = 0;
+  const flush = (end: number) => {
+    if (!current) return;
+    current.patchEnd = end;
+    files.push(current);
+  };
   for (const line of raw.split("\n")) {
+    const lineStart = offset;
+    offset += line.length + 1; // +1 for the "\n" split consumed
     if (line.startsWith("diff --git ")) {
-      if (current) files.push(current);
+      flush(lineStart);
       const m = line.match(/^diff --git a\/(.*) b\/(.*)$/);
       current = {
         path: m?.[2] ?? line.slice(11),
@@ -55,6 +132,9 @@ export function parseDiff(raw: string): DiffFile[] {
         additions: 0,
         deletions: 0,
         lines: [],
+        src: raw,
+        patchStart: lineStart,
+        patchEnd: raw.length,
       };
       newLine = 0;
       continue;
@@ -100,7 +180,7 @@ export function parseDiff(raw: string): DiffFile[] {
       newLine += 1;
     }
   }
-  if (current) files.push(current);
+  flush(raw.length);
   return files;
 }
 
@@ -327,7 +407,9 @@ function FileDiff({
   // While the pointer is held on a + button we're extending a selection; the
   // composer only opens on release, so it doesn't flicker under the moving end.
   const [selecting, setSelecting] = useState(false);
-  const drag = useRef<{ anchor: number; moved: boolean } | null>(null);
+  // `anchor` is the line pressed; `last` the line the cursor is currently over,
+  // so a move only re-ranges when it crosses into a new line.
+  const drag = useRef<{ anchor: number; last: number } | null>(null);
 
   useEffect(() => {
     if (compose) {
@@ -381,6 +463,9 @@ function FileDiff({
   }, [open]);
 
   // Hunk segments: a header line plus its body, for per-hunk collapsing.
+  // Cut once per file rather than on every render of the header.
+  const patchText = useMemo(() => filePatch(file), [file]);
+
   const segments = useMemo(() => {
     const segs: { header: DiffLine | null; lines: DiffLine[] }[] = [];
     for (const l of file.lines) {
@@ -407,7 +492,10 @@ function FileDiff({
     const showComposer = n != null && range != null && range.end === n && !selecting;
     return (
       <div key={key}>
-        <div className={`diff-line ${l.kind}${inRange ? " in-range" : ""}`}>
+        <div
+          className={`diff-line ${l.kind}${inRange ? " in-range" : ""}`}
+          data-newline={commentable && n != null ? n : undefined}
+        >
           <span className="code-lineno">{l.newLine ?? ""}</span>
           <span className="diff-gutter">
             {l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}
@@ -416,27 +504,42 @@ function FileDiff({
             <button
               className="line-comment-btn"
               title={`Comment on line ${n} — drag to span several`}
-              // Press to open a one-line composer; drag down the gutter to span
-              // a range (the composer opens on release). Pressing the + of a
-              // line whose one-line composer is already open closes it again —
-              // decided here, before we overwrite the range, because by click
-              // time the global pointerup has already cleared the drag ref.
+              // Press to open a one-line composer; drag down to span a range
+              // (the composer opens on release). Pressing the + of a line whose
+              // one-line composer is already open closes it again — decided
+              // here, before we overwrite the range.
               onPointerDown={(e) => {
                 e.preventDefault();
                 if (range?.start === n && range?.end === n && !seedBody) {
                   setRange(null);
                   return;
                 }
-                drag.current = { anchor: n, moved: false };
+                drag.current = { anchor: n, last: n };
                 setSelecting(true);
                 setSeedBody("");
                 setRange({ start: n, end: n });
+                // Capture the pointer so we keep getting moves once the cursor
+                // leaves this 16px button — pointerenter on sibling buttons is
+                // swallowed by implicit capture, which is what broke dragging.
+                try {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                } catch {
+                  /* older engines: fall back to bubbling moves */
+                }
               }}
-              onPointerEnter={() => {
-                if (!drag.current) return;
-                drag.current.moved = true;
-                const a = drag.current.anchor;
-                setRange({ start: Math.min(a, n), end: Math.max(a, n) });
+              // While held, grow the range to the line under the cursor. The
+              // captured button receives every move; elementFromPoint maps the
+              // cursor to a real line, so dragging anywhere over the diff works.
+              onPointerMove={(e) => {
+                const d = drag.current;
+                if (!d) return;
+                const row = document
+                  .elementFromPoint(e.clientX, e.clientY)
+                  ?.closest<HTMLElement>("[data-newline]");
+                const m = row ? Number(row.dataset.newline) : NaN;
+                if (Number.isNaN(m) || m === d.last) return;
+                d.last = m;
+                setRange({ start: Math.min(d.anchor, m), end: Math.max(d.anchor, m) });
               }}
             >
               +
@@ -525,6 +628,7 @@ function FileDiff({
             <span className="del">−{file.deletions}</span>
           </span>
         </button>
+        <CopyButton text={patchText} what={`the diff for ${file.path}`} />
         {!file.deleted && (
           <button
             className="icon-btn file-expand-btn"
@@ -1071,6 +1175,7 @@ function FullFileView({
           <span className="add">+{file.additions}</span>{" "}
           <span className="del">−{file.deletions}</span>
         </span>
+        <CopyButton text={content} what={`the contents of ${file.path}`} />
         <button className="icon-btn" title="Back to the diff (esc)" onClick={onClose}>
           ✕
         </button>

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
+import remarkGemoji from "remark-gemoji";
 import remarkGfm from "remark-gfm";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -82,8 +83,21 @@ export function ReactionBar({
   );
 }
 
-/** GitHub-flavored markdown, with links opening in the system browser. */
-export function CommentBody({
+// Hoisted: react-markdown rebuilds its processor and re-parses on every render,
+// so fresh array literals would defeat any memoization above it.
+// gemoji turns GitHub's `:white_check_mark:` shortcodes into the actual emoji —
+// coverage bots and PR templates write them constantly, and without it they
+// render as literal text. Code spans and fences are left alone, so a shortcode
+// being discussed stays readable.
+const REMARK_PLUGINS = [remarkGfm, remarkGemoji];
+// Bots (coverage reports, badges) write raw HTML in comment bodies; parse it,
+// then strip anything outside GitHub's own allowlist.
+const REHYPE_PLUGINS = [rehypeRaw, rehypeSanitize];
+
+/** GitHub-flavored markdown, with links opening in the system browser.
+ *  Memoized on its two string props: react-markdown has no memoization of its
+ *  own, so without this every chat turn re-parses every earlier message. */
+export const CommentBody = memo(function CommentBody({
   body,
   replacedLines,
 }: {
@@ -96,10 +110,8 @@ export function CommentBody({
   return (
     <div className="comment-body markdown">
       <Markdown
-        remarkPlugins={[remarkGfm]}
-        // Bots (coverage reports, badges) write raw HTML in comment bodies;
-        // parse it, then strip anything outside GitHub's own allowlist.
-        rehypePlugins={[rehypeRaw, rehypeSanitize]}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
         components={{
           code: ({ className, children }) => {
             // ```suggestion fences render as an applyable change, like GitHub.
@@ -146,7 +158,7 @@ export function CommentBody({
       </Markdown>
     </div>
   );
-}
+});
 
 function Comment({
   comment,

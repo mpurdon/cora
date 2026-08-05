@@ -44,6 +44,14 @@ export const usePrStore = create<PrState>((set, get) => ({
   },
 }));
 
+/** Closed or merged — the work is over, whatever the review lamps say about it.
+ *  Mirrors `models::terminal_kind` on the Rust side, including its refusal to
+ *  treat an unrecognised state as finished: guessing there would hide a live PR
+ *  from the rail while the backend kept sweeping it as live. */
+export function isFinished(pr: TrackedPr): boolean {
+  return pr.state === "CLOSED" || pr.state === "MERGED";
+}
+
 export function timeAgo(iso: string): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "";
