@@ -6,6 +6,7 @@ import type { ReviewThread } from "../../bindings/ReviewThread";
 import { IconCheck, IconClipboard } from "../icons";
 import { treeFileOrder } from "../../lib/fileTree";
 import { matchesAny } from "../../lib/globs";
+import { usePersistedFlag } from "../../lib/persisted";
 import { ipc } from "../../lib/ipc";
 import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
 import { useDiffStore } from "../../state/diffStore";
@@ -732,14 +733,9 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   /** File taken over the panel in the full-file view. */
   const [expanded, setExpanded] = useState<DiffFile | null>(null);
   // Import/housekeeping-only hunks collapse behind "show" rows — persisted.
-  const [hideTrivial, setHideTrivial] = useState(
-    () => localStorage.getItem("cora.hideTrivialHunks") !== "0",
-  );
-  const toggleTrivial = () =>
-    setHideTrivial((h) => {
-      localStorage.setItem("cora.hideTrivialHunks", h ? "0" : "1");
-      return !h;
-    });
+  const [hideTrivial, toggleTrivial] = usePersistedFlag("cora.hideTrivialHunks", true);
+  // Soft-wrap long lines instead of scrolling them off the right edge.
+  const [wrap, toggleWrap] = usePersistedFlag("cora.wrapDiffLines");
   const rootRef = useRef<HTMLDivElement>(null);
   /** Scroll position of the panel before the full-file view took over. */
   const savedScroll = useRef(0);
@@ -988,14 +984,14 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
 
   if (expanded) {
     return (
-      <div className="diff-view" ref={rootRef}>
+      <div className={`diff-view${wrap ? " wrap" : ""}`} ref={rootRef}>
         <FullFileView prId={prId} file={expanded} onClose={closeExpanded} />
       </div>
     );
   }
 
   return (
-    <div className="diff-view" ref={rootRef}>
+    <div className={`diff-view${wrap ? " wrap" : ""}`} ref={rootRef}>
       {stale && (
         <div className="since-banner">
           <span>
@@ -1029,6 +1025,13 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
           onClick={toggleTrivial}
         >
           hide import-only hunks
+        </button>
+        <button
+          className={`chip${wrap ? " on" : ""}`}
+          title="Soft-wrap long lines instead of scrolling them sideways"
+          onClick={toggleWrap}
+        >
+          wrap lines
         </button>
       </div>
       {files.map((f) => (
