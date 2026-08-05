@@ -6,6 +6,7 @@ import type { ActivityItem } from "../bindings/ActivityItem";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import { ACTION_META, ACTION_ORDER, inBucket, type ActionKind } from "../lib/actions";
 import { FLAG_LABEL } from "../lib/flags";
+import { useRichTip } from "../components/Tooltip";
 import {
   IconAlertTriangle,
   IconChat,
@@ -44,7 +45,7 @@ function Tile({
         .filter(Boolean)
         .join(" ")}
       onClick={() => void invoke("show_main_filtered", { bucket: kind })}
-      title={`${ACTION_META[kind].label} — open CORA filtered to these`}
+      data-tip={`${ACTION_META[kind].label} — open CORA filtered to these`}
     >
       <span className="tile-count">{count}</span>
       <span className="tile-label">{ACTION_META[kind].short}</span>
@@ -120,12 +121,27 @@ function Row({
   onMenu: (e: React.MouseEvent, item: ActivityItem) => void;
 }) {
   const icon = verbIcon(item);
+  const tip = useRichTip<HTMLButtonElement>(
+    <>
+      <div className="tooltip-head">
+        {item.repo}#{item.number}
+      </div>
+      <div>
+        {item.actor ? `@${item.actor} ` : ""}
+        {item.summary}
+      </div>
+      <div style={{ color: "var(--muted)" }}>{item.prTitle}</div>
+      <div className="tooltip-hint" style={{ marginTop: 4 }}>
+        click to open · right-click to flag
+      </div>
+    </>,
+  );
   return (
     <button
+      {...tip}
       className={`feed-item${item.read ? "" : " unread"}${item.important ? " important" : ""}`}
       onClick={() => onOpen(item)}
       onContextMenu={(e) => onMenu(e, item)}
-      title={`${item.actor ? `@${item.actor} ` : ""}${item.summary}\n${item.repo}#${item.number} — ${item.prTitle}\nclick to open · right-click to flag`}
     >
       <span className="feed-dot" />
       <span className="feed-time mono">{itemTime(item.at)}</span>
@@ -354,7 +370,7 @@ export function CalloutApp() {
     <div className="callout-shell">
       {celebrating && <Fireworks onDone={() => setCelebrating(false)} />}
       <header className="callout-header" data-tauri-drag-region>
-        <span className={`sync-dot ${syncClass}`} title={pollStatus?.message ?? "syncing"} />
+        <span className={`sync-dot ${syncClass}`} data-tip={pollStatus?.message ?? "syncing"} aria-label={pollStatus?.message ?? "syncing"} />
         <span className="title" data-tauri-drag-region>
           CORA
         </span>
@@ -362,21 +378,23 @@ export function CalloutApp() {
         {unreadCount > 0 && (
           <button
             className="icon-btn"
-            title={`Mark all ${unreadCount} read`}
+            data-tip={`Mark all ${unreadCount} read`}
+            aria-label={`Mark all ${unreadCount} read`}
             onClick={() => void ipc.markActivityRead([], true)}
           >
             ✓
           </button>
         )}
-        <button className="icon-btn" title="Refresh now" onClick={() => void ipc.pollNow()}>
+        <button className="icon-btn" data-tip="Refresh now" aria-label="Refresh now" onClick={() => void ipc.pollNow()}>
           ⟳
         </button>
-        <button className="icon-btn" title="Open CORA" onClick={() => void ipc.showMainWindow()}>
+        <button className="icon-btn" data-tip="Open CORA" aria-label="Open CORA" onClick={() => void ipc.showMainWindow()}>
           ⌂
         </button>
         <button
           className="icon-btn"
-          title="Hide callout"
+          data-tip="Hide callout"
+          aria-label="Hide callout"
           onClick={() => void getCurrentWindow().hide()}
         >
           ✕
@@ -396,7 +414,7 @@ export function CalloutApp() {
             <>
               <button
                 className="org-select org-bar"
-                title="Active organization — the feed and tiles below are this org's"
+                data-tip="Active organization — the feed and tiles below are this org's"
                 aria-haspopup="menu"
                 aria-expanded={orgMenuAt != null}
                 onClick={(e) => {

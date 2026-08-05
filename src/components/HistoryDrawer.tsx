@@ -57,7 +57,7 @@ export function HistoryDrawer({ open, onClose }: { open: boolean; onClose: () =>
       <aside className={`activity-drawer${open ? " open" : ""}`} aria-hidden={!open}>
         <header className="drawer-header">
           <span className="drawer-title">History</span>
-          <button className="icon-btn" title="Close" onClick={onClose}>
+          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
             ✕
           </button>
         </header>

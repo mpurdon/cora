@@ -40,16 +40,16 @@ export function HistoryView({ prId, headSha }: { prId: string; headSha: string }
       {[...commits].reverse().map((c) => {
         const ciLabel = c.ciStatus ? `checks: ${c.ciStatus.toLowerCase()}` : "no checks";
         return (
-        <div key={c.sha} className="commit-row" title={c.message}>
+        <div key={c.sha} className="commit-row" data-tip={c.message}>
           <span
             className={`lamp ${ciStatusTone(c.ciStatus)}`}
             role="img"
             aria-label={ciLabel}
-            title={ciLabel}
+            data-tip={ciLabel}
           />
           <button
             className="commit-sha mono"
-            title="Open commit on GitHub"
+            data-tip="Open commit on GitHub"
             onClick={() => void openUrl(c.url)}
           >
             {c.shortSha}

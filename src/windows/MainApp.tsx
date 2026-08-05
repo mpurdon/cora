@@ -212,7 +212,7 @@ function Legend() {
     <div className="legend">
       <button
         className="legend-close"
-        title="Dismiss"
+        data-tip="Dismiss"
         onClick={() => {
           localStorage.setItem("cora.legendDismissed", "1");
           setDismissed(true);
@@ -337,7 +337,7 @@ function ReviewActions({
     return (
       <span
         className={`review-chip state-${mine.state.toLowerCase()}`}
-        title="Re-enabled on new commits, resolved threads, or a re-requested review"
+        data-tip="Re-enabled on new commits, resolved threads, or a re-requested review"
       >
         <span className="review-glyph">{mine.state === "APPROVED" ? "✓" : "±"}</span>
         you {verb}
@@ -404,7 +404,7 @@ function ReviewActions({
       <button
         className="action-btn btn-ok"
         disabled={myOpen > 0}
-        title={
+        data-tip={
           myOpen > 0
             ? `You have ${myOpen} unresolved review thread${myOpen === 1 ? "" : "s"} — resolve ${myOpen === 1 ? "it" : "them"} before approving. (Comments starting with praise:, note:, or fyi:, or marked (non-blocking), don't count.)`
             : undefined
@@ -543,7 +543,7 @@ function PrControls({
             className="action-btn merge-caret"
             aria-haspopup="menu"
             aria-expanded={menuAt != null}
-            title="Choose merge method"
+            data-tip="Choose merge method"
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
               setMenuAt({ x: r.left, y: r.bottom + 4 });
@@ -588,7 +588,8 @@ function RefreshPrButton({ prId }: { prId: string }) {
   return (
     <button
       className="icon-btn"
-      title="Refresh this PR from GitHub"
+      data-tip="Refresh this PR from GitHub"
+      aria-label="Refresh this PR from GitHub"
       disabled={busy}
       onClick={() => {
         setBusy(true);
@@ -878,7 +879,7 @@ function AnalysisPanel({
             <button
               className={`crumb${current ? " current" : ""}`}
               disabled={current}
-              title={current ? undefined : `Back up to ${f.label}`}
+              data-tip={current ? undefined : `Back up to ${f.label}`}
               onClick={() => setStack(stack.slice(0, i + 1))}
             >
               <span className={`crumb-level level-${f.level}`}>{LEVEL_NAME[f.level]}</span>
@@ -1032,7 +1033,7 @@ function AnalysisPanel({
             {crumbs}
             <span className="spacer" />
           </div>
-          <div className="sketch-strip error" title={run.error}>
+          <div className="sketch-strip error" data-tip={run.error}>
             <span className="lamp bad" />
             <span className="sketch-label">
               analysis failed — showing the diff-derived sketch
@@ -1104,7 +1105,7 @@ function AnalysisPanel({
           )}
         </span>
         <span className="spacer" />
-        <button className="action-btn" title="Run the analysis again from scratch" onClick={retry}>
+        <button className="action-btn" data-tip="Run the analysis again from scratch" onClick={retry}>
           Re-analyze
         </button>
       </div>
@@ -1293,12 +1294,13 @@ function Detail({
         <span className="spacer" />
         <RefreshPrButton prId={pr.id} />
         <CopyLinkButton url={pr.url} />
-        <button className="icon-btn" title="Open on GitHub" onClick={() => void openUrl(pr.url)}>
+        <button className="icon-btn" data-tip="Open on GitHub" aria-label="Open on GitHub" onClick={() => void openUrl(pr.url)}>
           <IconExternal />
         </button>
         <button
           className="icon-btn"
-          title="More actions"
+          data-tip="More actions"
+          aria-label="More actions"
           onClick={(e) => {
             const r = e.currentTarget.getBoundingClientRect();
             setMenuAt({ x: r.right, y: r.bottom + 4 });
@@ -1308,7 +1310,8 @@ function Detail({
         </button>
         <button
           className={`icon-btn${assistantOpen ? " active" : ""}`}
-          title="Assistant — chat about this PR (a)"
+          data-tip="Assistant — chat about this PR (a)"
+          aria-label="Assistant — chat about this PR (a)"
           onClick={onToggleAssistant}
         >
           <IconChat />
@@ -1355,7 +1358,7 @@ function Detail({
             role="tab"
             aria-selected={tab === key}
             className={`tab${tab === key ? " active" : ""}`}
-            title={`Hotkey: ${i + 1}`}
+            data-tip={`Hotkey: ${i + 1}`}
             onClick={() => setTab(key)}
           >
             {label}
@@ -1912,7 +1915,7 @@ export function MainApp() {
     <>
       <button
         className="org-select org-bar"
-        title="Active organization — data, settings, and feeds are per-org. Picking a new org enables it with its own isolated database."
+        data-tip="Active organization — data, settings, and feeds are per-org. Picking a new org enables it with its own isolated database."
         aria-haspopup="menu"
         aria-expanded={orgMenuAt != null}
         onClick={(e) => {
@@ -1971,7 +1974,8 @@ export function MainApp() {
               <span className="spacer" />
               <button
                 className="icon-btn"
-                title="Track a PR by URL"
+                data-tip="Track a PR by URL"
+                aria-label="Track a PR by URL"
                 onClick={() => setShowTrackInput((s) => !s)}
               >
                 +
@@ -1991,7 +1995,7 @@ export function MainApp() {
                 onChange={(e) => setFilter(e.target.value)}
               />
               <select
-                title="Group by"
+                data-tip="Group by"
                 value={groupMode}
                 onChange={(e) => setGroupMode(e.target.value as GroupMode)}
               >
@@ -2001,7 +2005,7 @@ export function MainApp() {
                 <option value="reason">by reason</option>
               </select>
               <select
-                title="Sort by"
+                data-tip="Sort by"
                 value={sortMode}
                 onChange={(e) => setSortMode(e.target.value as SortMode)}
               >
@@ -2014,42 +2018,42 @@ export function MainApp() {
             <div className="filter-chips">
               <button
                 className={`chip${ready.ciPass ? " on" : ""}`}
-                title="Show only PRs whose CI checks pass (or that have no checks)"
+                data-tip="Show only PRs whose CI checks pass (or that have no checks)"
                 onClick={() => toggleReady("ciPass")}
               >
                 <span className="lamp ok" /> ci passing
               </button>
               <button
                 className={`chip${ready.reviewNeeded ? " on" : ""}`}
-                title="Show only PRs still awaiting a review decision"
+                data-tip="Show only PRs still awaiting a review decision"
                 onClick={() => toggleReady("reviewNeeded")}
               >
                 <span className="lamp warn" /> needs review
               </button>
               <button
                 className={`chip${ready.noConflicts ? " on" : ""}`}
-                title="Hide PRs with merge conflicts"
+                data-tip="Hide PRs with merge conflicts"
                 onClick={() => toggleReady("noConflicts")}
               >
                 <span className="lamp bad" /> no conflicts
               </button>
               <button
                 className={`chip${showMuted ? " on" : ""}`}
-                title="Muted PRs are hidden by default — toggle to see them (dimmed)"
+                data-tip="Muted PRs are hidden by default — toggle to see them (dimmed)"
                 onClick={toggleMuted}
               >
                 <span className="lamp" /> muted
               </button>
               <button
                 className={`chip${showReviewed ? " on" : ""}`}
-                title="PRs you've approved or requested changes on, with nothing new since, are hidden — toggle to see them (dimmed). They return on new commits, comments, or a re-requested review."
+                data-tip="PRs you've approved or requested changes on, with nothing new since, are hidden — toggle to see them (dimmed). They return on new commits, comments, or a re-requested review."
                 onClick={toggleReviewed}
               >
                 <span className="lamp ok" /> reviewed
               </button>
               <button
                 className={`chip${showFinished ? " on" : ""}`}
-                title="Closed and merged PRs are hidden by default — toggle to see them (dimmed). Reopen lives in the detail panel."
+                data-tip="Closed and merged PRs are hidden by default — toggle to see them (dimmed). Reopen lives in the detail panel."
                 onClick={toggleFinished}
               >
                 <span className="lamp" /> finished
@@ -2060,7 +2064,7 @@ export function MainApp() {
             {bucketFilter && (
               <div className="bucket-filter-chip">
                 <span className="eyebrow">{ACTION_META[bucketFilter].label}</span>
-                <button className="icon-btn" title="Clear filter" onClick={() => setBucketFilter(null)}>
+                <button className="icon-btn" data-tip="Clear filter" aria-label="Clear filter" onClick={() => setBucketFilter(null)}>
                   ✕
                 </button>
               </div>
@@ -2080,7 +2084,7 @@ export function MainApp() {
                       key={pr.id}
                       className={`flagged-row${pr.id === selectedId ? " selected" : ""}`}
                       onClick={() => select(pr.id)}
-                      title={`${pr.repo}#${pr.number} — ${pr.title}`}
+                      data-tip={`${pr.repo}#${pr.number} — ${pr.title}`}
                     >
                       <span className="flagged-tags">
                         {[...flags].sort((a, b) => flagRank(a) - flagRank(b)).map((f) => (
@@ -2095,7 +2099,7 @@ export function MainApp() {
                       <span
                         className="flagged-clear"
                         role="button"
-                        title="Clear the flag — removes it from every feed row for this PR"
+                        data-tip="Clear the flag — removes it from every feed row for this PR"
                         onClick={(e) => {
                           e.stopPropagation();
                           void clearFlags(rows);
@@ -2141,7 +2145,8 @@ export function MainApp() {
                         <span
                           className="flag-btn"
                           role="button"
-                          title={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
+                          data-tip={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
+                          aria-label={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
                           onClick={(e) => {
                             e.stopPropagation();
                             const next =
@@ -2158,7 +2163,7 @@ export function MainApp() {
                       {unreadSum > 0 && (
                         <span
                           className="unread-count"
-                          title={`${unreadSum} unacknowledged update${unreadSum > 1 ? "s" : ""} in this group`}
+                          data-tip={`${unreadSum} unacknowledged update${unreadSum > 1 ? "s" : ""} in this group`}
                         >
                           {unreadSum}
                         </span>
@@ -2183,7 +2188,7 @@ export function MainApp() {
                               ),
                             );
                           }}
-                          title={`${pr.repo}#${pr.number} — ${pr.title}`}
+                          data-tip={`${pr.repo}#${pr.number} — ${pr.title}`}
                         >
                           <UnreadMarker pr={pr} />
                           <StatusStrip pr={pr} />
@@ -2219,7 +2224,8 @@ export function MainApp() {
           </span>
           <button
             className="icon-btn"
-            title="Refresh from GitHub now"
+            data-tip="Refresh from GitHub now"
+            aria-label="Refresh from GitHub now"
             onClick={() => void ipc.pollNow()}
           >
             <span className={pollStatus?.syncing ? "glyph-spin" : undefined}>
@@ -2228,28 +2234,32 @@ export function MainApp() {
           </button>
           <button
             className="icon-btn"
-            title="History — your actions, undoable"
+            data-tip="History — your actions, undoable"
+            aria-label="History — your actions, undoable"
             onClick={() => setShowHistory(true)}
           >
             <IconClipboard />
           </button>
           <button
             className="icon-btn"
-            title="Toggle callout"
+            data-tip="Toggle callout"
+            aria-label="Toggle callout"
             onClick={() => void ipc.toggleCallout()}
           >
             ▣
           </button>
           <button
             className="icon-btn"
-            title="Keyboard shortcuts  (?)"
+            data-tip="Keyboard shortcuts  (?)"
+            aria-label="Keyboard shortcuts  (?)"
             onClick={() => setShowHotkeys((s) => !s)}
           >
             ⌨
           </button>
           <button
             className="icon-btn"
-            title="Settings  (,)"
+            data-tip="Settings  (,)"
+            aria-label="Settings  (,)"
             onClick={() => (showSettings ? setShowSettings(false) : openSettings())}
           >
             ⚙
@@ -2463,7 +2473,7 @@ function HotkeysHelp({
         <div className="drawer-title">
           Keyboard shortcuts
           <span className="spacer" />
-          <button className="icon-btn" title="Close" onClick={onClose}>
+          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
             ✕
           </button>
         </div>

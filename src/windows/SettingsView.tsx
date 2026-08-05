@@ -291,7 +291,7 @@ export function SettingsView({
         {activeOrg && (
           <span
             className="settings-org-banner mono"
-            title="Settings are per-organization — you are editing this org's"
+            data-tip="Settings are per-organization — you are editing this org's"
           >
             {activeOrg}
           </span>
@@ -809,7 +809,7 @@ function AppearancePane() {
                 <span className="theme-name">{th.name}</span>
                 {!th.builtin && <span className="theme-tag mono">custom</span>}
               </button>
-              <button className="action-btn" title="Copy into an editable theme" onClick={() => {
+              <button className="action-btn" data-tip="Copy into an editable theme" onClick={() => {
                 const clone = cloneTheme(th);
                 setActiveTheme(clone.id);
                 bump();
@@ -819,7 +819,8 @@ function AppearancePane() {
               {!th.builtin && (
                 <button
                   className="icon-btn"
-                  title="Delete this theme"
+                  data-tip="Delete this theme"
+                  aria-label="Delete this theme"
                   onClick={() => {
                     deleteCustomTheme(th.id);
                     bump();
@@ -1045,7 +1046,8 @@ function ReposPane({
                   {(row.watched || row.priority !== "normal") && (
                     <button
                       className="icon-btn"
-                      title="Unwatch and clear priority"
+                      data-tip="Unwatch and clear priority"
+                      aria-label="Unwatch and clear priority"
                       onClick={() => removeRepo(row.repo)}
                     >
                       ✕
@@ -1189,7 +1191,8 @@ function UsersPane({
                   {row.priority !== "normal" && (
                     <button
                       className="icon-btn"
-                      title="Clear priority"
+                      data-tip="Clear priority"
+                      aria-label="Clear priority"
                       onClick={() => setPriority(row.author, "normal")}
                     >
                       ✕
