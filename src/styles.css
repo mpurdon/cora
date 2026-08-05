@@ -258,6 +258,18 @@ input:focus-visible {
   background: var(--ink-2);
 }
 
+/* Nothing to act on yet — e.g. copy while the whole file is still fetching.
+   Dimmed, and the hover affordance withdrawn so it doesn't invite a click. */
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.icon-btn:disabled:hover {
+  color: var(--muted);
+  background: none;
+}
+
 .icon-btn svg {
   display: block;
 }
@@ -3260,9 +3272,17 @@ button.diff-file-header:hover {
   box-sizing: border-box;
 }
 
-/* The lines a drag selection covers, highlighted as you drag the + gutter. */
+/* The lines a drag selection covers. A left rail + stronger tint make a
+   multi-line range unmistakable while dragging, over the add/del backgrounds. */
 .diff-line.in-range {
-  background: color-mix(in srgb, var(--chat) 16%, transparent);
+  background: color-mix(in srgb, var(--chat) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--chat);
+}
+
+/* Keep the + visible on the pressed/selected lines instead of letting the
+   hover-gated button fade as the cursor moves off during a drag. */
+.diff-line.in-range .line-comment-btn {
+  opacity: 1;
 }
 
 .diff-line {
@@ -4987,6 +5007,12 @@ button.diff-file-header:hover {
 /* Reviewed-and-idle PRs (visible only via the "reviewed" chip). */
 .rail-row.reviewed-idle {
   opacity: 0.55;
+}
+
+/* Closed/merged PRs (visible only via the "finished" chip). Dimmer than
+   reviewed-and-idle: those are waiting on someone, these are over. */
+.rail-row.finished-pr {
+  opacity: 0.45;
 }
 
 /* Empty state can carry a call-to-action button. */

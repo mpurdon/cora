@@ -301,13 +301,20 @@ fn record_activity(
         // A newer event marks the unread rows it makes moot as read — never
         // flagged rows, never comments (see supersede_activity). Terminal
         // states retire everything mechanical; repeatable kinds retire their
-        // own older siblings.
+        // own older siblings. A finished PR retires comments too, but that
+        // sweep lives in the caller's terminal-state branch — it has to run
+        // whether or not this cycle saw the transition.
         let superseded: &[&str] = match kind {
             "merged" | "closed" | "reopened" => MECHANICAL_KINDS,
             "commits" | "ci" | "review" => &[kind],
             _ => &[],
         };
         let _ = store.supersede_activity(&pr.info.id, superseded);
+        // A reopen also makes the close that preceded it moot — otherwise the
+        // terminal row outlives the terminal state, unread, on a live PR.
+        if kind == "reopened" {
+            let _ = store.supersede_activity(&pr.info.id, &["closed"]);
+        }
         // A red CI on someone else's PR is their problem — record it for the
         // history but arrive pre-read. On your own PRs it demands attention.
         let pre_read = kind == "ci" && !pr.sources.contains(&PrSource::Authored);
@@ -479,6 +486,9 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
         }
     }
 
+    // One cutoff for the whole cycle rather than a fresh `now` per finished PR.
+    let stale_cutoff = (settings.pr_max_age_days > 0)
+        .then(|| Utc::now() - chrono::Duration::days(settings.pr_max_age_days as i64));
     let mut activity_written = false;
     for (id, (info, sources)) in &merged {
         // Ignored repos and ignored authors never enter (or stay in) the
@@ -509,16 +519,6 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
             store.invalidate_analyses(id)?;
         }
         let stored = store.upsert_pr(info, sources, &changes, &now)?;
-        if stored.info.state != "OPEN" {
-            // Backstop for rows written before (or without) the terminal
-            // event: a non-open PR never has live mechanical feed rows.
-            let _ = store.supersede_activity(id, MECHANICAL_KINDS);
-        }
-        // Merged/closed PRs whose changes were already acknowledged drop off.
-        if stored.info.state != "OPEN" && stored.unread.is_empty() {
-            store.untrack(id)?;
-            continue;
-        }
         // Pre-warm: the L1 analysis is the slowest part of a review, so start
         // it when a PR enters the review-requested bucket or its head moves
         // while there.
@@ -544,9 +544,29 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
             // orgs still ping natively (org-prefixed), but never touch the
             // active org's UI events.
             notify_for_changes(app, &stored, &changes, if active { None } else { Some(login) });
-            if active {
-                let _ = app.emit(events::PR_CHANGED, PrChangedEvent { pr: stored, changes });
+        }
+        // A finished PR — closed or merged — has nothing left to review, so it
+        // drops out of the rail (the "finished" chip reveals it on demand) and
+        // settles: no unread rows but the one saying how it ended. It stays
+        // *tracked*, because hiding is the rail's job and Reopen needs the
+        // stored row. This runs after record_activity so a cycle that sees a
+        // comment and the close together retires the comment too, rather than
+        // leaving it unread on a PR nobody will look at again.
+        if let Some(terminal) = crate::models::terminal_kind(&stored.info.state) {
+            store.retire_finished(id, terminal)?;
+            // Tracked, but not forever: past the visibility window nothing can
+            // show it anyway, so dropping it there bounds the store.
+            if stale_cutoff
+                .is_some_and(|c| {
+                    chrono::DateTime::parse_from_rfc3339(&stored.info.updated_at)
+                        .is_ok_and(|t| t < c)
+                })
+            {
+                store.untrack(id)?;
             }
+        }
+        if active && !changes.is_empty() && !stored.muted {
+            let _ = app.emit(events::PR_CHANGED, PrChangedEvent { pr: stored, changes });
         }
     }
     // Once-per-cycle feed hygiene (get_activity is a pure read).

@@ -104,6 +104,7 @@ export function AssessmentView({
   onFocusNodes,
   onCommentFinding,
   onCommentCode,
+  onExplainCode,
   isCommented,
 }: {
   assessment: Assessment;
@@ -112,6 +113,8 @@ export function AssessmentView({
   onFocusNodes: (nodeIds: string[]) => void;
   onCommentFinding: (seed: string, nodeIds: string[]) => void;
   onCommentCode: (finding: CodeFinding) => void;
+  /** Hand a finding to the assistant chat for a plain-language, actionable read. */
+  onExplainCode: (finding: CodeFinding) => void;
   /** Whether a finding already has a review comment from the viewer. */
   isCommented?: (finding: CodeFinding) => boolean;
 }) {
@@ -215,17 +218,27 @@ export function AssessmentView({
                       <div>{f.finding}</div>
                       <div className="code-finding-suggestion">→ {f.suggestion}</div>
                     </div>
-                    {commented ? (
+                    <div className="finding-actions">
                       <span
-                        className="finding-comment-btn commented"
-                        aria-disabled="true"
-                        title="You have a review comment at this line"
+                        className="finding-comment-btn"
+                        role="button"
+                        title="Explain this finding in plain terms — and what to do about it — in the assistant chat"
+                        onClick={() => onExplainCode(f)}
                       >
-                        ✓ commented
+                        explain
                       </span>
-                    ) : (
-                      <CommentFindingButton onClick={() => onCommentCode(f)} />
-                    )}
+                      {commented ? (
+                        <span
+                          className="finding-comment-btn commented"
+                          aria-disabled="true"
+                          title="You have a review comment at this line"
+                        >
+                          ✓ commented
+                        </span>
+                      ) : (
+                        <CommentFindingButton onClick={() => onCommentCode(f)} />
+                      )}
+                    </div>
                   </div>
                 );
               })}

@@ -4,6 +4,7 @@ import type { ChatPendingAction } from "../../bindings/ChatPendingAction";
 import type { TrackedPr } from "../../bindings/TrackedPr";
 import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
 import { useChatStore } from "../../state/chatStore";
+import { useDiffStore } from "../../state/diffStore";
 import { eli5Prompt } from "../../lib/comments";
 import { CommentBody } from "./CommentsView";
 import { ContextDrawer } from "./ContextDrawer";
@@ -83,6 +84,19 @@ export function AssistantPanel({
     void send(pr.id, text).catch((e) => setSendError(String(e)));
   };
 
+  // "Explain" on a finding (from either findings view) routes through the diff
+  // store so it works when the panel was closed. Send the seeded prompt and
+  // surface the chat so the answer lands where the conversation can continue.
+  const explainRequest = useDiffStore((s) => s.explainRequest);
+  const clearExplain = useDiffStore((s) => s.clearExplain);
+  useEffect(() => {
+    if (!explainRequest || explainRequest.prId !== pr.id) return;
+    setView("chat");
+    setSendError(null);
+    void send(pr.id, eli5Prompt(explainRequest.finding)).catch((e) => setSendError(String(e)));
+    clearExplain();
+  }, [explainRequest, pr.id, send, clearExplain]);
+
   return (
     <aside className="assistant-panel" style={width ? { width } : undefined}>
       <header className="assistant-header">
@@ -124,17 +138,7 @@ export function AssistantPanel({
       </header>
 
       {view === "insights" ? (
-        <FileInsights
-          pr={pr}
-          onExplain={(f) => {
-            // Hand the finding to the chat and surface it: the reviewer asked
-            // for a plain-language, actionable read, and the answer lands where
-            // they can keep the conversation going.
-            setView("chat");
-            setSendError(null);
-            void send(pr.id, eli5Prompt(f)).catch((e) => setSendError(String(e)));
-          }}
-        />
+        <FileInsights pr={pr} />
       ) : (
         <>
       <div className="assistant-activity">

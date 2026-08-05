@@ -700,6 +700,19 @@ pub fn latest_human_comment(comments: &[RecentComment], delta: usize) -> Option<
     window.iter().rev().find(|c| !c.is_bot)
 }
 
+/// The feed kind recording how a PR ended, for the states that end one.
+/// `None` for OPEN — and for anything unrecognised, which must never be
+/// mistaken for finished: that would retire a live PR's unread rows and hide it
+/// from the rail. Lives here, beside `compute_changes` and the `state` field it
+/// classifies, so the poller, the IPC layer and the store all read one rule.
+pub fn terminal_kind(state: &str) -> Option<&'static str> {
+    match state {
+        "CLOSED" => Some("closed"),
+        "MERGED" => Some("merged"),
+        _ => None,
+    }
+}
+
 /// Pure diff between two observations; drives events and unread badges.
 pub fn compute_changes(old: &PrInfo, new: &PrInfo) -> Vec<ChangeKind> {
     let mut changes = Vec::new();
@@ -746,6 +759,18 @@ pub fn compute_changes(old: &PrInfo, new: &PrInfo) -> Vec<ChangeKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_closed_and_merged_are_terminal() {
+        assert_eq!(terminal_kind("CLOSED"), Some("closed"));
+        assert_eq!(terminal_kind("MERGED"), Some("merged"));
+        assert_eq!(terminal_kind("OPEN"), None);
+        // An unrecognised state must never read as finished — that would retire
+        // a live PR's unread rows and hide it behind the chip.
+        assert_eq!(terminal_kind(""), None);
+        assert_eq!(terminal_kind("closed"), None);
+        assert_eq!(terminal_kind("DRAFT"), None);
+    }
 
     #[test]
     fn non_blocking_comment_detection() {

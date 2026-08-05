@@ -331,8 +331,8 @@ fn action_specs() -> Vec<(&'static str, &'static str, Value)> {
             "Post a line-anchored review comment on the diff, optionally with a suggested change the author can accept in one click. Pauses for user confirmation.",
             json!({"type": "object", "properties": {
                 "path": {"type": "string"},
-                "line": {"type": "integer", "description": "Line number on the new side of the diff. With a suggestion, the LAST line being replaced"},
-                "start_line": {"type": "integer", "description": "First line of the range, when the comment or suggestion covers several lines"},
+                "line": {"type": "integer", "description": "Line number on the new side of the diff. Must be an ADDED or CONTEXT line inside a changed hunk — GitHub rejects anchors on unchanged code outside the diff. With a suggestion, the LAST line being replaced"},
+                "start_line": {"type": "integer", "description": "First line of the range, when the comment or suggestion covers several lines. Same rule: must be inside a changed hunk, above `line`"},
                 "body": {"type": "string", "description": "The prose. With a suggestion, say why — the replacement code goes in `suggestion`, not here"},
                 "suggestion": {"type": "string", "description": "Replacement code for lines start_line..line, verbatim and correctly indented. Must be the complete replacement for every line in the range — GitHub swaps the whole range for this text"}
             }, "required": ["path", "line", "body"]}),

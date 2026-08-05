@@ -12,7 +12,7 @@ import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
 import { DiffPeek, resolveFindingFile } from "../components/analysis/DiffPeek";
-import { DiffView, fileDigest, parseDiffCached, type DiffFile } from "../components/analysis/DiffView";
+import { CopyButton, DiffView, fileDigest, parseDiffCached, type DiffFile } from "../components/analysis/DiffView";
 import { codeSkeleton, componentSkeleton, filterGraph } from "../components/analysis/skeleton";
 import type { C4Graph } from "../bindings/C4Graph";
 import { HistoryView } from "../components/analysis/HistoryView";
@@ -30,7 +30,6 @@ import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
 import {
   IconChat,
-  IconCheck,
   IconClipboard,
   IconEllipsis,
   IconExternal,
@@ -50,7 +49,7 @@ import { setThemeOrg } from "../lib/theme";
 import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
-import { ciTone, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
+import { ciTone, isFinished, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
 import {
   initReviewStore,
   lockedReview,
@@ -81,6 +80,10 @@ type ReadyFilters = { ciPass: boolean; reviewNeeded: boolean; noConflicts: boole
 const NO_READY_FILTERS: ReadyFilters = { ciPass: false, reviewNeeded: false, noConflicts: false };
 
 function passesReady(pr: TrackedPr, f: ReadyFilters): boolean {
+  // A finished PR is not a review candidate, so the readiness lamps say nothing
+  // about it — asking it to look review-ready is how a closed PR with reviewers
+  // still pending slips through "needs review". Once revealed, it stays.
+  if (isFinished(pr)) return true;
   // ciPass admits "no checks configured" (idle) — nothing is blocking.
   if (f.ciPass && !["ok", "idle"].includes(ciTone(pr))) return false;
   // reviewNeeded keeps only PRs that still need YOUR decision. reviewTone is
@@ -157,6 +160,13 @@ function usePersisted<T extends string>(key: string, initial: T) {
     [key],
   );
   return [value, set] as const;
+}
+
+/** A persisted on/off rail filter — the "0" | "1" shape the toggles share. */
+function usePersistedFlag(key: string) {
+  const [raw, setRaw] = usePersisted<"0" | "1">(key, "0");
+  const toggle = useCallback(() => setRaw(raw === "1" ? "0" : "1"), [raw, setRaw]);
+  return [raw === "1", toggle] as const;
 }
 
 /** Pointer-driven panel width: clamped while dragging, persisted on release. */
@@ -573,21 +583,7 @@ function PrControls({
 
 /** Copy the PR's GitHub URL for sharing, with a brief ✓ acknowledgment. */
 function CopyLinkButton({ url }: { url: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      className="icon-btn"
-      title={copied ? "Copied!" : "Copy PR link"}
-      onClick={() => {
-        void navigator.clipboard.writeText(url).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        });
-      }}
-    >
-      {copied ? <IconCheck /> : <IconLink />}
-    </button>
-  );
+  return <CopyButton text={url} what="the PR link" icon={<IconLink />} />;
 }
 
 /** Manual single-PR data refresh (status, checks, comments count). */
@@ -930,6 +926,13 @@ function AnalysisPanel({
     window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "diff" }));
   };
 
+  // Hand a finding to the assistant chat. The store request opens the panel
+  // (MainApp) and sends the seeded prompt (AssistantPanel) — no tab switch, so
+  // the reviewer keeps the findings in view alongside the explanation.
+  const explainCode = (f: CodeFinding) => {
+    useDiffStore.getState().requestExplain(pr.id, f);
+  };
+
   if (!run || run.status === "idle") {
     // A drilled frame lands here for the beat between the click and
     // ensure() flipping the run to running — show the sketch (or at least
@@ -1117,6 +1120,7 @@ function AnalysisPanel({
           onFocusNodes={onFocusNodes}
           onCommentFinding={commentFinding}
           onCommentCode={commentCode}
+          onExplainCode={explainCode}
           isCommented={(f) => isFindingCommented(f, mine)}
         />
       ) : (
@@ -1391,6 +1395,13 @@ export function MainApp() {
   );
   const assistantOpen = assistantOpenRaw === "1";
   const setAssistant = (open: boolean) => setAssistantOpenRaw(open ? "1" : "0");
+  // "Explain" on a finding raises a store request; open the panel so
+  // AssistantPanel can pick it up, send the prompt, and show the chat.
+  const explainRequest = useDiffStore((s) => s.explainRequest);
+  useEffect(() => {
+    if (explainRequest) setAssistant(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [explainRequest]);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsPane, setSettingsPane] = useState<SettingsPane>("general");
   const [showTrackInput, setShowTrackInput] = useState(false);
@@ -1430,25 +1441,10 @@ export function MainApp() {
     });
   };
 
-  const [showMuted, setShowMuted] = useState(
-    () => localStorage.getItem("cora.showMuted") === "1",
-  );
-  const toggleMuted = () => {
-    setShowMuted((s) => {
-      localStorage.setItem("cora.showMuted", s ? "0" : "1");
-      return !s;
-    });
-  };
+  const [showMuted, toggleMuted] = usePersistedFlag("cora.showMuted");
+  const [showReviewed, toggleReviewed] = usePersistedFlag("cora.showReviewed");
 
-  const [showReviewed, setShowReviewed] = useState(
-    () => localStorage.getItem("cora.showReviewed") === "1",
-  );
-  const toggleReviewed = () => {
-    setShowReviewed((s) => {
-      localStorage.setItem("cora.showReviewed", s ? "0" : "1");
-      return !s;
-    });
-  };
+  const [showFinished, toggleFinished] = usePersistedFlag("cora.showFinished");
 
   const [priorities, setPriorities] = useState<Record<string, RepoPriority>>({});
   const [authorPriorities, setAuthorPriorities] = useState<Record<string, RepoPriority>>({});
@@ -1661,7 +1657,8 @@ export function MainApp() {
         prioOf(pr.repo) !== "ignored" &&
         authorPrioOf(pr.author) !== "ignored" &&
         (showMuted || !pr.muted) &&
-        (showReviewed || !reviewedAndIdle(pr)),
+        (showReviewed || !reviewedAndIdle(pr)) &&
+        (showFinished || !isFinished(pr)),
     );
     const bucketMatched = bucketFilter
       ? unignored.filter((pr) => inBucket(pr, bucketFilter))
@@ -1712,7 +1709,7 @@ export function MainApp() {
       entries.sort((a, b) => groupWeight(a) - groupWeight(b) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
-  }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed]);
+  }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed, showFinished]);
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
@@ -2017,6 +2014,13 @@ export function MainApp() {
               >
                 <span className="lamp ok" /> reviewed
               </button>
+              <button
+                className={`chip${showFinished ? " on" : ""}`}
+                title="Closed and merged PRs are hidden by default — toggle to see them (dimmed). Reopen lives in the detail panel."
+                onClick={toggleFinished}
+              >
+                <span className="lamp" /> finished
+              </button>
               {hiddenByReady > 0 && <span className="hidden-note">−{hiddenByReady}</span>}
             </div>
 
@@ -2093,7 +2097,7 @@ export function MainApp() {
                       group.prs.map((pr) => (
                         <button
                           key={pr.id}
-                          className={`rail-row${pr.id === selectedId ? " selected" : ""}${pr.muted ? " muted-pr" : ""}${reviewedAndIdle(pr) ? " reviewed-idle" : ""}`}
+                          className={`rail-row${pr.id === selectedId ? " selected" : ""}${pr.muted ? " muted-pr" : ""}${reviewedAndIdle(pr) ? " reviewed-idle" : ""}${isFinished(pr) ? " finished-pr" : ""}`}
                           onClick={() => select(pr.id)}
                           onContextMenu={(e) => {
                             e.preventDefault();

@@ -12,19 +12,13 @@ import { findingSeed, isFindingCommented, viewerComments } from "../../lib/comme
 
 /** Per-file insights for the file currently in view on the Diff tab —
  *  follows the scroll spy, so it always describes what the reviewer is
- *  reading: why it was ranked and its code findings. `onExplain` hands a
- *  finding to the assistant chat for a plain-language, actionable read. */
-export function FileInsights({
-  pr,
-  onExplain,
-}: {
-  pr: TrackedPr;
-  onExplain: (f: CodeFinding) => void;
-}) {
+ *  reading: why it was ranked and its code findings. */
+export function FileInsights({ pr }: { pr: TrackedPr }) {
   const visiblePath = useDiffStore((s) => s.visiblePath);
   const entry = useDiffStore((s) => s.entries[pr.id]);
   const requestFocusFile = useDiffStore((s) => s.requestFocusFile);
   const requestCompose = useDiffStore((s) => s.requestCompose);
+  const requestExplain = useDiffStore((s) => s.requestExplain);
   const run = useAnalysisStore((s) => s.runs[analysisKey(pr.id, "context")]);
   const result = run?.status === "done" ? run.result : undefined;
   // A finding is "addressed" when the viewer has a review comment at its line.
@@ -65,6 +59,9 @@ export function FileInsights({
 
   const commentCode = (f: CodeFinding) => {
     requestCompose({ target: "diff", path: f.path, line: f.line, seed: findingSeed(f) });
+  };
+  const explainCode = (f: CodeFinding) => {
+    requestExplain(pr.id, f);
   };
 
   if (!visiblePath || !file) {
@@ -135,7 +132,7 @@ export function FileInsights({
                     className="finding-comment-btn"
                     role="button"
                     title="Explain this finding in plain terms — and what to do about it — in the assistant chat"
-                    onClick={() => onExplain(f)}
+                    onClick={() => explainCode(f)}
                   >
                     explain
                   </span>
