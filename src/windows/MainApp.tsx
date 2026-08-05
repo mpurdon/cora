@@ -16,6 +16,7 @@ import { CopyButton, DiffView, fileDigest, parseDiffCached, type DiffFile } from
 import { codeSkeleton, componentSkeleton, filterGraph } from "../components/analysis/skeleton";
 import type { C4Graph } from "../bindings/C4Graph";
 import { HistoryView } from "../components/analysis/HistoryView";
+import type { ActivityItem } from "../bindings/ActivityItem";
 import type { MarkViewedEvent } from "../bindings/MarkViewedEvent";
 import { StatusStrip, UnreadMarker } from "../components/StatusStrip";
 import { listen } from "@tauri-apps/api/event";
@@ -38,6 +39,8 @@ import {
 } from "../components/icons";
 import { PrFilesRail } from "../components/PrFilesRail";
 import { events, ipc, onFocusPr } from "../lib/ipc";
+import { flagRank, FLAG_LABEL } from "../lib/flags";
+import { usePersistedFlag } from "../lib/persisted";
 import {
   approveSeed,
   findingSeed,
@@ -160,13 +163,6 @@ function usePersisted<T extends string>(key: string, initial: T) {
     [key],
   );
   return [value, set] as const;
-}
-
-/** A persisted on/off rail filter — the "0" | "1" shape the toggles share. */
-function usePersistedFlag(key: string) {
-  const [raw, setRaw] = usePersisted<"0" | "1">(key, "0");
-  const toggle = useCallback(() => setRaw(raw === "1" ? "0" : "1"), [raw, setRaw]);
-  return [raw === "1", toggle] as const;
 }
 
 /** Pointer-driven panel width: clamped while dragging, persisted on release. */
@@ -1732,6 +1728,43 @@ export function MainApp() {
     ]);
   };
 
+  // Flags live on activity rows, so the rail reads the feed to find them. They
+  // deliberately ignore every rail filter: a PR you marked "must review" must
+  // not vanish because it's finished, muted, or outside the ready chips.
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  useEffect(() => {
+    const load = () => void ipc.getActivity().then(setActivity).catch(() => {});
+    load();
+    const un = listen("activity:changed", load);
+    return () => void un.then((f) => f());
+  }, []);
+
+  const flagged = useMemo(() => {
+    const byPr = new Map<string, { pr: TrackedPr; flags: Set<string>; rows: number[] }>();
+    for (const item of activity) {
+      if (!item.flag) continue;
+      const pr = prs.find((p) => p.id === item.prId);
+      if (!pr) continue; // untracked and aged out — nothing left to link to
+      const entry = byPr.get(item.prId) ?? { pr, flags: new Set<string>(), rows: [] };
+      entry.flags.add(item.flag);
+      entry.rows.push(item.id);
+      byPr.set(item.prId, entry);
+    }
+    return [...byPr.values()].sort(
+      (a, b) =>
+        Math.min(...[...a.flags].map(flagRank)) - Math.min(...[...b.flags].map(flagRank)) ||
+        a.pr.repo.localeCompare(b.pr.repo) ||
+        a.pr.number - b.pr.number,
+    );
+  }, [activity, prs]);
+
+  /** Clearing from here unflags every flagged row for that PR — the section is
+   *  a worklist, so "done" means done with the PR, not with one feed row. */
+  const clearFlags = async (rows: number[]) => {
+    await Promise.all(rows.map((id) => ipc.setActivityFlag(id, "")));
+    setActivity(await ipc.getActivity());
+  };
+
   // A file click in the focused rail lands on that file in the Diff tab.
   const openFile = (path: string) => {
     const store = useDiffStore.getState();
@@ -2036,6 +2069,44 @@ export function MainApp() {
             <Legend />
 
             <div className="rail-list">
+              {flagged.length > 0 && (
+                <div className="flagged-rail">
+                  <div className="eyebrow flagged-rail-head">
+                    ⚑ flagged
+                    <span className="group-count">{flagged.length}</span>
+                  </div>
+                  {flagged.map(({ pr, flags, rows }) => (
+                    <button
+                      key={pr.id}
+                      className={`flagged-row${pr.id === selectedId ? " selected" : ""}`}
+                      onClick={() => select(pr.id)}
+                      title={`${pr.repo}#${pr.number} — ${pr.title}`}
+                    >
+                      <span className="flagged-tags">
+                        {[...flags].sort((a, b) => flagRank(a) - flagRank(b)).map((f) => (
+                          <span key={f} className={`flag-tag ${f}`}>
+                            {FLAG_LABEL[f] ?? f}
+                          </span>
+                        ))}
+                      </span>
+                      <span className="flagged-title">
+                        <span className="flagged-num">#{pr.number}</span> {pr.title}
+                      </span>
+                      <span
+                        className="flagged-clear"
+                        role="button"
+                        title="Clear the flag — removes it from every feed row for this PR"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void clearFlags(rows);
+                        }}
+                      >
+                        ✕
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {grouped.length === 0 && (
                 <div className="rail-group">
                   <span className="eyebrow">{filter ? "No matches" : "Nothing tracked yet"}</span>

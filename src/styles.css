@@ -965,6 +965,90 @@ body.col-resizing * {
   padding: 0 6px 10px;
 }
 
+/* Flagged PRs pin above the groups and survive every rail filter — the point
+   of flagging is that it doesn't get lost. Sticky against .rail-list, which is
+   the scroll container. */
+.flagged-rail {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ink-0);
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.flagged-rail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 5px;
+  color: var(--warn);
+}
+
+.flagged-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border-radius: 6px;
+  text-align: left;
+  min-width: 0;
+}
+
+.flagged-row:hover {
+  background: var(--ink-2);
+}
+
+.flagged-row.selected {
+  background: var(--ink-2);
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+
+.flagged-tags {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.flag-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: lowercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.flagged-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.flagged-num {
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.flagged-clear {
+  flex: none;
+  color: var(--muted);
+  padding: 0 3px;
+  border-radius: 4px;
+}
+
+.flagged-clear:hover {
+  color: var(--text);
+  background: var(--ink-1);
+}
+
 .rail-group {
   margin-top: 12px;
 }
@@ -3255,11 +3339,53 @@ button.diff-file-header:hover {
   background: var(--ink-0);
 }
 
+/* macOS hides overlay scrollbars until you actually scroll, so a line running
+   past the right edge just looks truncated — there's nothing to say it
+   continues. Styling the scrollbar opts this element into a classic one that
+   is always laid out whenever the content overflows. */
+.diff-body::-webkit-scrollbar {
+  height: 10px;
+}
+
+.diff-body::-webkit-scrollbar-track {
+  background: var(--ink-1);
+}
+
+.diff-body::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border: 2px solid var(--ink-1);
+  border-radius: 5px;
+}
+
+.diff-body::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
 /* Sized to the widest line so row backgrounds and tear rules paint across
  * the full horizontal scroll range, not just the initial viewport. */
 .diff-scroll-inner {
   width: max-content;
   min-width: 100%;
+}
+
+/* Wrapped: the code column soft-wraps instead of extending the scroll range.
+   The max-content width has to go with it, or the row stays as wide as the
+   longest line and nothing has room to wrap. Continuation lines land under the
+   code rather than the gutter, because the text is its own flex item. */
+.diff-view.wrap .diff-body {
+  overflow-x: hidden;
+}
+
+.diff-view.wrap .diff-scroll-inner {
+  width: 100%;
+  min-width: 0;
+}
+
+.diff-view.wrap .diff-line {
+  white-space: pre-wrap;
+  /* Long unbreakable tokens (ARNs, URLs, hashes) break mid-token rather than
+     forcing the row wide again. */
+  overflow-wrap: anywhere;
 }
 
 /* Threads/composers inside a wide scroll range stay pinned to the left edge
