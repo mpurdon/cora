@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { CalloutApp } from "./windows/CalloutApp";
+import { TooltipLayer } from "./components/Tooltip";
 import { MainApp } from "./windows/MainApp";
 import { initTheme } from "./lib/theme";
 import { initZoom } from "./lib/zoom";
@@ -51,6 +52,10 @@ initTheme();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <ErrorBoundary>{label === "callout" ? <CalloutApp /> : <MainApp />}</ErrorBoundary>
+    <ErrorBoundary>
+      {label === "callout" ? <CalloutApp /> : <MainApp />}
+      {/* One tooltip surface per window, serving every `data-tip` in it. */}
+      <TooltipLayer />
+    </ErrorBoundary>
   </React.StrictMode>,
 );

@@ -57,13 +57,14 @@ export function ReactionBar({
         <button
           key={r.content}
           className={`reaction-chip${r.viewerHasReacted ? " mine" : ""}`}
-          title={r.content.toLowerCase().replace(/_/g, " ")}
+          data-tip={r.content.toLowerCase().replace(/_/g, " ")}
+          aria-label={r.content.toLowerCase().replace(/_/g, " ")}
           onClick={() => void toggle(r.content, r.viewerHasReacted)}
         >
           {REACTION_EMOJI[r.content] ?? r.content} {r.count}
         </button>
       ))}
-      <button className="reaction-add" title="Add reaction" onClick={() => setPicker((p) => !p)}>
+      <button className="reaction-add" data-tip="Add reaction" aria-label="Add reaction" onClick={() => setPicker((p) => !p)}>
         ☺+
       </button>
       {picker && (
@@ -182,20 +183,21 @@ function Comment({
         {comment.isBot && <span className="thread-tag">bot</span>}
         <span className="comment-when">{timeAgo(comment.createdAt)} ago</span>
         {comment.viewerCanEdit && !editing && (
-          <button className="comment-action" title="Edit this comment" onClick={() => setEditing(true)}>
+          <button className="comment-action" data-tip="Edit this comment" aria-label="Edit this comment" onClick={() => setEditing(true)}>
             Edit
           </button>
         )}
         {onQuoteReply && !editing && (
           <button
             className="comment-action"
-            title="Quote this comment in a reply"
+            data-tip="Quote this comment in a reply"
+            aria-label="Quote this comment in a reply"
             onClick={() => onQuoteReply(comment)}
           >
             Reply
           </button>
         )}
-        <a className="comment-link" href={comment.url} target="_blank" rel="noreferrer" title="Open on GitHub">
+        <a className="comment-link" href={comment.url} target="_blank" rel="noreferrer" data-tip="Open on GitHub">
           ↗
         </a>
       </div>
@@ -318,7 +320,7 @@ export function Composer({
         {suggestionSeed != null && (
           <button
             className="composer-tool"
-            title="Insert a suggestion the author can apply directly on GitHub"
+            data-tip="Insert a suggestion the author can apply directly on GitHub"
             disabled={busy || hasSuggestion}
             onClick={insertSuggestion}
           >
@@ -381,7 +383,7 @@ function Thread({
         {thread.path && (
           <button
             className="thread-anchor mono"
-            title={`Show this code — ${thread.path}`}
+            data-tip={`Show this code — ${thread.path}`}
             onClick={() => onShowCode(thread)}
           >
             {thread.path.includes("/") && (
@@ -399,7 +401,7 @@ function Thread({
         {thread.resolved && <span className="thread-tag resolved-tag">resolved</span>}
         {thread.outdated && <span className="thread-tag">outdated</span>}
         {!thread.resolved && isNonBlockingComment(root.body) && (
-          <span className="thread-tag" title="Doesn't block approval">
+          <span className="thread-tag" data-tip="Doesn't block approval">
             non-blocking
           </span>
         )}
@@ -506,7 +508,7 @@ function CodeDrawer({
               </span>
             )}
           </span>
-          <button className="icon-btn" title="Close" onClick={onClose}>
+          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
             ✕
           </button>
         </header>

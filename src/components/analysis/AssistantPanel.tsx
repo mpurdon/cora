@@ -115,7 +115,7 @@ export function AssistantPanel({
             aria-selected={view === "insights"}
             className={view === "insights" ? "on" : ""}
             disabled={!insightsEnabled}
-            title={insightsEnabled ? undefined : "Open the Diff tab to see file insights"}
+            data-tip={insightsEnabled ? undefined : "Open the Diff tab to see file insights"}
             onClick={() => setView("insights")}
           >
             File insights
@@ -126,13 +126,14 @@ export function AssistantPanel({
         {view === "chat" && (session?.items.length ?? 0) > 0 && (
           <button
             className="icon-btn"
-            title="Clear this conversation"
+            data-tip="Clear this conversation"
+            aria-label="Clear this conversation"
             onClick={() => void clear(pr.id)}
           >
             ↺
           </button>
         )}
-        <button className="icon-btn" title="Close panel" onClick={onClose}>
+        <button className="icon-btn" data-tip="Close panel" aria-label="Close panel" onClick={onClose}>
           ✕
         </button>
       </header>
@@ -245,7 +246,7 @@ export function AssistantPanel({
         <button
           className="chat-send"
           disabled={!canSend}
-          title="Send  (Enter — Shift+Enter for a new line)"
+          data-tip="Send  (Enter — Shift+Enter for a new line)"
           onClick={submit}
         >
           <IconArrowUp />
@@ -318,7 +319,7 @@ function PendingCard({
         <button
           className="action-btn btn-ok"
           disabled={empty}
-          title={empty ? "This action needs text" : undefined}
+          data-tip={empty ? "This action needs text" : undefined}
           onClick={() => onConfirm(true, edited ? draft : undefined)}
         >
           {edited ? "Run my version" : "Run it"}
@@ -351,7 +352,7 @@ function ContextMeter({
     <button
       className="context-meter"
       onClick={onOpen}
-      title="See exactly what is in the assistant's context"
+      data-tip="See exactly what is in the assistant's context"
     >
       <span className="eyebrow">context</span>
       <span className="mono context-meter-total">≈{formatTokens(total)}</span>

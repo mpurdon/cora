@@ -45,7 +45,7 @@ function CommentFindingButton({ onClick }: { onClick: () => void }) {
     <span
       className="finding-comment-btn"
       role="button"
-      title="Draft a review comment from this finding"
+      data-tip="Draft a review comment from this finding"
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -160,7 +160,7 @@ export function AssessmentView({
                 <button
                   className={`impact kind-${impact.kind}`}
                   onClick={() => onFocusNodes(impact.nodeIds)}
-                  title={impact.nodeIds.length > 0 ? "Show on the architecture canvas" : undefined}
+                  data-tip={impact.nodeIds.length > 0 ? "Show on the architecture canvas" : undefined}
                 >
                   <span className={`impact-kind ${impact.kind}`}>
                     {IMPACT_LABEL[impact.kind]}
@@ -202,7 +202,7 @@ export function AssessmentView({
           <span className="eyebrow">Code findings — defects &amp; reuse</span>
           {[...codeByFile.entries()].map(([path, findings]) => (
             <div key={path} className="code-file-group">
-              <div className="code-file-path mono" title={path}>
+              <div className="code-file-path mono" data-tip={path}>
                 {path.includes("/") && (
                   <span className="anchor-dir">{path.slice(0, path.lastIndexOf("/") + 1)}</span>
                 )}
@@ -222,7 +222,7 @@ export function AssessmentView({
                       <span
                         className="finding-comment-btn"
                         role="button"
-                        title="Explain this finding in plain terms — and what to do about it — in the assistant chat"
+                        data-tip="Explain this finding in plain terms — and what to do about it — in the assistant chat"
                         onClick={() => onExplainCode(f)}
                       >
                         explain
@@ -231,7 +231,7 @@ export function AssessmentView({
                         <span
                           className="finding-comment-btn commented"
                           aria-disabled="true"
-                          title="You have a review comment at this line"
+                          data-tip="You have a review comment at this line"
                         >
                           ✓ commented
                         </span>

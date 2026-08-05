@@ -170,7 +170,7 @@ export function DiffPeek({
       <aside className="activity-drawer code-drawer open">
         <header className="drawer-header">
           <span className="drawer-title mono code-drawer-path">{node.name} — diff</span>
-          <button className="icon-btn" title="Close" onClick={onClose}>
+          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
             ✕
           </button>
         </header>
