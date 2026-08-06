@@ -1140,6 +1140,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cora"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-bedrockruntime",
+ "aws-smithy-types",
+ "chrono",
+ "futures",
+ "keyring",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-window-state",
+ "thiserror 2.0.18",
+ "tokio",
+ "ts-rs",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4828,31 +4853,6 @@ dependencies = [
  "webview2-com",
  "window-vibrancy",
  "windows",
-]
-
-[[package]]
-name = "tauri-app"
-version = "0.1.0"
-dependencies = [
- "aws-config",
- "aws-credential-types",
- "aws-sdk-bedrockruntime",
- "aws-smithy-types",
- "chrono",
- "futures",
- "keyring",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-window-state",
- "thiserror 2.0.18",
- "tokio",
- "ts-rs",
 ]
 
 [[package]]
