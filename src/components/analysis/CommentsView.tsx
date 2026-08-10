@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
+import { tip } from "../Tooltip";
 import Markdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
@@ -57,14 +58,13 @@ export function ReactionBar({
         <button
           key={r.content}
           className={`reaction-chip${r.viewerHasReacted ? " mine" : ""}`}
-          data-tip={r.content.toLowerCase().replace(/_/g, " ")}
-          aria-label={r.content.toLowerCase().replace(/_/g, " ")}
+          {...tip(r.content.toLowerCase().replace(/_/g, " "))}
           onClick={() => void toggle(r.content, r.viewerHasReacted)}
         >
           {REACTION_EMOJI[r.content] ?? r.content} {r.count}
         </button>
       ))}
-      <button className="reaction-add" data-tip="Add reaction" aria-label="Add reaction" onClick={() => setPicker((p) => !p)}>
+      <button className="reaction-add" {...tip("Add reaction")} onClick={() => setPicker((p) => !p)}>
         ☺+
       </button>
       {picker && (
@@ -161,6 +161,29 @@ export const CommentBody = memo(function CommentBody({
   );
 });
 
+/** How tall a comment gets before it's worth clamping. Passed to CSS as a
+ *  variable so the measurement and the `max-height` can't disagree. */
+const COMMENT_CLAMP_PX = 320;
+
+/** Whether an element is taller than `limit`, measured rather than guessed.
+ *  Character counts are a bad proxy for height — a coverage table is a page of
+ *  markdown that renders four lines tall, and offering "show more" on content
+ *  that is already fully visible is worse than not offering it at all.
+ *  Observed, not measured once, because markdown reflows: images load late,
+ *  and the panel is resizable. */
+function useOverflows<T extends HTMLElement>(limit: number) {
+  const ref = useRef<T>(null);
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setOver(el.scrollHeight > limit));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [limit]);
+  return [over, ref] as const;
+}
+
 function Comment({
   comment,
   isReply,
@@ -174,8 +197,7 @@ function Comment({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
-  // Bot comments clamp aggressively — visible, but never dominant.
-  const long = comment.body.length > (comment.isBot ? 400 : 1500);
+  const [long, bodyRef] = useOverflows<HTMLDivElement>(COMMENT_CLAMP_PX);
   return (
     <div className={`pr-comment${isReply ? " reply" : ""}`} id={commentAnchor(comment.id)}>
       <div className="comment-head">
@@ -183,15 +205,14 @@ function Comment({
         {comment.isBot && <span className="thread-tag">bot</span>}
         <span className="comment-when">{timeAgo(comment.createdAt)} ago</span>
         {comment.viewerCanEdit && !editing && (
-          <button className="comment-action" data-tip="Edit this comment" aria-label="Edit this comment" onClick={() => setEditing(true)}>
+          <button className="comment-action" {...tip("Edit this comment")} onClick={() => setEditing(true)}>
             Edit
           </button>
         )}
         {onQuoteReply && !editing && (
           <button
             className="comment-action"
-            data-tip="Quote this comment in a reply"
-            aria-label="Quote this comment in a reply"
+            {...tip("Quote this comment in a reply")}
             onClick={() => onQuoteReply(comment)}
           >
             Reply
@@ -216,8 +237,15 @@ function Comment({
         />
       ) : (
         <>
-          <div className={long && !expanded ? "comment-clamped" : undefined}>
-            <CommentBody body={comment.body} />
+          <div
+            className={long && !expanded ? "comment-clamped" : undefined}
+            style={{ "--comment-clamp": `${COMMENT_CLAMP_PX}px` } as React.CSSProperties}
+          >
+            {/* The measured element is the inner one: it is never clamped, so
+                its height is the comment's natural height in both states. */}
+            <div ref={bodyRef}>
+              <CommentBody body={comment.body} />
+            </div>
           </div>
           {long && (
             <button className="comment-expand" onClick={() => setExpanded((e) => !e)}>
@@ -508,7 +536,7 @@ function CodeDrawer({
               </span>
             )}
           </span>
-          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
+          <button className="icon-btn" {...tip("Close")} onClick={onClose}>
             ✕
           </button>
         </header>

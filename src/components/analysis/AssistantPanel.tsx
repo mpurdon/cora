@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { tip } from "../Tooltip";
 import type { ChatContext } from "../../bindings/ChatContext";
 import type { ChatPendingAction } from "../../bindings/ChatPendingAction";
 import type { TrackedPr } from "../../bindings/TrackedPr";
@@ -126,14 +127,13 @@ export function AssistantPanel({
         {view === "chat" && (session?.items.length ?? 0) > 0 && (
           <button
             className="icon-btn"
-            data-tip="Clear this conversation"
-            aria-label="Clear this conversation"
+            {...tip("Clear this conversation")}
             onClick={() => void clear(pr.id)}
           >
             ↺
           </button>
         )}
-        <button className="icon-btn" data-tip="Close panel" aria-label="Close panel" onClick={onClose}>
+        <button className="icon-btn" {...tip("Close panel")} onClick={onClose}>
           ✕
         </button>
       </header>

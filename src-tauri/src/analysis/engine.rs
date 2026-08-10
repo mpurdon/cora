@@ -6,7 +6,7 @@ use aws_sdk_bedrockruntime::types::{
 use aws_smithy_types::Document;
 use chrono::Utc;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::analysis::metrics::{diff_metrics, FileMetrics};
 use crate::analysis::tools::RepoTools;
@@ -270,6 +270,35 @@ fn is_max_tokens_over_cap(lower: &str) -> bool {
             || lower.contains("not less"))
 }
 
+/// Waits between our own retries of a transient Bedrock failure, in seconds.
+/// The SDK already retries internally, but its default envelope is three
+/// attempts inside ~3s — too tight to outlast the failures we actually see:
+/// a proxy/gateway restart, or a resolver that negatively caches an NXDOMAIN
+/// for tens of seconds. Total added wait is ~53s, comfortably inside the 5min
+/// prompt-cache TTL, so a recovered run still lands on a warm prefix.
+const TRANSIENT_BACKOFF_SECS: [u64; 4] = [2, 6, 15, 30];
+
+/// A short reason when the failure is worth retrying as-is, `None` when it is
+/// terminal. Classified off the error's shape rather than its text: a request
+/// that never reached the model (DNS, connect, timeout, gateway 5xx) or was
+/// shed under load (429) costs nothing to repeat, while validation and
+/// credential failures repeat identically forever.
+fn transient_reason<E>(e: &aws_sdk_bedrockruntime::error::SdkError<E>) -> Option<&'static str> {
+    use aws_sdk_bedrockruntime::error::SdkError;
+    match e {
+        SdkError::DispatchFailure(_) => Some("upstream unreachable"),
+        SdkError::TimeoutError(_) => Some("request timed out"),
+        SdkError::ResponseError(_) => Some("malformed response"),
+        SdkError::ServiceError(se) => match se.raw().status().as_u16() {
+            429 => Some("throttled"),
+            502 | 503 | 504 => Some("gateway error"),
+            500 => Some("service error"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub(crate) async fn converse_once(
     app: &AppHandle,
     log_scope: &str,
@@ -282,6 +311,22 @@ pub(crate) async fn converse_once(
     use_cache: &mut bool,
     sso_profile: &str,
 ) -> AppResult<aws_sdk_bedrockruntime::operation::converse::ConverseOutput> {
+    // Fail fast while the endpoint is known-down, so a queue of runs doesn't
+    // each grind through the ladder to learn what the first one already found.
+    let health = app.state::<crate::health::BedrockHealth>();
+    if let crate::health::Admission::Blocked(wait) = health.admit() {
+        devlog::warn(
+            app,
+            log_scope,
+            format!("Bedrock unavailable — holding calls for {}s", wait.as_secs()),
+        );
+        return Err(AppError::Other(format!(
+            "Bedrock is unreachable. Cora is holding requests for {}s, then trying one automatically.",
+            wait.as_secs()
+        )));
+    }
+
+    let mut transient_attempts = 0usize;
     loop {
         let config = build_tool_config(specs, *use_cache)?;
         let mut system_blocks = vec![SystemContentBlock::Text(system.to_string())];
@@ -303,7 +348,10 @@ pub(crate) async fn converse_once(
             .send()
             .await;
         match attempt {
-            Ok(resp) => return Ok(resp),
+            Ok(resp) => {
+                health.record_success();
+                return Ok(resp);
+            }
             Err(e) => {
                 let detail =
                     format!("{}", aws_smithy_types::error::display::DisplayErrorContext(&e));
@@ -312,6 +360,53 @@ pub(crate) async fn converse_once(
                     devlog::warn(app, log_scope, "model rejected prompt caching — disabling");
                     *use_cache = false;
                     continue;
+                }
+                // A blip between us and the model — the turn's accumulated
+                // history and tool results are still valid, so wait it out and
+                // resend rather than losing the whole run to a few seconds of
+                // bad network. Only the classifier's terminal cases fall through.
+                if let Some(reason) = transient_reason(&e) {
+                    // A run alongside us has already proven the endpoint down.
+                    // Stop climbing our own ladder to reach the same answer.
+                    if health.is_open() {
+                        devlog::warn(
+                            app,
+                            log_scope,
+                            format!("{reason} — abandoning retries, Bedrock already held"),
+                        );
+                        return Err(AppError::Other(
+                            "Bedrock is unreachable — Cora is holding requests and will retry one automatically.".into(),
+                        ));
+                    }
+                    if let Some(&wait) = TRANSIENT_BACKOFF_SECS.get(transient_attempts) {
+                        transient_attempts += 1;
+                        devlog::warn(
+                            app,
+                            log_scope,
+                            format!(
+                                "{reason} — retrying in {wait}s ({transient_attempts}/{})",
+                                TRANSIENT_BACKOFF_SECS.len()
+                            ),
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        continue;
+                    }
+                    // Retrying did not clear it, so treat the endpoint as down
+                    // and let everyone behind us skip straight to the message.
+                    let cooldown = health.record_outage();
+                    devlog::error(
+                        app,
+                        log_scope,
+                        format!(
+                            "{reason} — giving up after {transient_attempts} retries; holding Bedrock calls for {}s",
+                            cooldown.as_secs()
+                        ),
+                    );
+                    return Err(AppError::Other(format!(
+                        "Bedrock {reason} — still failing after {transient_attempts} retries over {}s. Cora is holding further calls for {}s. Check that your endpoint or proxy is reachable. ({detail})",
+                        TRANSIENT_BACKOFF_SECS.iter().sum::<u64>(),
+                        cooldown.as_secs()
+                    )));
                 }
                 // The requested max_tokens is above the model's hard output cap —
                 // the likeliest failure now that the per-pass ceilings are
@@ -1715,6 +1810,40 @@ mod tests {
         }
     }
 
+    /// A `ServiceError` carrying `status`, which is all `transient_reason`
+    /// reads off it — the error body's type is irrelevant, so use a String.
+    fn service_error(status: u16) -> aws_sdk_bedrockruntime::error::SdkError<String> {
+        aws_sdk_bedrockruntime::error::SdkError::service_error(
+            String::new(),
+            aws_sdk_bedrockruntime::config::http::HttpResponse::new(
+                status.try_into().unwrap(),
+                aws_smithy_types::body::SdkBody::empty(),
+            ),
+        )
+    }
+
+    #[test]
+    fn retries_failures_that_never_reached_the_model() {
+        // The observed outage: the proxy could not resolve its upstream and
+        // answered 502. Alongside it, the rest of the shed/blip family.
+        for status in [429, 500, 502, 503, 504] {
+            assert!(transient_reason(&service_error(status)).is_some(), "should retry {status}");
+        }
+        let dns = aws_sdk_bedrockruntime::error::SdkError::<String>::dispatch_failure(
+            aws_sdk_bedrockruntime::error::ConnectorError::io("nxdomain".into()),
+        );
+        assert_eq!(transient_reason(&dns), Some("upstream unreachable"));
+    }
+
+    #[test]
+    fn does_not_retry_failures_that_will_repeat_identically() {
+        // Resending these burns the backoff ladder to reach the same error,
+        // and buries the message that tells the user how to fix it.
+        for status in [400, 403, 404, 413] {
+            assert!(transient_reason(&service_error(status)).is_none(), "should not retry {status}");
+        }
+    }
+
     #[test]
     fn kebab_normalizes_model_drift() {
         assert_eq!(kebab("externalSystem"), "external-system");
@@ -1866,3 +1995,5 @@ mod tests {
         assert_eq!(drop_spurious_closers(s), s);
     }
 }
+
+

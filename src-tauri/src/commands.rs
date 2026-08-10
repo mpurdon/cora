@@ -68,7 +68,7 @@ pub async fn list_github_orgs(app: AppHandle) -> AppResult<Vec<crate::models::Gi
     let settings = app.state::<crate::orgs::Orgs>().active().settings()?;
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let data = client
         .run(
             "query { viewer { login name organizations(first: 100) { nodes { login name } } } }",
@@ -367,6 +367,14 @@ pub fn mark_activity_read(
     Ok(())
 }
 
+/// Every flagged row, feed limit or not — the main window's flagged worklist.
+#[tauri::command]
+pub fn get_flagged(
+    orgs: State<'_, crate::orgs::Orgs>,
+) -> AppResult<Vec<crate::models::ActivityItem>> {
+    orgs.active().list_flagged()
+}
+
 #[tauri::command]
 pub fn set_activity_flag(
     app: AppHandle,
@@ -376,6 +384,18 @@ pub fn set_activity_flag(
 ) -> AppResult<()> {
     let store = orgs.active();
     store.set_activity_flag(id, &flag)?;
+    let _ = app.emit(crate::models::events::ACTIVITY_CHANGED, ());
+    Ok(())
+}
+
+/// Clear every flag on one PR, in one write and one event.
+#[tauri::command]
+pub fn clear_activity_flags(
+    app: AppHandle,
+    orgs: State<'_, crate::orgs::Orgs>,
+    pr_id: String,
+) -> AppResult<()> {
+    orgs.active().clear_activity_flags(&pr_id)?;
     let _ = app.emit(crate::models::events::ACTIVITY_CHANGED, ());
     Ok(())
 }
@@ -464,7 +484,7 @@ pub async fn track_pr_url(
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let store = app.state::<crate::orgs::Orgs>().active();
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let doc = format!(
         "query($owner: String!, $name: String!, $number: Int!) {{
            repository(owner: $owner, name: $name) {{
@@ -478,8 +498,8 @@ pub async fn track_pr_url(
     let node = data
         .pointer("/repository/pullRequest")
         .filter(|v| !v.is_null())
-        .ok_or_else(|| AppError::GitHub(format!("PR {repo}#{number} not found")))?;
-    let info = parse_pr(node).ok_or_else(|| AppError::GitHub("unexpected PR shape".into()))?;
+        .ok_or_else(|| AppError::github(format!("PR {repo}#{number} not found")))?;
+    let info = parse_pr(node).ok_or_else(|| AppError::github("unexpected PR shape"))?;
 
     let now = Utc::now().to_rfc3339();
     let stored = store.upsert_pr(&info, &[PrSource::Manual], &[ChangeKind::New], &now)?;
@@ -776,8 +796,8 @@ pub async fn refresh_pr(app: AppHandle, pr_id: String) -> AppResult<TrackedPr> {
     refresh_pr_inner(&app, &pr_id, false).await
 }
 
-/// `self_acted` marks a refresh that follows your own merge/close, so the
-/// terminal feed row it may write arrives already read.
+/// `self_acted` marks a refresh that follows your own merge/close, so the feed
+/// rows it writes arrive already read: a record of what you did, not news.
 async fn refresh_pr_inner(
     app: &AppHandle,
     pr_id: &str,
@@ -792,7 +812,7 @@ async fn refresh_pr_inner(
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
 
     // A single node is cheap enough to carry the viewer-scoped review fields
     // inline (the batched poll fetches them separately — see fetch_viewer_reviews).
@@ -806,8 +826,8 @@ async fn refresh_pr_inner(
     let node = data
         .pointer("/node")
         .filter(|v| !v.is_null())
-        .ok_or_else(|| AppError::GitHub("PR no longer accessible".into()))?;
-    let info = parse_pr(node).ok_or_else(|| AppError::GitHub("unexpected PR shape".into()))?;
+        .ok_or_else(|| AppError::github("PR no longer accessible"))?;
+    let info = parse_pr(node).ok_or_else(|| AppError::github("unexpected PR shape"))?;
 
     let changes = crate::models::compute_changes(&existing.info, &info);
     if changes.contains(&ChangeKind::NewCommits) {
@@ -815,20 +835,18 @@ async fn refresh_pr_inner(
     }
     let now = Utc::now().to_rfc3339();
     let stored = store.upsert_pr(&info, &[], &changes, &now)?;
+    // Whoever sees a change first has to report it: once this row holds the new
+    // snapshot the poller computes no transition and stays silent forever, so a
+    // refresh that beat it there (the ⟳ button, a merge, an assistant action)
+    // owes the feed the same rows the poller would have written.
+    let wrote = !changes.is_empty()
+        && !stored.muted
+        && crate::activity::record(&store, &settings, &stored, &changes, None, &now, self_acted);
     // Same rule the poller applies to a finished PR — see Store::retire_finished.
     if let Some(terminal) = crate::models::terminal_kind(&stored.info.state) {
-        // Whoever sees the ending first has to report it. A refresh can beat the
-        // poller to it (the ⟳ button, the assistant), and once this row reads
-        // CLOSED/MERGED the poller computes no transition and stays silent
-        // forever — the PR would finish with nothing to say it ever had. When
-        // you are the one who ended it the row arrives pre-read: a record, not
-        // news. (`pre_read` is the same lever the poller uses for other
-        // people's red CI.)
-        if changes.iter().any(|c| matches!(c, ChangeKind::Closed | ChangeKind::Merged)) {
-            let _ =
-                store.add_activity(&now, &info, terminal, "", terminal, "", false, self_acted);
-        }
         store.retire_finished(&pr_id, terminal)?;
+    }
+    if wrote {
         let _ = app.emit(events::ACTIVITY_CHANGED, ());
     }
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
@@ -848,7 +866,7 @@ pub async fn add_pr_comment(app: AppHandle, pr_id: String, body: String) -> AppR
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     client
         .run(
             "mutation($subjectId: ID!, $body: String!) {
@@ -876,7 +894,7 @@ pub async fn update_comment(
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let doc = if is_review_comment {
         "mutation($id: ID!, $body: String!) {
            updatePullRequestReviewComment(input: { pullRequestReviewCommentId: $id, body: $body }) {
@@ -909,7 +927,7 @@ pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) ->
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     client
         .run(
             "mutation($threadId: ID!, $body: String!) {
@@ -934,7 +952,7 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let data = client
         .run(
             "query($owner: String!, $name: String!, $number: Int!) {
@@ -1059,7 +1077,7 @@ pub async fn resolve_thread(app: AppHandle, thread_id: String, resolve: bool) ->
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let doc = if resolve {
         "mutation($threadId: ID!) {
            resolveReviewThread(input: { threadId: $threadId }) { clientMutationId }
@@ -1088,7 +1106,7 @@ pub async fn submit_review(
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let gh_event = match event.as_str() {
         "approve" => "APPROVE",
         "request-changes" | "request_changes" => "REQUEST_CHANGES",
@@ -1167,7 +1185,7 @@ pub async fn merge_pr(app: AppHandle, pr_id: String, method: String) -> AppResul
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let merge_method = match method.as_str() {
         "merge" => "MERGE",
         "rebase" => "REBASE",
@@ -1193,7 +1211,7 @@ pub async fn close_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     client
         .run(
             "mutation($prId: ID!) {
@@ -1214,7 +1232,7 @@ pub async fn reopen_pr(app: AppHandle, pr_id: String) -> AppResult<()> {
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     client
         .run(
             "mutation($prId: ID!) {
@@ -1416,6 +1434,31 @@ fn format_line_ranges(lines: &[i64]) -> String {
     parts.join(", ")
 }
 
+/// Turn a rejected anchor into a message that says where a comment *can* go.
+/// `None` means the anchor wasn't the problem — let the original error stand.
+async fn anchor_hint(
+    tools: &crate::analysis::tools::RepoTools,
+    path: &str,
+    line: i64,
+    start_line: Option<i64>,
+) -> Option<String> {
+    let diff = tools.pr_diff_full().await.ok()?;
+    let allowed = commentable_new_lines(&diff, path);
+    if allowed.is_empty() {
+        return Some(format!(
+            "Can't anchor a review comment on {path} — it has no changed lines in this PR's diff. Comment in the PR conversation instead."
+        ));
+    }
+    let anchor_bad = !allowed.contains(&line)
+        || start_line.is_some_and(|s| s < line && !allowed.contains(&s));
+    anchor_bad.then(|| {
+        format!(
+            "Can't anchor a review comment at {path}:{line} — that line isn't in the PR diff, so GitHub rejected it. Anchor to a changed line; commentable new-side lines for {path}: {}.",
+            format_line_ranges(&allowed),
+        )
+    })
+}
+
 /// New line-anchored review comment from the diff view. Uses the REST
 /// endpoint because it creates a standalone comment without a pending review.
 #[tauri::command]
@@ -1452,23 +1495,9 @@ pub async fn add_diff_comment(
         // otherwise re-reads the whole diff to recover. When that's the cause,
         // replace the error with the lines that ARE commentable, so it (the
         // assistant, or a user) re-anchors in one step. Other errors pass through.
-        let es = e.to_string();
-        if es.contains("422") || es.to_lowercase().contains("line") {
-            if let Ok(diff) = tools.pr_diff_full().await {
-                let allowed = commentable_new_lines(&diff, &path);
-                let anchor_bad = !allowed.contains(&line)
-                    || start_line.is_some_and(|s| s < line && !allowed.contains(&s));
-                if allowed.is_empty() {
-                    return Err(AppError::Other(format!(
-                        "Can't anchor a review comment on {path} — it has no changed lines in this PR's diff. Comment in the PR conversation instead."
-                    )));
-                }
-                if anchor_bad {
-                    return Err(AppError::Other(format!(
-                        "Can't anchor a review comment at {path}:{line} — that line isn't in the PR diff, so GitHub rejected it. Anchor to a changed line; commentable new-side lines for {path}: {}.",
-                        format_line_ranges(&allowed),
-                    )));
-                }
+        if e.status() == Some(422) {
+            if let Some(hint) = anchor_hint(&tools, &path, line, start_line).await {
+                return Err(AppError::Other(hint));
             }
         }
         return Err(e);
@@ -1490,7 +1519,7 @@ pub async fn toggle_reaction(
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let doc = if remove {
         "mutation($subjectId: ID!, $content: ReactionContent!) {
            removeReaction(input: { subjectId: $subjectId, content: $content }) { clientMutationId }
@@ -1517,7 +1546,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
 
     let doc = "query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {
@@ -1681,7 +1710,7 @@ pub async fn get_pr_commits(
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let settings = store.settings()?;
-    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
 
     let doc = "query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {

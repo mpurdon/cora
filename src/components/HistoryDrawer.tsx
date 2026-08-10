@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { tip } from "./Tooltip";
 import type { AuditEntry } from "../bindings/AuditEntry";
 import { ipc } from "../lib/ipc";
 import { timeAgo } from "../state/prStore";
@@ -57,7 +58,7 @@ export function HistoryDrawer({ open, onClose }: { open: boolean; onClose: () =>
       <aside className={`activity-drawer${open ? " open" : ""}`} aria-hidden={!open}>
         <header className="drawer-header">
           <span className="drawer-title">History</span>
-          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
+          <button className="icon-btn" {...tip("Close")} onClick={onClose}>
             ✕
           </button>
         </header>
