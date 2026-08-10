@@ -641,12 +641,27 @@ impl Store {
     }
 
     pub fn list_activity(&self, limit: i64) -> AppResult<Vec<crate::models::ActivityItem>> {
+        self.query_activity("ORDER BY at DESC, id DESC LIMIT ?1", params![limit])
+    }
+
+    /// Every flagged row, however old. Flags are a worklist the user pinned by
+    /// hand, so they are not a page of the feed: one must not fall off the end
+    /// because `callout_feed_limit` is small or the PR went quiet months ago.
+    pub fn list_flagged(&self) -> AppResult<Vec<crate::models::ActivityItem>> {
+        self.query_activity("WHERE flag != '' ORDER BY at DESC, id DESC", params![])
+    }
+
+    fn query_activity(
+        &self,
+        tail: &str,
+        args: impl rusqlite::Params,
+    ) -> AppResult<Vec<crate::models::ActivityItem>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, at, pr_id, repo, number, pr_title, kind, actor, summary, comment_id, important, read, flag
-             FROM activity ORDER BY at DESC, id DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit], |r| {
+             FROM activity {tail}"
+        ))?;
+        let rows = stmt.query_map(args, |r| {
             Ok(crate::models::ActivityItem {
                 id: r.get(0)?,
                 at: r.get(1)?,
@@ -704,9 +719,6 @@ impl Store {
     /// Marks them read — but never flagged rows (the user pinned those) and
     /// never comments (words deserve reading even after a merge).
     pub fn supersede_activity(&self, pr_id: &str, kinds: &[&str]) -> AppResult<()> {
-        if kinds.is_empty() {
-            return Ok(());
-        }
         self.retire(pr_id, kinds, false)
     }
 
@@ -714,6 +726,11 @@ impl Store {
     /// "these kinds" to "everything but these kinds". The flag/read guards and
     /// the kind-quoting rule live here so the two public wrappers can't drift.
     fn retire(&self, pr_id: &str, kinds: &[&str], negate: bool) -> AppResult<()> {
+        // An empty list means "no kinds qualify", not "every kind" — a caller
+        // with nothing to supersede must not sweep the whole PR.
+        if kinds.is_empty() && !negate {
+            return Ok(());
+        }
         // Kinds are internal constants ("ci", "commits", …), never user input.
         let list = kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ");
         let clause = if kinds.is_empty() {
@@ -827,6 +844,18 @@ impl Store {
     pub fn set_activity_flag(&self, id: i64, flag: &str) -> AppResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("UPDATE activity SET flag = ?1 WHERE id = ?2", params![flag, id])?;
+        Ok(())
+    }
+
+    /// Unflag a whole PR at once. The flagged section is a worklist, so "done"
+    /// means done with the PR, not with one feed row — and one statement means
+    /// one feed-changed event instead of one per row.
+    pub fn clear_activity_flags(&self, pr_id: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE activity SET flag = '' WHERE pr_id = ?1 AND flag != ''",
+            params![pr_id],
+        )?;
         Ok(())
     }
 
@@ -1061,5 +1090,34 @@ mod tests {
         store.add_activity(now, &other, "comment", "dev", "elsewhere", "", true, false).unwrap();
         store.supersede_activity_except("PR_1", &["closed"]).unwrap();
         assert!(unread(&store).contains(&"elsewhere".to_string()));
+    }
+
+    #[test]
+    fn flagged_rows_are_listed_whole_and_cleared_per_pr() {
+        let store = Store::open_in_memory().unwrap();
+        let now = "2026-01-01T00:00:00Z";
+        let one = pr("PR_1");
+        let two = pr("PR_2");
+        for p in [&one, &two] {
+            store.upsert_pr(p, &[PrSource::Authored], &[ChangeKind::New], now).unwrap();
+            store.add_activity(now, p, "comment", "dev", "first", "", true, false).unwrap();
+            store.add_activity(now, p, "commits", "dev", "second", "", true, false).unwrap();
+        }
+        for row in store.list_activity(100).unwrap() {
+            store.set_activity_flag(row.id, "must-review").unwrap();
+        }
+        assert_eq!(store.list_flagged().unwrap().len(), 4);
+
+        // Clearing is per PR — the section is a worklist, so "done" means done
+        // with the PR, not with the one row you clicked.
+        store.clear_activity_flags("PR_1").unwrap();
+        let left = store.list_flagged().unwrap();
+        assert_eq!(left.len(), 2);
+        assert!(left.iter().all(|a| a.pr_id == "PR_2"));
+
+        // An empty kind list supersedes nothing — it must not read the PR's
+        // whole feed as a side effect.
+        store.supersede_activity("PR_2", &[]).unwrap();
+        assert!(store.list_activity(100).unwrap().iter().all(|a| !a.read));
     }
 }

@@ -13,7 +13,7 @@ export function StatusStrip({ pr, pulsing }: { pr: TrackedPr; pulsing?: boolean 
   return (
     <Tooltip
       className={`strip${pulsing ? " pulsing" : ""}`}
-      content={
+      content={() => (
         <ul className="tooltip-list">
           {lamps.map((l, i) => (
             <li key={i}>
@@ -22,7 +22,7 @@ export function StatusStrip({ pr, pulsing }: { pr: TrackedPr; pulsing?: boolean 
             </li>
           ))}
         </ul>
-      }
+      )}
     >
       {lamps.map((l, i) => (
         <span key={i} className={`lamp ${l.tone}`} role="img" aria-label={l.label} />
@@ -71,18 +71,17 @@ export function UnreadMarker({ pr }: { pr: TrackedPr }) {
   }
   if (pr.unread.length === 0) return <span className="marker" aria-hidden="true" />;
 
-  const rows = unreadBreakdown(pr);
   return (
     <Tooltip
       className="marker count"
-      content={
+      content={() => (
         <>
           <div className="tooltip-head">
             {pr.unread.length} update{pr.unread.length > 1 ? "s" : ""} since you last opened
             this PR
           </div>
           <ul className="tooltip-list">
-            {rows.map(([kind, n]) => (
+            {unreadBreakdown(pr).map(([kind, n]) => (
               <li key={kind}>
                 <span className="tooltip-count">{n > 1 ? `${n}×` : "•"}</span>
                 <span>{KIND_LABEL[kind] ?? kind.replace(/-/g, " ")}</span>
@@ -93,22 +92,20 @@ export function UnreadMarker({ pr }: { pr: TrackedPr }) {
             ))}
           </ul>
         </>
-      }
+      )}
     >
       <span aria-label={unreadTitle(pr)}>{pr.unread.length}</span>
     </Tooltip>
   );
 }
 
-/** Human description of a PR's unacknowledged changes, for badge tooltips. */
+/** Human description of a PR's unacknowledged changes, for badge tooltips and
+ *  screen readers. Same counts and same vocabulary as the card above it — a
+ *  second tally here is how the two end up describing one badge differently. */
 export function unreadTitle(pr: TrackedPr): string {
   if (pr.unread.length === 0) return "";
-  const counts = new Map<string, number>();
-  for (const kind of pr.unread) {
-    counts.set(kind, (counts.get(kind) ?? 0) + 1);
-  }
-  const parts = [...counts.entries()].map(
-    ([kind, n]) => `${kind.replace(/-/g, " ")}${n > 1 ? ` ×${n}` : ""}`,
+  const parts = unreadBreakdown(pr).map(
+    ([kind, n]) => `${KIND_LABEL[kind] ?? kind.replace(/-/g, " ")}${n > 1 ? ` ×${n}` : ""}`,
   );
-  return `${pr.unread.length} update${pr.unread.length > 1 ? "s" : ""} since you last opened it: ${parts.join(", ")}`;
+  return `${pr.unread.length} update${pr.unread.length > 1 ? "s" : ""} since you last opened it: ${parts.join(", ").toLowerCase()}`;
 }

@@ -4,7 +4,7 @@ import type { CodeFinding } from "../../bindings/CodeFinding";
 import type { PrConversation } from "../../bindings/PrConversation";
 import type { TrackedPr } from "../../bindings/TrackedPr";
 import { analysisKey, useAnalysisStore } from "../../state/analysisStore";
-import { codePassFailure } from "./AssessmentView";
+import { codePassFailure, FindingActions } from "./AssessmentView";
 import { useDiffStore } from "../../state/diffStore";
 import { parseDiffCached } from "./DiffView";
 import { ipc } from "../../lib/ipc";
@@ -127,34 +127,11 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
                   </div>
                   <div className="code-finding-suggestion">→ {f.suggestion}</div>
                 </div>
-                <div className="finding-actions">
-                  <span
-                    className="finding-comment-btn"
-                    role="button"
-                    data-tip="Explain this finding in plain terms — and what to do about it — in the assistant chat"
-                    onClick={() => explainCode(f)}
-                  >
-                    explain
-                  </span>
-                  {isCommented ? (
-                    <span
-                      className="finding-comment-btn commented"
-                      aria-disabled="true"
-                      data-tip="You have a review comment at this line"
-                    >
-                      ✓ commented
-                    </span>
-                  ) : (
-                    <span
-                      className="finding-comment-btn"
-                      role="button"
-                      data-tip="Draft a review comment from this finding"
-                      onClick={() => commentCode(f)}
-                    >
-                      ± comment
-                    </span>
-                  )}
-                </div>
+                <FindingActions
+                  commented={isCommented}
+                  onExplain={() => explainCode(f)}
+                  onComment={() => commentCode(f)}
+                />
               </div>
             );
           })}

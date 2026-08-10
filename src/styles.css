@@ -1141,6 +1141,12 @@ body.col-resizing * {
   white-space: nowrap;
 }
 
+/* Same colours the callout's ⚑ uses, so a flag reads the same in both windows. */
+.flag-tag.must-review {
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+  color: var(--bad);
+}
+
 .flagged-title {
   flex: 1;
   min-width: 0;
@@ -2867,7 +2873,7 @@ body.col-resizing * {
 }
 
 .comment-clamped {
-  max-height: 320px;
+  max-height: var(--comment-clamp, 320px);
   overflow: hidden;
   -webkit-mask-image: linear-gradient(to bottom, black 75%, transparent);
   mask-image: linear-gradient(to bottom, black 75%, transparent);

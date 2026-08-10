@@ -77,7 +77,7 @@ impl RepoTools {
                 continue;
             }
             if !status.is_success() {
-                return Err(AppError::GitHub(format!("GET {path}: HTTP {status}")));
+                return Err(AppError::github_status(status.as_u16(), format!("GET {path}: HTTP {status}")));
             }
             return Ok(resp);
         }
@@ -200,7 +200,10 @@ impl RepoTools {
         let status = resp.status();
         if !status.is_success() {
             let detail = resp.text().await.unwrap_or_default();
-            return Err(AppError::GitHub(format!("POST {path}: HTTP {status} — {detail}")));
+            return Err(AppError::github_status(
+                status.as_u16(),
+                format!("POST {path}: HTTP {status} — {detail}"),
+            ));
         }
         Ok(resp.json().await?)
     }
@@ -244,7 +247,7 @@ impl RepoTools {
                     // GitHub refuses the whole-PR diff media type past ~20k
                     // lines / 300 files (406). Reassemble from the paginated
                     // per-file endpoint, which has no such ceiling.
-                    Err(e) if e.to_string().contains("406") => self.diff_from_files().await,
+                    Err(e) if e.status() == Some(406) => self.diff_from_files().await,
                     Err(e) => Err(e),
                 }
             })

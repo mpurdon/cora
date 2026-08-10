@@ -38,6 +38,7 @@ export const events = {
   chatEvent: "chat:event",
   orgChanged: "org:changed",
   reviewSubmitted: "review:submitted",
+  activityChanged: "activity:changed",
 } as const;
 
 export const ipc = {
@@ -87,6 +88,8 @@ export const ipc = {
   markActivityRead: (ids: number[], read: boolean) =>
     invoke<void>("mark_activity_read", { ids, read }),
   setActivityFlag: (id: number, flag: string) => invoke<void>("set_activity_flag", { id, flag }),
+  getFlagged: () => invoke<ActivityItem[]>("get_flagged"),
+  clearActivityFlags: (prId: string) => invoke<void>("clear_activity_flags", { prId }),
   getPrComments: (prId: string) => invoke<PrConversation>("get_pr_comments", { prId }),
   getPrCommits: (prId: string) => invoke<PrCommit[]>("get_pr_commits", { prId }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),

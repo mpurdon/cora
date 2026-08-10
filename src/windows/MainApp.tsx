@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { tip } from "../components/Tooltip";
 import type { CodeFinding } from "../bindings/CodeFinding";
 import type { PrSource } from "../bindings/PrSource";
 import type { RepoPriority } from "../bindings/RepoPriority";
@@ -12,7 +13,8 @@ import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
 import { DiffPeek, resolveFindingFile } from "../components/analysis/DiffPeek";
-import { CopyButton, DiffView, fileDigest, parseDiffCached, type DiffFile } from "../components/analysis/DiffView";
+import { DiffView, fileDigest, parseDiffCached, type DiffFile } from "../components/analysis/DiffView";
+import { CopyButton } from "../components/CopyButton";
 import { codeSkeleton, componentSkeleton, filterGraph } from "../components/analysis/skeleton";
 import type { C4Graph } from "../bindings/C4Graph";
 import { HistoryView } from "../components/analysis/HistoryView";
@@ -40,7 +42,7 @@ import {
 import { PrFilesRail } from "../components/PrFilesRail";
 import { events, ipc, onFocusPr } from "../lib/ipc";
 import { flagRank, FLAG_LABEL } from "../lib/flags";
-import { usePersistedFlag } from "../lib/persisted";
+import { usePersisted, usePersistedFlag } from "../lib/persisted";
 import {
   approveSeed,
   findingSeed,
@@ -116,7 +118,7 @@ function reasonOf(pr: TrackedPr): PrSource {
 /** You already reviewed (approved / requested changes) and nothing has
  *  happened since — the ball is in someone else's court, hide by default. */
 function reviewedAndIdle(pr: TrackedPr): boolean {
-  if (pr.state !== "OPEN") return false;
+  if (isFinished(pr)) return false;
   if (pr.myReviewRerequested) return false;
   if (!pr.myReviewState || !pr.myReviewedAt) return false;
   if (pr.myReviewState !== "APPROVED" && pr.myReviewState !== "CHANGES_REQUESTED") return false;
@@ -152,18 +154,6 @@ const SORTERS: Record<SortMode, (a: TrackedPr, b: TrackedPr) => number> = {
   attention: (a, b) => attentionScore(b) - attentionScore(a) || b.lastChangeAt.localeCompare(a.lastChangeAt),
   repo: (a, b) => a.repo.localeCompare(b.repo) || a.number - b.number,
 };
-
-function usePersisted<T extends string>(key: string, initial: T) {
-  const [value, setValue] = useState<T>(() => (localStorage.getItem(key) as T) ?? initial);
-  const set = useCallback(
-    (v: T) => {
-      setValue(v);
-      localStorage.setItem(key, v);
-    },
-    [key],
-  );
-  return [value, set] as const;
-}
 
 /** Pointer-driven panel width: clamped while dragging, persisted on release. */
 function useResizableWidth(
@@ -329,7 +319,7 @@ function ReviewActions({
     }
   };
 
-  if (pr.state !== "OPEN") return null;
+  if (isFinished(pr)) return null;
 
   const mine = lockedReview(reviews);
   if (mine) {
@@ -468,7 +458,7 @@ function PrControls({
   };
 
   useEffect(() => {
-    if (closeRequested > 0 && pr.state === "OPEN") {
+    if (closeRequested > 0 && !isFinished(pr)) {
       setFlow("controls");
       setConfirming("close");
     }
@@ -575,11 +565,6 @@ function PrControls({
       {error && <span className="settings-error">{error}</span>}
     </>
   );
-}
-
-/** Copy the PR's GitHub URL for sharing, with a brief ✓ acknowledgment. */
-function CopyLinkButton({ url }: { url: string }) {
-  return <CopyButton text={url} what="the PR link" icon={<IconLink />} />;
 }
 
 /** Manual single-PR data refresh (status, checks, comments count). */
@@ -1293,7 +1278,7 @@ function Detail({
         <PrControls pr={pr} closeRequested={closeRequested} flow={flow} setFlow={setFlow} />
         <span className="spacer" />
         <RefreshPrButton prId={pr.id} />
-        <CopyLinkButton url={pr.url} />
+        <CopyButton text={pr.url} what="the PR link" icon={<IconLink />} />
         <button className="icon-btn" data-tip="Open on GitHub" aria-label="Open on GitHub" onClick={() => void openUrl(pr.url)}>
           <IconExternal />
         </button>
@@ -1335,7 +1320,7 @@ function Detail({
                   danger: true,
                   onClick: () => void ipc.untrackPr(pr.id),
                 },
-                ...(pr.state === "OPEN"
+                ...(!isFinished(pr)
                   ? [
                       {
                         label: "Close pull request…",
@@ -1388,12 +1373,7 @@ export function MainApp() {
   // IDE-style master/detail rail: the PR list is the "project list"; picking
   // a PR focuses the rail on that PR's changed files until you go back.
   const [railView, setRailView] = useState<"list" | "files">("list");
-  const [assistantOpenRaw, setAssistantOpenRaw] = usePersisted<"0" | "1">(
-    "cora.assistantOpen",
-    "0",
-  );
-  const assistantOpen = assistantOpenRaw === "1";
-  const setAssistant = (open: boolean) => setAssistantOpenRaw(open ? "1" : "0");
+  const [assistantOpen, , setAssistant] = usePersistedFlag("cora.assistantOpen");
   // "Explain" on a finding raises a store request; open the panel so
   // AssistantPanel can pick it up, send the prompt, and show the chat.
   const explainRequest = useDiffStore((s) => s.explainRequest);
@@ -1731,42 +1711,37 @@ export function MainApp() {
     ]);
   };
 
-  // Flags live on activity rows, so the rail reads the feed to find them. They
-  // deliberately ignore every rail filter: a PR you marked "must review" must
-  // not vanish because it's finished, muted, or outside the ready chips.
-  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  // Flags live on activity rows, but they are a worklist rather than a page of
+  // the feed — `getFlagged` returns every flagged row however old, so one can't
+  // fall off the end of the callout's display limit. They also ignore every
+  // rail filter: a PR you marked "must review" must not vanish because it's
+  // finished, muted, or outside the ready chips.
+  const [flaggedRows, setFlaggedRows] = useState<ActivityItem[]>([]);
   useEffect(() => {
-    const load = () => void ipc.getActivity().then(setActivity).catch(() => {});
+    const load = () => void ipc.getFlagged().then(setFlaggedRows).catch(() => {});
     load();
-    const un = listen("activity:changed", load);
+    const un = listen(events.activityChanged, load);
     return () => void un.then((f) => f());
   }, []);
 
   const flagged = useMemo(() => {
-    const byPr = new Map<string, { pr: TrackedPr; flags: Set<string>; rows: number[] }>();
-    for (const item of activity) {
-      if (!item.flag) continue;
-      const pr = prs.find((p) => p.id === item.prId);
+    const byId = new Map(prs.map((p) => [p.id, p]));
+    const byPr = new Map<string, { pr: TrackedPr; flags: Set<string>; rank: number }>();
+    for (const item of flaggedRows) {
+      const pr = byId.get(item.prId);
       if (!pr) continue; // untracked and aged out — nothing left to link to
-      const entry = byPr.get(item.prId) ?? { pr, flags: new Set<string>(), rows: [] };
+      const entry = byPr.get(item.prId) ?? { pr, flags: new Set<string>(), rank: Infinity };
       entry.flags.add(item.flag);
-      entry.rows.push(item.id);
+      entry.rank = Math.min(entry.rank, flagRank(item.flag));
       byPr.set(item.prId, entry);
     }
     return [...byPr.values()].sort(
       (a, b) =>
-        Math.min(...[...a.flags].map(flagRank)) - Math.min(...[...b.flags].map(flagRank)) ||
+        a.rank - b.rank ||
         a.pr.repo.localeCompare(b.pr.repo) ||
         a.pr.number - b.pr.number,
     );
-  }, [activity, prs]);
-
-  /** Clearing from here unflags every flagged row for that PR — the section is
-   *  a worklist, so "done" means done with the PR, not with one feed row. */
-  const clearFlags = async (rows: number[]) => {
-    await Promise.all(rows.map((id) => ipc.setActivityFlag(id, "")));
-    setActivity(await ipc.getActivity());
-  };
+  }, [flaggedRows, prs]);
 
   // A file click in the focused rail lands on that file in the Diff tab.
   const openFile = (path: string) => {
@@ -2079,7 +2054,7 @@ export function MainApp() {
                     ⚑ flagged
                     <span className="group-count">{flagged.length}</span>
                   </div>
-                  {flagged.map(({ pr, flags, rows }) => (
+                  {flagged.map(({ pr, flags }) => (
                     <button
                       key={pr.id}
                       className={`flagged-row${pr.id === selectedId ? " selected" : ""}`}
@@ -2102,7 +2077,9 @@ export function MainApp() {
                         data-tip="Clear the flag — removes it from every feed row for this PR"
                         onClick={(e) => {
                           e.stopPropagation();
-                          void clearFlags(rows);
+                          // The section is a worklist, so "done" means done with
+                          // the PR, not with the one row you clicked.
+                          void ipc.clearActivityFlags(pr.id);
                         }}
                       >
                         ✕
@@ -2224,8 +2201,7 @@ export function MainApp() {
           </span>
           <button
             className="icon-btn"
-            data-tip="Refresh from GitHub now"
-            aria-label="Refresh from GitHub now"
+            {...tip("Refresh from GitHub now")}
             onClick={() => void ipc.pollNow()}
           >
             <span className={pollStatus?.syncing ? "glyph-spin" : undefined}>
@@ -2234,32 +2210,28 @@ export function MainApp() {
           </button>
           <button
             className="icon-btn"
-            data-tip="History — your actions, undoable"
-            aria-label="History — your actions, undoable"
+            {...tip("History — your actions, undoable")}
             onClick={() => setShowHistory(true)}
           >
             <IconClipboard />
           </button>
           <button
             className="icon-btn"
-            data-tip="Toggle callout"
-            aria-label="Toggle callout"
+            {...tip("Toggle callout")}
             onClick={() => void ipc.toggleCallout()}
           >
             ▣
           </button>
           <button
             className="icon-btn"
-            data-tip="Keyboard shortcuts  (?)"
-            aria-label="Keyboard shortcuts  (?)"
+            {...tip("Keyboard shortcuts  (?)")}
             onClick={() => setShowHotkeys((s) => !s)}
           >
             ⌨
           </button>
           <button
             className="icon-btn"
-            data-tip="Settings  (,)"
-            aria-label="Settings  (,)"
+            {...tip("Settings  (,)")}
             onClick={() => (showSettings ? setShowSettings(false) : openSettings())}
           >
             ⚙
@@ -2473,7 +2445,7 @@ function HotkeysHelp({
         <div className="drawer-title">
           Keyboard shortcuts
           <span className="spacer" />
-          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
+          <button className="icon-btn" {...tip("Close")} onClick={onClose}>
             ✕
           </button>
         </div>

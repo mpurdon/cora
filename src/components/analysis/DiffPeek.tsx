@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { tip } from "../Tooltip";
 import type { C4Node } from "../../bindings/C4Node";
 import { ipc } from "../../lib/ipc";
 import { DiffJump, parseDiff, type DiffFile } from "./DiffView";
@@ -170,7 +171,7 @@ export function DiffPeek({
       <aside className="activity-drawer code-drawer open">
         <header className="drawer-header">
           <span className="drawer-title mono code-drawer-path">{node.name} — diff</span>
-          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
+          <button className="icon-btn" {...tip("Close")} onClick={onClose}>
             ✕
           </button>
         </header>
