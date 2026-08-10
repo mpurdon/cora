@@ -56,6 +56,44 @@ function CommentFindingButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+/** The row of actions on a code finding — explain it, or turn it into a review
+ *  comment. Shared by the assessment's findings list and the per-file insights
+ *  panel, which show the same finding in two places and must offer the same
+ *  verbs for it. */
+export function FindingActions({
+  commented,
+  onExplain,
+  onComment,
+}: {
+  commented: boolean;
+  onExplain: () => void;
+  onComment: () => void;
+}) {
+  return (
+    <div className="finding-actions">
+      <span
+        className="finding-comment-btn"
+        role="button"
+        data-tip="Explain this finding in plain terms — and what to do about it — in the assistant chat"
+        onClick={onExplain}
+      >
+        explain
+      </span>
+      {commented ? (
+        <span
+          className="finding-comment-btn commented"
+          aria-disabled="true"
+          data-tip="You have a review comment at this line"
+        >
+          ✓ commented
+        </span>
+      ) : (
+        <CommentFindingButton onClick={onComment} />
+      )}
+    </div>
+  );
+}
+
 /** Collapsed by default: severity + the actionable "→ …" line. Expanding
  *  reveals the full finding detail and the canvas link. */
 function WaFindingRow({
@@ -218,27 +256,11 @@ export function AssessmentView({
                       <div>{f.finding}</div>
                       <div className="code-finding-suggestion">→ {f.suggestion}</div>
                     </div>
-                    <div className="finding-actions">
-                      <span
-                        className="finding-comment-btn"
-                        role="button"
-                        data-tip="Explain this finding in plain terms — and what to do about it — in the assistant chat"
-                        onClick={() => onExplainCode(f)}
-                      >
-                        explain
-                      </span>
-                      {commented ? (
-                        <span
-                          className="finding-comment-btn commented"
-                          aria-disabled="true"
-                          data-tip="You have a review comment at this line"
-                        >
-                          ✓ commented
-                        </span>
-                      ) : (
-                        <CommentFindingButton onClick={() => onCommentCode(f)} />
-                      )}
-                    </div>
+                    <FindingActions
+                      commented={commented}
+                      onExplain={() => onExplainCode(f)}
+                      onComment={() => onCommentCode(f)}
+                    />
                   </div>
                 );
               })}

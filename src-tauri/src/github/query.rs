@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::{json, Value};
+use tauri::Manager;
 
 use crate::error::{AppError, AppResult};
+use crate::health::{Admission, EndpointHealth};
 
 pub const PR_FRAGMENT: &str = "
 fragment PrFields on PullRequest {
@@ -132,6 +135,11 @@ pub struct GraphQlClient {
     http: reqwest::Client,
     url: String,
     token: String,
+    /// Shared with every other client for this endpoint. `None` in tests and
+    /// in the few call sites with no `AppHandle` to hand — those simply do not
+    /// participate in the breaker rather than getting a private one, which
+    /// would be worse than none at all (a breaker nobody else can see).
+    health: Option<Arc<EndpointHealth>>,
 }
 
 impl GraphQlClient {
@@ -144,23 +152,67 @@ impl GraphQlClient {
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
-        Ok(Self { http, url: url.to_string(), token: token.to_string() })
+        Ok(Self { http, url: url.to_string(), token: token.to_string(), health: None })
+    }
+
+    /// Enrol this client in the process-wide GitHub breaker. Separate from
+    /// `new` so the existing construction sites keep working unchanged and opt
+    /// in by threading the `AppHandle` they already hold. Takes the shared
+    /// handle rather than the `AppHandle` so tests can inject one.
+    pub fn with_health(mut self, health: Arc<EndpointHealth>) -> Self {
+        self.health = Some(health);
+        self
+    }
+
+    /// The app-state form of [`with_health`], for the ordinary call sites.
+    pub fn shared_health(app: &tauri::AppHandle) -> Arc<EndpointHealth> {
+        app.state::<crate::health::GitHubHealth>().0.clone()
     }
 
     /// GitHub's GraphQL edge throws transient 5xx / truncated bodies fairly
     /// often, especially on heavy batched queries — retry those a couple of
     /// times with backoff before surfacing a failure.
     pub async fn run(&self, query: &str, variables: &Value) -> AppResult<Value> {
+        // One poll cycle is dozens of chunked queries and the UI fires more
+        // alongside it. When GitHub is down, the first one to find out speaks
+        // for all of them.
+        if let Some(health) = &self.health {
+            if let Admission::Blocked(wait) = health.admit() {
+                return Err(AppError::github(format!(
+                    "GitHub is unreachable — Cora is holding requests for {}s, then trying one automatically.",
+                    wait.as_secs()
+                )));
+            }
+        }
         let mut attempt = 0u32;
-        loop {
+        let outcome = loop {
             match self.run_once(query, variables).await {
                 Err(e) if attempt < 2 && is_transient(&e) => {
+                    // A sibling query already proved the endpoint down; stop.
+                    if self.health.as_ref().is_some_and(|h| h.is_open()) {
+                        break Err(AppError::github(
+                            "GitHub is unreachable — Cora is holding requests and will retry one automatically.",
+                        ));
+                    }
                     attempt += 1;
                     tokio::time::sleep(std::time::Duration::from_secs(3 * attempt as u64)).await;
                 }
-                other => return other,
+                other => break other,
+            }
+        };
+        if let Some(health) = &self.health {
+            match &outcome {
+                // Only reachability moves the breaker. A 401 or a rejected
+                // mutation is GitHub answering us — the endpoint is fine, and
+                // holding every other query because of one bad token or a
+                // stale node id would be a self-inflicted outage.
+                Err(e) if is_transient(e) => {
+                    health.record_outage();
+                }
+                _ => health.record_success(),
             }
         }
+        outcome
     }
 
     async fn run_once(&self, query: &str, variables: &Value) -> AppResult<Value> {
@@ -174,10 +226,10 @@ impl GraphQlClient {
 
         let status = resp.status();
         if status.as_u16() == 401 {
-            return Err(AppError::GitHub("authentication failed — check your PAT".into()));
+            return Err(AppError::github_status(status.as_u16(), "authentication failed — check your PAT"));
         }
         if !status.is_success() {
-            return Err(AppError::GitHub(format!("HTTP {status}")));
+            return Err(AppError::github_status(status.as_u16(), format!("HTTP {status}")));
         }
         let body: Value = resp.json().await?;
         if let Some(errors) = body.get("errors").and_then(Value::as_array) {
@@ -194,12 +246,12 @@ impl GraphQlClient {
                     .filter_map(|e| e.get("message").and_then(Value::as_str).map(String::from))
                     .collect();
                 let joined = if msgs.is_empty() { "GraphQL error".into() } else { msgs.join("; ") };
-                return Err(AppError::GitHub(joined));
+                return Err(AppError::github(joined));
             }
         }
         body.get("data")
             .cloned()
-            .ok_or_else(|| AppError::GitHub("empty response".into()))
+            .ok_or_else(|| AppError::github("empty response"))
     }
 }
 
@@ -273,7 +325,7 @@ pub async fn fetch_viewer_reviews(
 fn is_transient(e: &AppError) -> bool {
     match e {
         AppError::Http(e) => e.is_timeout() || e.is_connect() || e.is_decode(),
-        AppError::GitHub(msg) => {
+        AppError::GitHub { message: msg, .. } => {
             msg.contains("502") || msg.contains("503") || msg.contains("504")
         }
         _ => false,
@@ -283,6 +335,41 @@ fn is_transient(e: &AppError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_open_breaker_short_circuits_before_the_network() {
+        // The URL is unroutable, so if the breaker is consulted the call
+        // returns instantly; if it is not, this blocks on connect timeouts.
+        let health = Arc::new(EndpointHealth::default());
+        health.record_outage();
+        let client = GraphQlClient::new("http://127.0.0.1:1/graphql", "t")
+            .unwrap()
+            .with_health(health.clone());
+
+        let started = std::time::Instant::now();
+        let err = client.run("query { viewer { login } }", &json!({})).await.unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "should not have dialled");
+        assert!(err.to_string().contains("holding requests"), "got: {err}");
+    }
+
+    #[test]
+    fn only_reachability_failures_trip_the_breaker() {
+        // `is_transient` is what decides whether a failure opens the shared
+        // breaker, so a misclassification here stops every GitHub query in the
+        // app, not just this one.
+        for status in [502, 503, 504] {
+            assert!(
+                is_transient(&AppError::github_status(status, format!("HTTP {status}"))),
+                "gateway {status} should trip"
+            );
+        }
+        // GitHub answering us is not GitHub being unreachable.
+        assert!(!is_transient(&AppError::github_status(401, "authentication failed — check your PAT")));
+        assert!(!is_transient(&AppError::github_status(404, "HTTP 404")));
+        assert!(!is_transient(&AppError::github("Could not resolve to a node with the global id")));
+        // The breaker's own refusal must not read as an outage and re-arm it.
+        assert!(!is_transient(&AppError::github("GitHub is unreachable — Cora is holding requests")));
+    }
 
     fn scope_map(req: &PollRequest) -> HashMap<&'static str, String> {
         req.search_scopes().into_iter().map(|(a, q, _)| (a, q)).collect()

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { tip } from "../components/Tooltip";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { ipc } from "../lib/ipc";
@@ -819,8 +820,7 @@ function AppearancePane() {
               {!th.builtin && (
                 <button
                   className="icon-btn"
-                  data-tip="Delete this theme"
-                  aria-label="Delete this theme"
+                  {...tip("Delete this theme")}
                   onClick={() => {
                     deleteCustomTheme(th.id);
                     bump();
@@ -1046,8 +1046,7 @@ function ReposPane({
                   {(row.watched || row.priority !== "normal") && (
                     <button
                       className="icon-btn"
-                      data-tip="Unwatch and clear priority"
-                      aria-label="Unwatch and clear priority"
+                      {...tip("Unwatch and clear priority")}
                       onClick={() => removeRepo(row.repo)}
                     >
                       ✕
@@ -1191,8 +1190,7 @@ function UsersPane({
                   {row.priority !== "normal" && (
                     <button
                       className="icon-btn"
-                      data-tip="Clear priority"
-                      aria-label="Clear priority"
+                      {...tip("Clear priority")}
                       onClick={() => setPriority(row.author, "normal")}
                     >
                       ✕

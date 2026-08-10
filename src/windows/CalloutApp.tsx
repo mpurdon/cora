@@ -6,7 +6,7 @@ import type { ActivityItem } from "../bindings/ActivityItem";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import { ACTION_META, ACTION_ORDER, inBucket, type ActionKind } from "../lib/actions";
 import { FLAG_LABEL } from "../lib/flags";
-import { useRichTip } from "../components/Tooltip";
+import { tip, useRichTip } from "../components/Tooltip";
 import {
   IconAlertTriangle,
   IconChat,
@@ -21,7 +21,7 @@ import {
   IconXCircle,
 } from "../components/icons";
 import { ContextMenu } from "../components/ContextMenu";
-import { ipc } from "../lib/ipc";
+import { events, ipc } from "../lib/ipc";
 import { setThemeOrg } from "../lib/theme";
 import { usePrStore } from "../state/prStore";
 
@@ -121,7 +121,7 @@ function Row({
   onMenu: (e: React.MouseEvent, item: ActivityItem) => void;
 }) {
   const icon = verbIcon(item);
-  const tip = useRichTip<HTMLButtonElement>(
+  const rowTip = useRichTip<HTMLButtonElement>(() => (
     <>
       <div className="tooltip-head">
         {item.repo}#{item.number}
@@ -134,11 +134,11 @@ function Row({
       <div className="tooltip-hint" style={{ marginTop: 4 }}>
         click to open · right-click to flag
       </div>
-    </>,
-  );
+    </>
+  ));
   return (
     <button
-      {...tip}
+      {...rowTip}
       className={`feed-item${item.read ? "" : " unread"}${item.important ? " important" : ""}`}
       onClick={() => onOpen(item)}
       onContextMenu={(e) => onMenu(e, item)}
@@ -301,7 +301,7 @@ export function CalloutApp() {
         })
         .catch(() => {});
     refreshOrg();
-    const un = listen("activity:changed", () => {
+    const un = listen(events.activityChanged, () => {
       refresh();
       refreshOrg(); // unread badges track the feed
     });
@@ -385,16 +385,15 @@ export function CalloutApp() {
             ✓
           </button>
         )}
-        <button className="icon-btn" data-tip="Refresh now" aria-label="Refresh now" onClick={() => void ipc.pollNow()}>
+        <button className="icon-btn" {...tip("Refresh now")} onClick={() => void ipc.pollNow()}>
           ⟳
         </button>
-        <button className="icon-btn" data-tip="Open CORA" aria-label="Open CORA" onClick={() => void ipc.showMainWindow()}>
+        <button className="icon-btn" {...tip("Open CORA")} onClick={() => void ipc.showMainWindow()}>
           ⌂
         </button>
         <button
           className="icon-btn"
-          data-tip="Hide callout"
-          aria-label="Hide callout"
+          {...tip("Hide callout")}
           onClick={() => void getCurrentWindow().hide()}
         >
           ✕

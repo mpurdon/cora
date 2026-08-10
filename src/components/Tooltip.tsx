@@ -10,25 +10,37 @@ const EDGE_GAP = 8;
  *  than the corner radius without poking out of the rounded corner. */
 const CARET_INSET = 14;
 
-/** Rich tooltip bodies, keyed by the element that owns them. A WeakMap so an
+/** Rich tooltip bodies, keyed by the element that owns them. Thunks, not
+ *  elements: at most one card is on screen, so building the markup for all 150
+ *  feed rows on every render is 149 subtrees thrown away. A WeakMap, so an
  *  unmounted trigger takes its content with it. Plain string tooltips don't
  *  come through here at all — they live in the `data-tip` attribute. */
-const richContent = new WeakMap<Element, ReactNode>();
+const richContent = new WeakMap<Element, () => ReactNode>();
 
 const SELECTOR = "[data-tip],[data-tip-rich]";
 
+/** One string, both jobs. `title` used to be the tooltip *and* the accessible
+ *  name; `data-tip` only does the first, so spread this rather than writing the
+ *  text out twice and letting the two drift. */
+export function tip(text: string) {
+  return { "data-tip": text, "aria-label": text } as const;
+}
+
 /** Rich content for an element you can't wrap — a flex child, a row whose
  *  layout a span would disturb. Spread the result onto the element:
- *  `<button {...useRichTip(<…/>)}>`. Registered on every render so the content
- *  stays current; a WeakMap write is cheaper than diffing it. */
-export function useRichTip<T extends HTMLElement>(content: ReactNode) {
+ *  `<button {...useRichTip(() => <…/>)}>`. The thunk runs at hover time, so
+ *  nothing is built for the rows nobody points at. */
+export function useRichTip<T extends HTMLElement>(render: () => ReactNode) {
   const ref = useRef<T>(null);
+  // The thunk closes over this render's props; the registration is stable.
+  const latest = useRef(render);
+  latest.current = render;
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    richContent.set(el, content);
+    richContent.set(el, () => latest.current());
     return () => void richContent.delete(el);
-  });
+  }, []);
   return { ref, "data-tip-rich": "" } as const;
 }
 
@@ -40,7 +52,7 @@ export function Tooltip({
   children,
   className,
 }: {
-  content: ReactNode;
+  content: () => ReactNode;
   children: ReactNode;
   className?: string;
 }) {
@@ -60,6 +72,9 @@ type Shown = {
   caret: number;
   /** Card sits above the trigger, so the caret points down. */
   flipped: boolean;
+  /** Measured against the viewport. Until then the card is rendered invisibly
+   *  at its first guess, so it has a size to measure. */
+  placed: boolean;
 };
 
 /** The single tooltip surface for a window. Mount once, near the root.
@@ -73,28 +88,33 @@ export function TooltipLayer() {
   const anchorRef = useRef<Element | null>(null);
   const timer = useRef<number | undefined>(undefined);
   const [shown, setShown] = useState<Shown | null>(null);
-  const [placed, setPlaced] = useState(false);
 
   useEffect(() => {
     const hide = () => {
       window.clearTimeout(timer.current);
       anchorRef.current = null;
       setShown(null);
-      setPlaced(false);
     };
 
     const onOver = (e: PointerEvent) => {
       const el = (e.target as Element | null)?.closest?.(SELECTOR) ?? null;
       if (!el || el === anchorRef.current) return;
       hide();
-      const content = richContent.get(el) ?? el.getAttribute("data-tip");
-      if (!content) return;
       anchorRef.current = el;
       timer.current = window.setTimeout(() => {
+        const content = richContent.get(el)?.() ?? el.getAttribute("data-tip");
+        if (!content) return;
         const r = el.getBoundingClientRect();
         // First pass: below the trigger, left-aligned. The measuring effect
         // corrects for the viewport once the card has a size.
-        setShown({ content, x: r.left, y: r.bottom + 8, caret: CARET_INSET, flipped: false });
+        setShown({
+          content,
+          x: r.left,
+          y: r.bottom + 8,
+          caret: CARET_INSET,
+          flipped: false,
+          placed: false,
+        });
       }, SHOW_DELAY_MS);
     };
 
@@ -124,7 +144,7 @@ export function TooltipLayer() {
   // Measure after paint: the card's own size decides whether it flips above the
   // trigger or shifts sideways, and that isn't knowable until it has rendered.
   useEffect(() => {
-    if (!shown || placed || !cardRef.current || !anchorRef.current) return;
+    if (!shown || shown.placed || !cardRef.current || !anchorRef.current) return;
     const card = cardRef.current.getBoundingClientRect();
     const anchor = anchorRef.current.getBoundingClientRect();
     let { x, y } = shown;
@@ -142,16 +162,15 @@ export function TooltipLayer() {
       Math.max(anchor.left + anchor.width / 2 - x, CARET_INSET),
       Math.max(CARET_INSET, card.width - CARET_INSET),
     );
-    setPlaced(true);
-    setShown({ ...shown, x, y, caret, flipped });
-  }, [shown, placed]);
+    setShown({ ...shown, x, y, caret, flipped, placed: true });
+  }, [shown]);
 
   if (!shown) return null;
   return createPortal(
     <div
       ref={cardRef}
       role="tooltip"
-      className={`tooltip-card${shown.flipped ? " flipped" : ""}${placed ? " placed" : ""}`}
+      className={`tooltip-card${shown.flipped ? " flipped" : ""}${shown.placed ? " placed" : ""}`}
       style={
         {
           left: shown.x,

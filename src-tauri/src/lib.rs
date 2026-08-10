@@ -1,8 +1,10 @@
+mod activity;
 mod analysis;
 mod commands;
 mod devlog;
 mod error;
 mod github;
+mod health;
 mod models;
 mod notify;
 mod orgs;
@@ -118,6 +120,8 @@ pub fn run() {
             app.manage(commands::AnalysisRuns(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
             )));
+            app.manage(health::BedrockHealth::default());
+            app.manage(health::GitHubHealth::default());
             app.manage(devlog::DevLog::new());
             app.manage(notify::PendingFocus::new());
             app.manage(analysis::chat::ChatSessions::default());
@@ -196,6 +200,8 @@ pub fn run() {
             commands::get_activity,
             commands::mark_activity_read,
             commands::set_activity_flag,
+            commands::clear_activity_flags,
+            commands::get_flagged,
             commands::undo_audit,
             commands::get_pr_comments,
             commands::get_pr_commits,

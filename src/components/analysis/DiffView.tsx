@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { tip } from "../Tooltip";
+import { CopyButton } from "../CopyButton";
 import type { PrConversation } from "../../bindings/PrConversation";
 import type { ReviewMark } from "../../bindings/ReviewMark";
 import type { ReviewPlanEntry } from "../../bindings/ReviewPlanEntry";
 import type { ReviewThread } from "../../bindings/ReviewThread";
-import { IconCheck, IconClipboard } from "../icons";
+
 import { treeFileOrder } from "../../lib/fileTree";
 import { matchesAny } from "../../lib/globs";
 import { usePersistedFlag } from "../../lib/persisted";
@@ -60,54 +62,6 @@ export function filePatch(file: DiffFile): string | null {
   // Exactly one trailing newline: the slice ends wherever the next file's
   // header begins, and patches are line-terminated files.
   return `${file.src.slice(file.patchStart, file.patchEnd).replace(/\n+$/, "")}\n`;
-}
-
-/** Clipboard button with inline feedback, shared by every "copy this" affordance
- *  — a file's patch, a whole file, a PR link. `text` is null when there is
- *  nothing to copy yet (content still fetching), which disables the button
- *  rather than putting a placeholder on the clipboard. */
-export function CopyButton({
-  text,
-  what,
-  icon,
-}: {
-  text: string | null;
-  what: string;
-  icon?: React.ReactNode;
-}) {
-  // One tri-state rather than two booleans that must never both be true.
-  const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
-  const title =
-    text == null
-      ? "Nothing to copy yet"
-      : status === "copied"
-        ? "Copied!"
-        : status === "failed"
-          ? "Couldn't copy — clipboard unavailable"
-          : `Copy ${what}`;
-  return (
-    <button
-      className="icon-btn"
-      disabled={text == null}
-      data-tip={title}
-      aria-label={title}
-      onClick={() => {
-        if (text == null) return;
-        void navigator.clipboard
-          .writeText(text)
-          .then(() => {
-            setStatus("copied");
-            setTimeout(() => setStatus("idle"), 1500);
-          })
-          .catch(() => {
-            setStatus("failed");
-            setTimeout(() => setStatus("idle"), 2500);
-          });
-      }}
-    >
-      {status === "copied" ? <IconCheck /> : (icon ?? <IconClipboard />)}
-    </button>
-  );
 }
 
 export function parseDiff(raw: string): DiffFile[] {
@@ -411,8 +365,16 @@ function FileDiff({
   // composer only opens on release, so it doesn't flicker under the moving end.
   const [selecting, setSelecting] = useState(false);
   // `anchor` is the line pressed; `last` the line the cursor is currently over,
-  // so a move only re-ranges when it crosses into a new line.
-  const drag = useRef<{ anchor: number; last: number } | null>(null);
+  // so a move only re-ranges when it crosses into a new line. `x`/`y` are the
+  // latest cursor position, resolved to a line once per frame — see the move
+  // handler.
+  const drag = useRef<{
+    anchor: number;
+    last: number;
+    x: number;
+    y: number;
+    raf: number;
+  } | null>(null);
 
   useEffect(() => {
     if (compose) {
@@ -443,6 +405,7 @@ function FileDiff({
   // A drag can end anywhere on the page, so listen globally while one is live.
   useEffect(() => {
     const onUp = () => {
+      if (drag.current?.raf) cancelAnimationFrame(drag.current.raf);
       drag.current = null;
       setSelecting(false);
     };
@@ -467,8 +430,6 @@ function FileDiff({
 
   // Hunk segments: a header line plus its body, for per-hunk collapsing.
   // Cut once per file rather than on every render of the header.
-  const patchText = useMemo(() => filePatch(file), [file]);
-
   const segments = useMemo(() => {
     const segs: { header: DiffLine | null; lines: DiffLine[] }[] = [];
     for (const l of file.lines) {
@@ -518,7 +479,7 @@ function FileDiff({
                   setRange(null);
                   return;
                 }
-                drag.current = { anchor: n, last: n };
+                drag.current = { anchor: n, last: n, x: e.clientX, y: e.clientY, raf: 0 };
                 setSelecting(true);
                 setSeedBody("");
                 setRange({ start: n, end: n });
@@ -534,16 +495,28 @@ function FileDiff({
               // While held, grow the range to the line under the cursor. The
               // captured button receives every move; elementFromPoint maps the
               // cursor to a real line, so dragging anywhere over the diff works.
+              // One hit-test per frame, not per event: elementFromPoint forces a
+              // layout flush, and the setRange it feeds has just dirtied layout
+              // again (every row in the range gains a shadow), so at coalesced
+              // trackpad rates the pair thrashes a body of thousands of rows.
               onPointerMove={(e) => {
                 const d = drag.current;
                 if (!d) return;
-                const row = document
-                  .elementFromPoint(e.clientX, e.clientY)
-                  ?.closest<HTMLElement>("[data-newline]");
-                const m = row ? Number(row.dataset.newline) : NaN;
-                if (Number.isNaN(m) || m === d.last) return;
-                d.last = m;
-                setRange({ start: Math.min(d.anchor, m), end: Math.max(d.anchor, m) });
+                d.x = e.clientX;
+                d.y = e.clientY;
+                if (d.raf) return;
+                d.raf = requestAnimationFrame(() => {
+                  const cur = drag.current;
+                  if (!cur) return;
+                  cur.raf = 0;
+                  const row = document
+                    .elementFromPoint(cur.x, cur.y)
+                    ?.closest<HTMLElement>("[data-newline]");
+                  const m = row ? Number(row.dataset.newline) : NaN;
+                  if (Number.isNaN(m) || m === cur.last) return;
+                  cur.last = m;
+                  setRange({ start: Math.min(cur.anchor, m), end: Math.max(cur.anchor, m) });
+                });
               }}
             >
               +
@@ -632,12 +605,11 @@ function FileDiff({
             <span className="del">−{file.deletions}</span>
           </span>
         </button>
-        <CopyButton text={patchText} what={`the diff for ${file.path}`} />
+        <CopyButton text={() => filePatch(file)} what={`the diff for ${file.path}`} />
         {!file.deleted && (
           <button
             className="icon-btn file-expand-btn"
-            data-tip="View the whole file with changes overlaid"
-            aria-label="View the whole file with changes overlaid"
+            {...tip("View the whole file with changes overlaid")}
             onClick={onExpand}
           >
             ⤢
@@ -819,8 +791,27 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     setSinceFailed(false);
   };
 
+  // A file counts as viewed only while its patch digest still matches — an
+  // update after viewing clears it automatically. Digests are ALWAYS taken
+  // from the full diff, never the "since your last look" subset: a mark made
+  // in since-mode must survive leaving it (and vice versa).
+  const fullDigests = useMemo(
+    () => new Map((raw ? parseDiffCached(raw) : []).map((f) => [f.path, fileDigest(f)])),
+    [raw],
+  );
+
   const activeRaw = sinceMode && sinceRaw !== null ? sinceRaw : raw;
-  const allFiles = useMemo(() => (activeRaw ? parseDiffCached(activeRaw) : []), [activeRaw]);
+  const allFiles = useMemo(() => {
+    const parsed = activeRaw ? parseDiffCached(activeRaw) : [];
+    if (activeRaw === raw) return parsed;
+    // The since-diff is `compare/{marked sha}...{head}`, so it carries every
+    // change that landed on the branch — including the base-branch churn that
+    // arrives when the author merges main. Those files aren't part of this PR:
+    // they'd never appear in the full diff, so they have no digest to hold a
+    // viewed mark, and the checkbox would silently do nothing. Reviewing means
+    // reviewing the PR's own changes, so they don't belong in the list either.
+    return parsed.filter((f) => fullDigests.has(f.path));
+  }, [activeRaw, raw, fullDigests]);
 
   // Insignificant files (lockfiles, generated, snapshots) are skipped:
   // parked in their own collapsed section and excluded from progress.
@@ -841,14 +832,6 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     return { files: significant, skipped: insignificant };
   }, [allFiles, ignoreGlobs]);
 
-  // A file counts as viewed only while its patch digest still matches — an
-  // update after viewing clears it automatically. Digests are ALWAYS taken
-  // from the full diff, never the "since your last look" subset: a mark made
-  // in since-mode must survive leaving it (and vice versa).
-  const fullDigests = useMemo(
-    () => new Map((raw ? parseDiffCached(raw) : []).map((f) => [f.path, fileDigest(f)])),
-    [raw],
-  );
   const isViewed = (file: DiffFile) => {
     const digest = fullDigests.get(file.path);
     return digest != null && entry?.viewed[file.path] === digest;
@@ -1183,7 +1166,7 @@ function FullFileView({
           <span className="del">−{file.deletions}</span>
         </span>
         <CopyButton text={content} what={`the contents of ${file.path}`} />
-        <button className="icon-btn" data-tip="Back to the diff (esc)" aria-label="Back to the diff (esc)" onClick={onClose}>
+        <button className="icon-btn" {...tip("Back to the diff (esc)")} onClick={onClose}>
           ✕
         </button>
       </div>

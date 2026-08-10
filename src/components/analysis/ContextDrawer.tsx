@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { tip } from "../Tooltip";
 import type { ChatContext } from "../../bindings/ChatContext";
 import type { ContextGroup } from "../../bindings/ContextGroup";
 import type { ContextPart } from "../../bindings/ContextPart";
@@ -91,7 +92,7 @@ export function ContextDrawer({ prId, onClose }: { prId: string; onClose: () => 
               </span>
             )}
           </div>
-          <button className="icon-btn" data-tip="Close" aria-label="Close" onClick={onClose}>
+          <button className="icon-btn" {...tip("Close")} onClick={onClose}>
             ✕
           </button>
         </header>
