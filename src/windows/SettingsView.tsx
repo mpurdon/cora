@@ -8,10 +8,11 @@ import {
   type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { tip } from "../components/Tooltip";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
-import { ipc } from "../lib/ipc";
+import { events, ipc } from "../lib/ipc";
 import {
   activeThemeId,
   allThemes,
@@ -268,6 +269,14 @@ export function SettingsView({
   useEffect(() => {
     void ipc.getSettings().then(setSettings);
     void ipc.getOrgState().then((s) => setActiveOrg(s.active)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen(events.orgChanged, () => {
+      void ipc.getOrgState().then(s => setActiveOrg(s.active)).catch(() => {});
+      void ipc.getSettings().then(setSettings);
+    });
+    return () => { void unlisten.then(fn => fn()); };
   }, []);
 
   if (!settings) return null;
@@ -1124,7 +1133,7 @@ function UsersPane({
 
   return (
     <section className="pane-section pane-wide">
-      <h2>Users</h2>
+      <h2>Users ({rows.length})</h2>
       <p className="pane-intro">
         <strong>Priority</strong> weights a PR author everywhere — high authors float to the
         top of every group and their activity is always featured; ignored authors (bots,
