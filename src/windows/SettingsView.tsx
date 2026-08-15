@@ -1096,7 +1096,7 @@ function UsersPane({
     const q = filter.trim().toLowerCase();
     return [...all]
       .filter((author) => !q || author.toLowerCase().includes(q))
-      .sort()
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
       .map((author) => ({
         author,
         priority: settings.authorPriorities[author] ?? ("normal" as RepoPriority),
