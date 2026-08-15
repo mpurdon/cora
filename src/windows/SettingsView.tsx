@@ -1124,7 +1124,7 @@ function UsersPane({
 
   return (
     <section className="pane-section pane-wide">
-      <h2>Users</h2>
+      <h2>Users ({rows.length})</h2>
       <p className="pane-intro">
         <strong>Priority</strong> weights a PR author everywhere — high authors float to the
         top of every group and their activity is always featured; ignored authors (bots,
