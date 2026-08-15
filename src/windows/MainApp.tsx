@@ -1644,12 +1644,18 @@ export function MainApp() {
       : unignored;
     const visible = bucketMatched.filter((pr) => passesReady(pr, ready));
     const hiddenByReady = unignored.length - visible.length;
-    // Ordering: repo priority, then the author's priority within the group,
-    // then per-PR priority, then the chosen sort.
+    // A PR carries both pulls, the repo's and the author's, summed rather than
+    // the repo deciding with the author as a tiebreak. Ranking an author up is
+    // worth exactly what ranking a repo down costs, so a name you want to see
+    // draws level with work from a repo you'd otherwise reach for first. Then
+    // per-PR priority, then the chosen sort.
+    const pull = (pr: TrackedPr) =>
+      PRIORITY_WEIGHT.normal -
+      PRIORITY_WEIGHT[prioOf(pr.repo)] +
+      (PRIORITY_WEIGHT.normal - PRIORITY_WEIGHT[authorPrioOf(pr.author)]);
     const sorted = [...visible].sort(
       (a, b) =>
-        PRIORITY_WEIGHT[prioOf(a.repo)] - PRIORITY_WEIGHT[prioOf(b.repo)] ||
-        PRIORITY_WEIGHT[authorPrioOf(a.author)] - PRIORITY_WEIGHT[authorPrioOf(b.author)] ||
+        pull(b) - pull(a) ||
         PR_PRIORITY_WEIGHT[a.priority] - PR_PRIORITY_WEIGHT[b.priority] ||
         SORTERS[sortMode](a, b),
     );
@@ -1669,9 +1675,21 @@ export function MainApp() {
       byKey.set(key, bucket);
     }
     const entries = [...byKey.entries()].map(([key, v]) => ({ key, ...v }));
-    // High-priority repos surface their groups first in every mode.
-    const groupWeight = (g: { prs: TrackedPr[] }) =>
-      Math.min(...g.prs.map((p) => PRIORITY_WEIGHT[prioOf(p.repo)]));
+    // A group's pull is its rows' added up, not just its best one, so two
+    // high-ranked authors outrank one while a hundred ordinary PRs — pulling
+    // nothing each — sum to nothing. Its best row then floors that sum, so
+    // what a group holds can only lift it: one high-ranked author still
+    // surfaces an org that also carries work you've ranked down.
+    const groupPull = (g: { prs: TrackedPr[] }) => {
+      let summed = 0;
+      let best = -Infinity;
+      for (const pr of g.prs) {
+        const p = pull(pr);
+        summed += p;
+        best = Math.max(best, p);
+      }
+      return Math.max(summed, best);
+    };
     if (groupMode === "reason") {
       entries.sort(
         (a, b) =>
@@ -1681,11 +1699,11 @@ export function MainApp() {
       // known types alphabetical, "unknown" last
       entries.sort(
         (a, b) =>
-          groupWeight(a) - groupWeight(b) ||
+          groupPull(b) - groupPull(a) ||
           (a.key === "unknown" ? 1 : b.key === "unknown" ? -1 : a.label.localeCompare(b.label)),
       );
     } else {
-      entries.sort((a, b) => groupWeight(a) - groupWeight(b) || a.label.localeCompare(b.label));
+      entries.sort((a, b) => groupPull(b) - groupPull(a) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
   }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed, showFinished]);
