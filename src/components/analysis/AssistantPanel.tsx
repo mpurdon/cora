@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { tip } from "../Tooltip";
 import type { ChatContext } from "../../bindings/ChatContext";
 import type { ChatPendingAction } from "../../bindings/ChatPendingAction";
@@ -277,6 +277,19 @@ function PendingCard({
   const [tab, setTab] = useState<"write" | "preview">("write");
   const edited = draft !== pending.detail;
   const empty = pending.editable && !draft.trim();
+
+  // The box grows to the text, so a proposed comment arrives whole — nothing
+  // to drag open before you can read what you're approving. Sizing here in a
+  // layout effect means it has its final height before the chat list's own
+  // effect scrolls to the bottom, landing the card's tail and buttons in view.
+  const editRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = editRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft, tab]);
+
   return (
     <div className="pending-action">
       <div className="pending-title">
@@ -305,6 +318,7 @@ function PendingCard({
         pending.detail && <pre className="pending-detail">{pending.detail}</pre>
       ) : tab === "write" ? (
         <textarea
+          ref={editRef}
           className="pending-edit"
           value={draft}
           spellCheck={false}

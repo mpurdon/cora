@@ -4651,6 +4651,9 @@ button.diff-file-header:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* The reading area a card can measure itself against — its own height,
+     which the activity drawer and composer above and below it move. */
+  container-type: size;
 }
 
 .chat-empty {
@@ -4722,14 +4725,12 @@ button.diff-file-header:hover {
   margin-bottom: 6px;
 }
 
-/* The action's text, editable in place — same look as the read-only detail
-   so the card doesn't change shape when an action happens to carry prose. */
-.pending-edit {
-  display: block;
-  width: 100%;
-  min-height: 84px;
-  max-height: 260px;
-  resize: vertical;
+/* The action's text, editable in place or read-only, one look either way so
+   the card doesn't change shape when an action happens to carry prose. The
+   cap is a share of the chat list rather than of the window, so a proposal
+   can't out-grow the space it has to be read in. */
+.pending-edit,
+.pending-detail {
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.55;
@@ -4739,6 +4740,17 @@ button.diff-file-header:hover {
   border-radius: 6px;
   padding: 8px 10px;
   margin: 0 0 8px;
+  max-height: 70cqh;
+  overflow-y: auto;
+}
+
+/* PendingCard sizes the height to the text, so there is no grip: a drag
+   wouldn't survive the next keystroke, and the cap bounds it either way. */
+.pending-edit {
+  display: block;
+  width: 100%;
+  min-height: 84px;
+  resize: none;
 }
 
 .pending-edit:focus {
@@ -4756,19 +4768,8 @@ button.diff-file-header:hover {
 }
 
 .pending-detail {
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.55;
-  color: var(--text);
-  background: var(--ink-0);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin: 0 0 8px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 220px;
-  overflow-y: auto;
   user-select: text;
 }
 
