@@ -95,4 +95,20 @@ codeMaxOutputTokens: number,
  * than we'd display — a shorter feed is easier to reach the bottom of
  * and keeps the per-org database small.
  */
-calloutFeedLimit: number, };
+calloutFeedLimit: number,
+/**
+ * Default message used when approving PRs. Can be overridden per
+ * repository via repoApproveMessages. null means use the built-in
+ * fallback.
+ */
+approveMessage: string | null,
+/**
+ * Per-repository approve message overrides. "owner/name" → message.
+ * Takes precedence over the global approveMessage.
+ */
+repoApproveMessages: { [key in string]: string },
+/**
+ * Per-repository review instructions appended to AI review prompts.
+ * "owner/name" → instructions string.
+ */
+repoReviewInstructions: { [key in string]: string }, };

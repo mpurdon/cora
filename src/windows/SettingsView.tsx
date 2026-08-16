@@ -10,6 +10,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { tip } from "../components/Tooltip";
+import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { events, ipc } from "../lib/ipc";
@@ -394,6 +395,17 @@ function GeneralPane({ settings, save }: PaneProps) {
           checked={settings.showCalloutOnStartup}
           onChange={(v) => void save({ showCalloutOnStartup: v })}
           label="Open the callout at launch"
+        />
+      </Field>
+
+      <Field
+        label="Default approve message"
+        hint="Used when approving PRs — can be overridden per repository."
+      >
+        <input
+          placeholder="Approving — nothing blocking from me."
+          defaultValue={settings.approveMessage ?? ""}
+          onBlur={(e) => void save({ approveMessage: e.target.value.trim() || null })}
         />
       </Field>
 
@@ -919,6 +931,7 @@ function ReposPane({
   const [draft, setDraft] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
 
   const activeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1052,6 +1065,13 @@ function ReposPane({
                   </select>
                 </td>
                 <td className="col-center">
+                  <button
+                    className="icon-btn"
+                    {...tip("Configure")}
+                    onClick={() => setSelectedRepo(row.repo)}
+                  >
+                    ⚙
+                  </button>
                   {(row.watched || row.priority !== "normal") && (
                     <button
                       className="icon-btn"
@@ -1067,6 +1087,13 @@ function ReposPane({
           </tbody>
         </table>
       )}
+
+      <RepoSettingsDrawer
+        repoKey={selectedRepo}
+        settings={settings}
+        onSave={(updated) => void save(updated)}
+        onClose={() => setSelectedRepo(null)}
+      />
     </section>
   );
 }
