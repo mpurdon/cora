@@ -362,6 +362,18 @@ pub struct Settings {
     #[serde(default = "default_callout_feed_limit")]
     #[ts(type = "number")]
     pub callout_feed_limit: u64,
+    /// Default approval comment when a repo has no override; empty defers to
+    /// the app's hardcoded fallback.
+    #[serde(default)]
+    pub default_approve_message: String,
+    /// "owner/name" → approval comment override, for repos whose review
+    /// culture wants something other than the default sign-off.
+    #[serde(default)]
+    pub repo_approve_messages: std::collections::HashMap<String, String>,
+    /// "owner/name" → extra review instructions appended to the analysis and
+    /// chat system prompts, alongside `review_conventions`.
+    #[serde(default)]
+    pub repo_review_instructions: std::collections::HashMap<String, String>,
 }
 
 fn default_callout_feed_limit() -> u64 {
@@ -456,6 +468,10 @@ fn default_pr_max_age_days() -> u64 {
     365
 }
 
+/// The sign-off used when neither a repo override nor `default_approve_message`
+/// is set — mirrors the frontend's own fallback in `src/lib/comments.ts`.
+const FALLBACK_APPROVE_MESSAGE: &str = "Approving — nothing blocking from me.";
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -485,7 +501,24 @@ impl Default for Settings {
             arch_max_output_tokens: default_arch_max_tokens(),
             code_max_output_tokens: default_code_max_tokens(),
             callout_feed_limit: default_callout_feed_limit(),
+            default_approve_message: String::new(),
+            repo_approve_messages: std::collections::HashMap::new(),
+            repo_review_instructions: std::collections::HashMap::new(),
         }
+    }
+}
+
+impl Settings {
+    pub fn resolved_approve_message(&self, repo: &str) -> String {
+        if let Some(msg) = self.repo_approve_messages.get(repo) {
+            if !msg.trim().is_empty() {
+                return msg.clone();
+            }
+        }
+        if !self.default_approve_message.trim().is_empty() {
+            return self.default_approve_message.clone();
+        }
+        FALLBACK_APPROVE_MESSAGE.to_string()
     }
 }
 
@@ -829,5 +862,30 @@ mod tests {
         assert!(changes.contains(&ChangeKind::CiChanged));
         assert!(changes.contains(&ChangeKind::NewCommits));
         assert_eq!(changes.len(), 3);
+    }
+
+    #[test]
+    fn resolved_approve_message_priority_order() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.resolved_approve_message("o/r"), FALLBACK_APPROVE_MESSAGE);
+
+        settings.default_approve_message = "Ship it.".into();
+        assert_eq!(settings.resolved_approve_message("o/r"), "Ship it.");
+
+        settings
+            .repo_approve_messages
+            .insert("o/r".into(), "Looks solid, merging.".into());
+        assert_eq!(settings.resolved_approve_message("o/r"), "Looks solid, merging.");
+        // A different repo still falls through to the default.
+        assert_eq!(settings.resolved_approve_message("o/other"), "Ship it.");
+
+        // A blank override doesn't win over a non-empty default.
+        settings.repo_approve_messages.insert("o/r".into(), "   ".into());
+        assert_eq!(settings.resolved_approve_message("o/r"), "Ship it.");
+
+        // A blank default falls through to the hardcoded fallback.
+        settings.default_approve_message = "  ".into();
+        settings.repo_approve_messages.remove("o/r");
+        assert_eq!(settings.resolved_approve_message("o/r"), FALLBACK_APPROVE_MESSAGE);
     }
 }

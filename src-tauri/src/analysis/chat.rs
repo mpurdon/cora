@@ -201,6 +201,14 @@ fn build_system(
             text: conventions,
         });
     }
+    let repo_instructions = crate::analysis::engine::repo_instructions_section(settings, &pr.info.repo);
+    if !repo_instructions.is_empty() {
+        parts.push(SystemPart {
+            label: "Repo review instructions",
+            origin: "your settings",
+            text: repo_instructions,
+        });
+    }
     parts.push(SystemPart {
         label: "PR facts",
         origin: "github",

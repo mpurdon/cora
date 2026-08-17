@@ -95,4 +95,19 @@ codeMaxOutputTokens: number,
  * than we'd display — a shorter feed is easier to reach the bottom of
  * and keeps the per-org database small.
  */
-calloutFeedLimit: number, };
+calloutFeedLimit: number,
+/**
+ * Default approval comment when a repo has no override; empty defers to
+ * the app's hardcoded fallback.
+ */
+defaultApproveMessage: string,
+/**
+ * "owner/name" → approval comment override, for repos whose review
+ * culture wants something other than the default sign-off.
+ */
+repoApproveMessages: { [key in string]: string },
+/**
+ * "owner/name" → extra review instructions appended to the analysis and
+ * chat system prompts, alongside `review_conventions`.
+ */
+repoReviewInstructions: { [key in string]: string }, };
