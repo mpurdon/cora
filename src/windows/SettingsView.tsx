@@ -12,7 +12,9 @@ import { listen } from "@tauri-apps/api/event";
 import { tip } from "../components/Tooltip";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
+import { FALLBACK_APPROVE_MESSAGE } from "../lib/comments";
 import { events, ipc } from "../lib/ipc";
+import { useRepoSettingsDrawerStore } from "../state/repoSettingsDrawerStore";
 import {
   activeThemeId,
   allThemes,
@@ -225,7 +227,7 @@ function StepSlider({
   );
 }
 
-function Field({
+export function Field({
   label,
   hint,
   children,
@@ -475,6 +477,18 @@ function GeneralPane({ settings, save }: PaneProps) {
           placeholder="Design-system packages, shared libraries, review standards…"
           defaultValue={settings.reviewConventions}
           onBlur={(e) => void save({ reviewConventions: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Default approve message"
+        hint="Seeds an empty approval when your review has no comments to point at. A repo can override this from its Repositories row. Leave blank to use the plain sign-off."
+      >
+        <input
+          type="text"
+          placeholder={FALLBACK_APPROVE_MESSAGE}
+          defaultValue={settings.defaultApproveMessage}
+          onBlur={(e) => void save({ defaultApproveMessage: e.target.value })}
         />
       </Field>
 
@@ -941,6 +955,8 @@ function ReposPane({
         watched: settings.watchedRepos.includes(repo),
         priority: settings.repoPriorities[repo] ?? ("normal" as RepoPriority),
         activePrs: activeCounts.get(repo) ?? 0,
+        hasApproveMessage: !!settings.repoApproveMessages[repo],
+        hasReviewInstructions: !!settings.repoReviewInstructions[repo],
       }));
   }, [settings, activeCounts, filter]);
 
@@ -965,13 +981,6 @@ function ReposPane({
         ? [...settings.watchedRepos, repo].sort()
         : settings.watchedRepos.filter((r) => r !== repo),
     });
-  };
-
-  const setPriority = (repo: string, priority: RepoPriority) => {
-    const next = { ...settings.repoPriorities };
-    if (priority === "normal") delete next[repo];
-    else next[repo] = priority;
-    void save({ repoPriorities: next });
   };
 
   const removeRepo = (repo: string) => {
@@ -1030,6 +1039,7 @@ function ReposPane({
               <th className="col-center">Watch all PRs</th>
               <th>Priority</th>
               <th />
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -1040,16 +1050,27 @@ function ReposPane({
                 <td className="col-center">
                   <Toggle checked={row.watched} onChange={(v) => toggleWatched(row.repo, v)} />
                 </td>
-                <td>
-                  <select
-                    value={row.priority}
-                    onChange={(e) => setPriority(row.repo, e.target.value as RepoPriority)}
+                <td className="repo-badges">
+                  <span className="label-chip">{row.priority}</span>
+                  {row.hasApproveMessage && (
+                    <span className="badge-dot" {...tip("Custom approve message")}>
+                      ●
+                    </span>
+                  )}
+                  {row.hasReviewInstructions && (
+                    <span className="badge-dot" {...tip("Custom review instructions")}>
+                      ●
+                    </span>
+                  )}
+                </td>
+                <td className="col-center">
+                  <button
+                    className="icon-btn"
+                    {...tip("Repo settings…")}
+                    onClick={() => useRepoSettingsDrawerStore.getState().openFor(row.repo)}
                   >
-                    <option value="high">high</option>
-                    <option value="normal">normal</option>
-                    <option value="low">low</option>
-                    <option value="ignored">ignored</option>
-                  </select>
+                    ⚙
+                  </button>
                 </td>
                 <td className="col-center">
                   {(row.watched || row.priority !== "normal") && (

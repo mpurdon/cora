@@ -193,7 +193,7 @@ fn build_system(
         origin: "app",
         text: String::from(CHAT_SYSTEM_PROMPT),
     }];
-    let conventions = crate::analysis::engine::conventions_section(settings);
+    let conventions = crate::analysis::engine::conventions_section(settings, &pr.info.repo);
     if !conventions.is_empty() {
         parts.push(SystemPart {
             label: "Team conventions",

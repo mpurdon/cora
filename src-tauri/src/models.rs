@@ -362,6 +362,16 @@ pub struct Settings {
     #[serde(default = "default_callout_feed_limit")]
     #[ts(type = "number")]
     pub callout_feed_limit: u64,
+    /// Default PR approve message; used when a repo has no override.
+    #[serde(default)]
+    pub default_approve_message: String,
+    /// "owner/name" → approve message override.
+    #[serde(default)]
+    pub repo_approve_messages: std::collections::HashMap<String, String>,
+    /// "owner/name" → repo-specific review instructions, injected alongside
+    /// (but kept distinct from) the team-wide review conventions.
+    #[serde(default)]
+    pub repo_review_instructions: std::collections::HashMap<String, String>,
 }
 
 fn default_callout_feed_limit() -> u64 {
@@ -485,6 +495,9 @@ impl Default for Settings {
             arch_max_output_tokens: default_arch_max_tokens(),
             code_max_output_tokens: default_code_max_tokens(),
             callout_feed_limit: default_callout_feed_limit(),
+            default_approve_message: String::new(),
+            repo_approve_messages: std::collections::HashMap::new(),
+            repo_review_instructions: std::collections::HashMap::new(),
         }
     }
 }

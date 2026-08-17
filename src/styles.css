@@ -4245,6 +4245,18 @@ button.diff-file-header:hover {
   font-size: 13px;
 }
 
+.repo-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge-dot {
+  color: var(--accent, var(--ok));
+  font-size: 8px;
+  line-height: 1;
+}
+
 .field {
   margin-bottom: 20px;
 }

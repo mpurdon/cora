@@ -95,4 +95,17 @@ codeMaxOutputTokens: number,
  * than we'd display — a shorter feed is easier to reach the bottom of
  * and keeps the per-org database small.
  */
-calloutFeedLimit: number, };
+calloutFeedLimit: number,
+/**
+ * Default PR approve message; used when a repo has no override.
+ */
+defaultApproveMessage: string,
+/**
+ * "owner/name" → approve message override.
+ */
+repoApproveMessages: { [key in string]: string },
+/**
+ * "owner/name" → repo-specific review instructions, injected alongside
+ * (but kept distinct from) the team-wide review conventions.
+ */
+repoReviewInstructions: { [key in string]: string }, };
