@@ -31,6 +31,9 @@ import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
+import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
+import type { Settings } from "../bindings/Settings";
+import { useRepoSettingsDrawerStore } from "../state/repoSettingsDrawerStore";
 import {
   IconChat,
   IconClipboard,
@@ -273,11 +276,13 @@ function ReviewActions({
   reviews,
   flow,
   setFlow,
+  settings,
 }: {
   pr: TrackedPr;
   reviews: PrReviews | null;
   flow: FlowOwner;
   setFlow: (f: FlowOwner) => void;
+  settings: Settings | null;
 }) {
   const [mode, setMode] = useState<"approve" | "request-changes" | null>(null);
   const [body, setBody] = useState("");
@@ -313,8 +318,13 @@ function ReviewActions({
     // never clobber text you've typed.
     if (!body.trim()) {
       const viewer = reviews?.viewerLogin ?? "";
+      // Settings aren't loaded yet on the very first render after launch —
+      // skip seeding rather than guess at the approve message; the user can
+      // still type, and the next open (settings loaded by then) seeds normally.
       const seed =
-        m === "approve" ? approveSeed(conversation, viewer) : requestChangesSeed(conversation, viewer);
+        m === "approve"
+          ? settings && approveSeed(conversation, viewer, settings, pr.repo)
+          : requestChangesSeed(conversation, viewer);
       if (seed) setBody(seed);
     }
   };
@@ -1164,6 +1174,7 @@ function Detail({
   onPendingCommentHandled,
   assistantOpen,
   onToggleAssistant,
+  settings,
 }: {
   pr: TrackedPr;
   tab: Tab;
@@ -1172,6 +1183,7 @@ function Detail({
   onPendingCommentHandled: () => void;
   assistantOpen: boolean;
   onToggleAssistant: () => void;
+  settings: Settings | null;
 }) {
   const [highlight, setHighlight] = useState<string[]>([]);
   const [reviewBump, setReviewBump] = useState(0);
@@ -1274,7 +1286,7 @@ function Detail({
         ))}
       </div>
       <div className="actions">
-        <ReviewActions pr={pr} reviews={shownReviews} flow={flow} setFlow={setFlow} />
+        <ReviewActions pr={pr} reviews={shownReviews} flow={flow} setFlow={setFlow} settings={settings} />
         <PrControls pr={pr} closeRequested={closeRequested} flow={flow} setFlow={setFlow} />
         <span className="spacer" />
         <RefreshPrButton prId={pr.id} />
@@ -1428,11 +1440,13 @@ export function MainApp() {
   const [priorities, setPriorities] = useState<Record<string, RepoPriority>>({});
   const [authorPriorities, setAuthorPriorities] = useState<Record<string, RepoPriority>>({});
   const [watchedRepos, setWatchedRepos] = useState<string[]>([]);
+  const [settings, setSettings] = useState<Settings | null>(null);
   useEffect(() => {
     void ipc.getSettings().then((s) => {
       setPriorities(s.repoPriorities);
       setAuthorPriorities(s.authorPriorities);
       setWatchedRepos(s.watchedRepos);
+      setSettings(s);
     });
   }, [showSettings]); // re-read after the settings page closes
 
@@ -2275,6 +2289,7 @@ export function MainApp() {
             onPendingCommentHandled={() => setPendingComment(null)}
             assistantOpen={assistantOpen}
             onToggleAssistant={() => setAssistant(!assistantOpen)}
+            settings={settings}
           />
         ) : prs.length === 0 && pollStatus?.ok === false ? (
           <Onboarding onOpenSettings={() => openSettings("github")} />
@@ -2378,6 +2393,10 @@ export function MainApp() {
                         checked: watchedRepos.includes(menu.pr.repo),
                         onClick: () => void toggleWatchRepo(menu.pr.repo),
                       },
+                      {
+                        label: "Repo settings…",
+                        onClick: () => useRepoSettingsDrawerStore.getState().openFor(menu.pr.repo),
+                      },
                     ],
                   },
                 ]
@@ -2401,6 +2420,10 @@ export function MainApp() {
                         label: "Open on GitHub",
                         onClick: () => void openUrl(`https://github.com/${menu.repo}`),
                       },
+                      {
+                        label: "Repo settings…",
+                        onClick: () => useRepoSettingsDrawerStore.getState().openFor(menu.repo),
+                      },
                     ],
                   },
                 ]
@@ -2415,6 +2438,7 @@ export function MainApp() {
         />
       )}
       <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
+      <RepoSettingsDrawer />
     </div>
   );
 }

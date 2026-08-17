@@ -58,13 +58,24 @@ C4 graph rules:
 When you are done exploring, you MUST call submit_analysis exactly once with the complete result. Include EVERY field in the schema — when a list has nothing to report, pass an empty array, never omit the field. Do not produce a final text answer."#;
 
 /// Team knowledge no diff reveals, appended to every model-facing prompt.
-pub(crate) fn conventions_section(settings: &Settings) -> String {
+/// `repo_full_name` ("owner/name") pulls in that repo's specific review
+/// instructions, if any, as a distinct section from the team-wide conventions.
+pub(crate) fn conventions_section(settings: &Settings, repo_full_name: &str) -> String {
     let c = settings.review_conventions.trim();
-    if c.is_empty() {
+    let mut out = if c.is_empty() {
         String::new()
     } else {
         format!("\n\n## Team review conventions (from the reviewer's settings — treat as ground truth)\n{c}")
+    };
+    if let Some(instructions) = settings.repo_review_instructions.get(repo_full_name) {
+        let instructions = instructions.trim();
+        if !instructions.is_empty() {
+            out.push_str(&format!(
+                "\n\n## Repo-Specific Review Instructions (from the reviewer's settings for {repo_full_name} — treat as ground truth)\n{instructions}"
+            ));
+        }
     }
+    out
 }
 
 fn level_instructions(level: AnalysisLevel, focus: Option<&str>) -> String {
@@ -614,7 +625,7 @@ pub async fn run(
         devlog::warn(app, "analysis", "using CUSTOM system prompt from developer settings");
         settings.custom_system_prompt.clone()
     };
-    system_prompt.push_str(&conventions_section(settings));
+    system_prompt.push_str(&conventions_section(settings, &pr.info.repo));
 
     // Drill-downs analyze code, not system-wide architecture — the faster
     // tier fits and roughly halves per-turn latency.
@@ -1101,7 +1112,7 @@ pub async fn code_findings(
     )?;
 
     let mut system = CODE_PASS_PROMPT.to_string();
-    system.push_str(&conventions_section(settings));
+    system.push_str(&conventions_section(settings, &pr.info.repo));
 
     let mut specs = RepoTools::specs();
     specs.push((
@@ -1993,6 +2004,46 @@ mod tests {
     fn drop_spurious_closers_ignores_braces_inside_strings() {
         let s = r#"{"a":"has } and ] inside","b":[1,2]}"#;
         assert_eq!(drop_spurious_closers(s), s);
+    }
+
+    #[test]
+    fn settings_without_approve_message_fields_deserialize_with_empty_defaults() {
+        // Pre-existing settings blob, written before default_approve_message /
+        // repo_approve_messages / repo_review_instructions existed.
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let legacy = json!({
+            "watchedRepos": ["acme/widgets"],
+            "pollIntervalSecs": 45,
+            "githubGraphqlUrl": "https://api.github.com/graphql",
+            "awsProfile": "default",
+            "awsEndpointUrl": "",
+            "bedrockModelId": "some-model",
+        })
+        .to_string();
+        store.kv_set("settings", &legacy).unwrap();
+
+        let settings = store.settings().unwrap();
+        assert_eq!(settings.default_approve_message, "");
+        assert!(settings.repo_approve_messages.is_empty());
+        assert!(settings.repo_review_instructions.is_empty());
+    }
+
+    #[test]
+    fn conventions_section_appends_repo_specific_instructions_only_for_matching_repo() {
+        let mut settings = Settings::default();
+        settings
+            .repo_review_instructions
+            .insert("acme/widgets".to_string(), "Always check for null derefs.".to_string());
+
+        let with_match = conventions_section(&settings, "acme/widgets");
+        assert!(with_match.contains("Repo-Specific Review Instructions"));
+        assert!(with_match.contains("Always check for null derefs."));
+
+        let without_match = conventions_section(&settings, "acme/other-repo");
+        assert!(!without_match.contains("Repo-Specific Review Instructions"));
+
+        let no_instructions_at_all = conventions_section(&Settings::default(), "acme/widgets");
+        assert!(no_instructions_at_all.is_empty());
     }
 }
 
