@@ -10,6 +10,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { tip } from "../components/Tooltip";
+import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { events, ipc } from "../lib/ipc";
@@ -479,6 +480,19 @@ function GeneralPane({ settings, save }: PaneProps) {
       </Field>
 
       <Field
+        label="Default approve message"
+        hint="Seeds the approve-review composer when a repo has no override of its own (set per-repo from that repo's Configure… panel)."
+      >
+        <textarea
+          className="globs-editor"
+          spellCheck={false}
+          placeholder="Approving — nothing blocking from me."
+          defaultValue={settings.defaultApproveMessage ?? ""}
+          onBlur={(e) => void save({ defaultApproveMessage: e.target.value.trim() || null })}
+        />
+      </Field>
+
+      <Field
         label="Code findings pass"
         hint="After the architecture analysis, a second pass over the critical/important files hunts consequence-bearing defects and hand-rolled duplicates of existing code. Runs on the drill-down model."
       >
@@ -919,6 +933,7 @@ function ReposPane({
   const [draft, setDraft] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [configureRepo, setConfigureRepo] = useState<string | null>(null);
 
   const activeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1041,15 +1056,12 @@ function ReposPane({
                   <Toggle checked={row.watched} onChange={(v) => toggleWatched(row.repo, v)} />
                 </td>
                 <td>
-                  <select
-                    value={row.priority}
-                    onChange={(e) => setPriority(row.repo, e.target.value as RepoPriority)}
-                  >
-                    <option value="high">high</option>
-                    <option value="normal">normal</option>
-                    <option value="low">low</option>
-                    <option value="ignored">ignored</option>
-                  </select>
+                  <button className="action-btn" onClick={() => setConfigureRepo(row.repo)}>
+                    Configure…
+                  </button>
+                  {row.priority !== "normal" && (
+                    <span className={`prio-tag ${row.priority}`}>{row.priority}</span>
+                  )}
                 </td>
                 <td className="col-center">
                   {(row.watched || row.priority !== "normal") && (
@@ -1067,6 +1079,16 @@ function ReposPane({
           </tbody>
         </table>
       )}
+
+      <RepoSettingsDrawer
+        repo={configureRepo}
+        open={configureRepo != null}
+        settings={settings}
+        priority={configureRepo ? (settings.repoPriorities[configureRepo] ?? "normal") : "normal"}
+        onClose={() => setConfigureRepo(null)}
+        onSettingsSaved={(patch) => void save(patch)}
+        onPriorityChanged={(p) => configureRepo && setPriority(configureRepo, p)}
+      />
     </section>
   );
 }

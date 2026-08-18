@@ -67,6 +67,19 @@ pub(crate) fn conventions_section(settings: &Settings) -> String {
     }
 }
 
+/// Team knowledge specific to one repo, appended alongside the (org-wide)
+/// conventions section. `None` when the repo has no instructions set —
+/// callers only push a section when this is `Some`, so an empty-string entry
+/// left over in a persisted settings blob is treated as unset rather than
+/// emitting a blank heading.
+pub(crate) fn repo_instructions_section(settings: &Settings, repo: &str) -> Option<String> {
+    let text = settings.repo_review_instructions.get(repo)?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(format!("\n\n## Repo-specific review instructions\n{text}"))
+}
+
 fn level_instructions(level: AnalysisLevel, focus: Option<&str>) -> String {
     match level {
         AnalysisLevel::Context => "Requested C4 level: CONTEXT + CONTAINER. Show the system in its environment (people, external systems) and the affected containers. One container per deployable or distinct-technology unit: a web app and its BFF/API layer are SEPARATE containers even when they live in one repo or directory — never merge different tech stacks into one container node. This is the default view — keep it at architecture altitude.".into(),
@@ -615,6 +628,9 @@ pub async fn run(
         settings.custom_system_prompt.clone()
     };
     system_prompt.push_str(&conventions_section(settings));
+    if let Some(section) = repo_instructions_section(settings, &pr.info.repo) {
+        system_prompt.push_str(&section);
+    }
 
     // Drill-downs analyze code, not system-wide architecture — the faster
     // tier fits and roughly halves per-turn latency.
@@ -1102,6 +1118,9 @@ pub async fn code_findings(
 
     let mut system = CODE_PASS_PROMPT.to_string();
     system.push_str(&conventions_section(settings));
+    if let Some(section) = repo_instructions_section(settings, &pr.info.repo) {
+        system.push_str(&section);
+    }
 
     let mut specs = RepoTools::specs();
     specs.push((

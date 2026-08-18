@@ -95,4 +95,20 @@ codeMaxOutputTokens: number,
  * than we'd display — a shorter feed is easier to reach the bottom of
  * and keeps the per-org database small.
  */
-calloutFeedLimit: number, };
+calloutFeedLimit: number,
+/**
+ * Default text seeding the approve-review composer, used when a repo has
+ * no override in `repo_approve_messages`. Unset falls back to the
+ * hardcoded "Approving — nothing blocking from me."
+ */
+defaultApproveMessage: string | null,
+/**
+ * "owner/name" → approve message override, takes precedence over
+ * `default_approve_message`.
+ */
+repoApproveMessages: { [key in string]: string },
+/**
+ * "owner/name" → team knowledge specific to that repo, appended to the
+ * analysis/code-pass/chat prompts alongside the global review conventions.
+ */
+repoReviewInstructions: { [key in string]: string }, };
