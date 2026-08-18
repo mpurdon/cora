@@ -362,6 +362,19 @@ pub struct Settings {
     #[serde(default = "default_callout_feed_limit")]
     #[ts(type = "number")]
     pub callout_feed_limit: u64,
+    /// Default text seeding the approve-review composer, used when a repo has
+    /// no override in `repo_approve_messages`. Unset falls back to the
+    /// hardcoded "Approving — nothing blocking from me."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_approve_message: Option<String>,
+    /// "owner/name" → approve message override, takes precedence over
+    /// `default_approve_message`.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub repo_approve_messages: std::collections::HashMap<String, String>,
+    /// "owner/name" → team knowledge specific to that repo, appended to the
+    /// analysis/code-pass/chat prompts alongside the global review conventions.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub repo_review_instructions: std::collections::HashMap<String, String>,
 }
 
 fn default_callout_feed_limit() -> u64 {
@@ -485,6 +498,9 @@ impl Default for Settings {
             arch_max_output_tokens: default_arch_max_tokens(),
             code_max_output_tokens: default_code_max_tokens(),
             callout_feed_limit: default_callout_feed_limit(),
+            default_approve_message: None,
+            repo_approve_messages: std::collections::HashMap::new(),
+            repo_review_instructions: std::collections::HashMap::new(),
         }
     }
 }

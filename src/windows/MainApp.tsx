@@ -31,6 +31,8 @@ import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
+import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
+import type { Settings } from "../bindings/Settings";
 import {
   IconChat,
   IconClipboard,
@@ -45,6 +47,7 @@ import { flagRank, FLAG_LABEL } from "../lib/flags";
 import { usePersisted, usePersistedFlag } from "../lib/persisted";
 import {
   approveSeed,
+  defaultApproveMessage,
   findingSeed,
   isFindingCommented,
   requestChangesSeed,
@@ -78,7 +81,6 @@ type SortMode = "activity" | "attention" | "repo";
 
 const PRIORITY_WEIGHT: Record<RepoPriority, number> = { high: 0, normal: 1, low: 2, ignored: 3 };
 const PR_PRIORITY_WEIGHT: Record<PrPriority, number> = { high: 0, normal: 1, low: 2 };
-const PRIORITY_CYCLE: RepoPriority[] = ["normal", "high", "low", "ignored"];
 
 /** "Ready for my review" requirements, one per lamp. */
 type ReadyFilters = { ciPass: boolean; reviewNeeded: boolean; noConflicts: boolean };
@@ -285,6 +287,9 @@ function ReviewActions({
   const [error, setError] = useState<string | null>(null);
   // The live conversation drives the auto-seeded request-changes summary.
   const [conversation, setConversation] = useState<PrConversation | null>(null);
+  // The org/repo default approve message — the fallback approveSeed uses
+  // when there's nothing from the conversation to point to.
+  const [settings, setSettings] = useState<Settings | null>(null);
 
   // A half-written review for one PR must not follow you to the next.
   useEffect(() => {
@@ -302,6 +307,10 @@ function ReviewActions({
   }, [pr.id]);
 
   useEffect(() => {
+    void ipc.getSettings().then(setSettings).catch(() => setSettings(null));
+  }, [pr.repo]);
+
+  useEffect(() => {
     if (flow !== "review") setMode(null);
   }, [flow]);
   const openMode = (m: "approve" | "request-changes") => {
@@ -314,7 +323,9 @@ function ReviewActions({
     if (!body.trim()) {
       const viewer = reviews?.viewerLogin ?? "";
       const seed =
-        m === "approve" ? approveSeed(conversation, viewer) : requestChangesSeed(conversation, viewer);
+        m === "approve"
+          ? approveSeed(conversation, viewer, defaultApproveMessage(settings, pr.repo))
+          : requestChangesSeed(conversation, viewer);
       if (seed) setBody(seed);
     }
   };
@@ -1476,6 +1487,11 @@ export function MainApp() {
   >(null);
   const [showHotkeys, setShowHotkeys] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [drawerRepo, setDrawerRepo] = useState<string | null>(null);
+  const [drawerSettings, setDrawerSettings] = useState<Settings | null>(null);
+  useEffect(() => {
+    if (drawerRepo) void ipc.getSettings().then(setDrawerSettings).catch(() => setDrawerSettings(null));
+  }, [drawerRepo]);
   const [pendingComment, setPendingComment] = useState<string | null>(null);
   const [bucketFilter, setBucketFilter] = useState<ActionKind | null>(null);
   const [orgState, setOrgState] = useState<import("../bindings/OrgState").OrgState | null>(null);
@@ -2138,21 +2154,16 @@ export function MainApp() {
                       <span className="spacer" />
                       {groupMode === "repo" && (
                         <span
-                          className="flag-btn"
+                          className="icon-btn"
                           role="button"
-                          data-tip={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
-                          aria-label={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
+                          data-tip="Repo settings…"
+                          aria-label="Repo settings…"
                           onClick={(e) => {
                             e.stopPropagation();
-                            const next =
-                              PRIORITY_CYCLE[
-                                (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
-                                  PRIORITY_CYCLE.length
-                              ];
-                            void setRepoPriority(group.key, next);
+                            setDrawerRepo(group.key);
                           }}
                         >
-                          ⚑
+                          ⚙
                         </span>
                       )}
                       {unreadSum > 0 && (
@@ -2383,15 +2394,11 @@ export function MainApp() {
                 ]
               : [
                   {
-                    title: `${menu.repo} priority`,
-                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
-                      label: p,
-                      checked: prioOf(menu.repo) === p,
-                      onClick: () => void setRepoPriority(menu.repo, p),
-                    })),
-                  },
-                  {
                     items: [
+                      {
+                        label: "Repo settings…",
+                        onClick: () => setDrawerRepo(menu.repo),
+                      },
                       {
                         label: "Watch all PRs in this repo",
                         checked: watchedRepos.includes(menu.repo),
@@ -2415,6 +2422,18 @@ export function MainApp() {
         />
       )}
       <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
+      <RepoSettingsDrawer
+        repo={drawerRepo}
+        open={drawerRepo != null}
+        settings={drawerSettings}
+        priority={drawerRepo ? prioOf(drawerRepo) : "normal"}
+        onClose={() => setDrawerRepo(null)}
+        onSettingsSaved={(patch) => setDrawerSettings((prev) => (prev ? { ...prev, ...patch } : prev))}
+        onPriorityChanged={(p) => {
+          if (!drawerRepo) return;
+          setPriorities((prev) => ({ ...prev, [drawerRepo]: p }));
+        }}
+      />
     </div>
   );
 }

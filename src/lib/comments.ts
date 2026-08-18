@@ -1,6 +1,21 @@
 import { fileName } from "./fileTree";
 import type { CodeFinding } from "../bindings/CodeFinding";
 import type { PrConversation } from "../bindings/PrConversation";
+import type { Settings } from "../bindings/Settings";
+
+const STOCK_APPROVE_MESSAGE = "Approving — nothing blocking from me.";
+
+/** The plain sign-off `approveSeed` falls back to when your review settled
+ *  nothing to point at: this repo's override, else the org-wide default,
+ *  else the stock line. Also what the repo settings drawer previews as its
+ *  placeholder when a field is unset. */
+export function defaultApproveMessage(settings: Settings | null, repo: string): string {
+  const override = settings?.repoApproveMessages?.[repo];
+  if (override) return override;
+  const fallback = settings?.defaultApproveMessage;
+  if (fallback) return fallback;
+  return STOCK_APPROVE_MESSAGE;
+}
 
 /** First sentence of a possibly-paragraph-length text. Findings from older
  *  analyses can be essays; the PR author gets the headline while the full
@@ -126,7 +141,11 @@ export function isNonBlockingComment(body: string): boolean {
  *  started, so it never claims credit for someone else's review, and falls
  *  back to a plain sign-off when you left nothing to point at (an approval
  *  always says something — silence reads as a rubber stamp). */
-export function approveSeed(conversation: PrConversation | null, viewer: string): string {
+export function approveSeed(
+  conversation: PrConversation | null,
+  viewer: string,
+  fallback: string = STOCK_APPROVE_MESSAGE,
+): string {
   const addressed = new Map<string, number>();
   const notes = new Map<string, number>();
   for (const t of conversation?.threads ?? []) {
@@ -162,6 +181,6 @@ export function approveSeed(conversation: PrConversation | null, viewer: string)
       }`,
     );
   }
-  if (clauses.length === 0) return "Approving — nothing blocking from me.";
+  if (clauses.length === 0) return fallback;
   return `Approving — ${clauses.join("; ")}.`;
 }

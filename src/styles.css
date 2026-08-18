@@ -823,23 +823,6 @@ body.col-resizing * {
   border: 1px solid var(--line);
 }
 
-.flag-btn {
-  color: var(--idle);
-  font-size: 11px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  opacity: 0;
-}
-
-.group-header:hover .flag-btn {
-  opacity: 1;
-}
-
-.flag-btn:hover {
-  color: var(--text);
-  background: var(--ink-0);
-}
-
 .prio-select {
   display: inline-flex;
   align-items: center;
