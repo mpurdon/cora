@@ -8,7 +8,7 @@ async fn main() {
     let profile = "claude-code-bedrock";
     let region = "us-east-2";
     let model =
-        "arn:aws:bedrock:us-east-2:000000000000:application-inference-profile/abcd1234efgh";
+        "us.anthropic.claude-opus-5";
 
     let loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .profile_name(profile)

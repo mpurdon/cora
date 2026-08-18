@@ -441,9 +441,11 @@ fn default_true() -> bool {
 }
 
 fn default_drill_model() -> String {
-    // The user's Sonnet inference profile — drill-downs analyze code, not
-    // system-wide architecture, so the faster tier fits.
-    "arn:aws:bedrock:us-east-2:000000000000:application-inference-profile/ijkl5678mnop".into()
+    // Drill-downs analyze code, not system-wide architecture, so the faster
+    // tier fits. A cross-region inference profile id, like the main model:
+    // it works for any account with Bedrock access, where an application
+    // inference profile ARN would only work for the account that owns it.
+    "us.anthropic.claude-sonnet-5".into()
 }
 
 fn default_pr_priority() -> PrPriority {
@@ -468,9 +470,7 @@ impl Default for Settings {
             aws_profile: "claude-code-bedrock".into(),
             aws_region: default_aws_region(),
             aws_endpoint_url: String::new(),
-            bedrock_model_id:
-                "arn:aws:bedrock:us-east-2:000000000000:application-inference-profile/abcd1234efgh"
-                    .into(),
+            bedrock_model_id: "us.anthropic.claude-opus-5".into(),
             bedrock_drill_model_id: default_drill_model(),
             model_prices: Vec::new(),
             developer_mode: false,

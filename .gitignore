@@ -3,3 +3,9 @@ dist
 src-tauri/target
 src-tauri/gen/schemas
 .DS_Store
+
+# Local secrets and build noise — never in a public repo
+.env
+.env.*
+*.log
+src-tauri/gen

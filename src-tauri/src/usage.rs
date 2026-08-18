@@ -302,7 +302,7 @@ pub struct ModelRate {
     pub output_per_mtok: f64,
     pub source: RateSource,
     /// What we identified it as and from where, when we had to look it up:
-    /// "Claude Opus · ~/.claude/trajector-settings.json".
+    /// "Claude Opus · ~/.claude/settings.json".
     pub note: String,
 }
 

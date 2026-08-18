@@ -4,6 +4,6 @@ import type { RateSource } from "./RateSource";
 export type ModelRate = { model: string, inputPerMtok: number, outputPerMtok: number, source: RateSource, 
 /**
  * What we identified it as and from where, when we had to look it up:
- * "Claude Opus · ~/.claude/trajector-settings.json".
+ * "Claude Opus · ~/.claude/settings.json".
  */
 note: string, };

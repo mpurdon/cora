@@ -72,3 +72,7 @@ src-tauri/src/       Rust backend
 ## Configuration
 
 Everything lives in Settings (gear icon): GitHub token, AWS profile/region/model, analysis passes, noise-file globs, notification and callout behavior. State is stored in the app data directory (`~/Library/Application Support/com.mp.cora/` on macOS).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
