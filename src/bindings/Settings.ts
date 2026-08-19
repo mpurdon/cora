@@ -2,79 +2,79 @@
 import type { ModelPrice } from "./ModelPrice";
 import type { RepoPriority } from "./RepoPriority";
 
-export type Settings = { watchedRepos: Array<string>, 
+export type Settings = { watchedRepos: Array<string>,
 /**
  * "owner/name" → priority; absent means Normal.
  */
-repoPriorities: { [key in string]: RepoPriority }, 
+repoPriorities: { [key in string]: RepoPriority },
 /**
  * PR author login → priority; absent means Normal. Ignored authors'
  * PRs (dependabot…) never enter tracking; High authors' activity is
  * always important.
  */
-authorPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, 
+authorPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number,
 /**
  * Show the always-on-top callout window when the app starts.
  */
-showCalloutOnStartup: boolean, githubGraphqlUrl: string, awsProfile: string, 
+showCalloutOnStartup: boolean, githubGraphqlUrl: string, awsProfile: string,
 /**
  * Explicit region override; some SSO profiles don't carry one.
  */
-awsRegion: string, awsEndpointUrl: string, 
+awsRegion: string, awsEndpointUrl: string,
 /**
  * Bedrock model id — accepts application-inference-profile ARNs.
  */
-bedrockModelId: string, 
+bedrockModelId: string,
 /**
  * Cheaper/faster model for Component/Code drill-downs; empty = use main.
  */
-bedrockDrillModelId: string, 
+bedrockDrillModelId: string,
 /**
  * Dollars per million tokens, per model id, for the usage dashboard.
  * Inference-profile ARNs name no model, so their rate can only be told
  * to us; recognizable Claude ids fall back to published rates.
  */
-modelPrices: Array<ModelPrice>, 
+modelPrices: Array<ModelPrice>,
 /**
  * Unlocks the Developer settings pane (logs, prompt editing, internals).
  */
-developerMode: boolean, 
+developerMode: boolean,
 /**
  * Overrides the analysis system prompt when non-empty.
  */
-customSystemPrompt: string, 
+customSystemPrompt: string,
 /**
  * Glob patterns for insignificant files — auto-skipped in diff review.
  */
-reviewIgnoreGlobs: Array<string>, 
+reviewIgnoreGlobs: Array<string>,
 /**
  * Pre-warm: auto-run L1 analysis when a PR enters the review queue.
  */
-autoAnalyzeReviewRequests: boolean, 
+autoAnalyzeReviewRequests: boolean,
 /**
  * Spend guard for pre-warming.
  */
-autoAnalyzeDailyCap: number, 
+autoAnalyzeDailyCap: number,
 /**
  * Team knowledge no diff reveals — design-system packages, shared
  * libraries, review standards. Injected into analysis and chat prompts.
  */
-reviewConventions: string, 
+reviewConventions: string,
 /**
  * Second analysis stage: line-anchored defect + reuse findings over the
  * review plan's critical/important files.
  */
-codeFindingsPass: boolean, 
+codeFindingsPass: boolean,
 /**
  * PRs with no activity inside this window are hidden from the list and
  * excluded from search discovery. 0 disables the filter.
  */
-prMaxAgeDays: number, 
+prMaxAgeDays: number,
 /**
  * Poll cadence when this org is NOT the active one in the org selector
  * — background awareness at a gentler rate than the active org.
  */
-backgroundPollSecs: number, 
+backgroundPollSecs: number,
 /**
  * Output-token ceiling for the architecture pass (graph + assessment +
  * Well-Architected pillar findings, all in one submission — the large
@@ -82,17 +82,31 @@ backgroundPollSecs: number,
  * generates that many. Raise only as high as your configured Bedrock
  * model's hard output cap allows — set above it and Bedrock errors.
  */
-archMaxOutputTokens: number, 
+archMaxOutputTokens: number,
 /**
  * Output-token ceiling for the code-level findings pass. Its submission
  * is small; the budget is mostly the model's reasoning before it calls
  * submit_code_findings. Same caveat as the architecture ceiling.
  */
-codeMaxOutputTokens: number, 
+codeMaxOutputTokens: number,
 /**
  * How many activity rows the callout keeps and shows. Drives both the
  * on-insert retention trim and the feed query, so we never store more
  * than we'd display — a shorter feed is easier to reach the bottom of
  * and keeps the per-org database small.
  */
-calloutFeedLimit: number, };
+calloutFeedLimit: number,
+/**
+ * Approve-review body seeded when nothing else summarizes the review.
+ * Empty/absent falls back to the hardcoded default.
+ */
+defaultApproveMessage: string | null,
+/**
+ * "owner/name" → approve message, overriding `default_approve_message`.
+ */
+repoApproveMessages: { [key in string]: string },
+/**
+ * "owner/name" → extra review instructions appended to analysis and
+ * chat prompts for that repo only.
+ */
+repoReviewInstructions: { [key in string]: string }, };

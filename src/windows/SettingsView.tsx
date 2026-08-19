@@ -26,6 +26,7 @@ import {
   type Theme,
 } from "../lib/theme";
 import { usePrStore } from "../state/prStore";
+import { useSettingsStore } from "../state/settingsStore";
 import { DeveloperPane } from "./DeveloperPane";
 
 export type SettingsPane =
@@ -286,6 +287,11 @@ export function SettingsView({
     setSettings(next);
     try {
       await ipc.setSettings(next);
+      // This pane keeps its own copy of settings rather than reading the
+      // shared store, so a save here has to push into the store directly —
+      // otherwise the rest of the (same) window, e.g. the approve-message
+      // seed, would only see it after a window-focus refresh.
+      useSettingsStore.setState({ settings: next, loaded: true });
       setError(null);
       setSaved(true);
       setTimeout(() => setSaved(false), 1800);
@@ -475,6 +481,28 @@ function GeneralPane({ settings, save }: PaneProps) {
           placeholder="Design-system packages, shared libraries, review standards…"
           defaultValue={settings.reviewConventions}
           onBlur={(e) => void save({ reviewConventions: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Default approve message"
+        hint={
+          <>
+            Seeds the approve box when nothing else summarizes the review (no addressed comments
+            or notes to point at). Leave blank to use the built-in default: "Approving — nothing
+            blocking from me." A repo's own override (set from its gear icon in the repo list)
+            wins over this.
+          </>
+        }
+      >
+        <textarea
+          className="globs-editor"
+          spellCheck={false}
+          placeholder="Approving — nothing blocking from me."
+          defaultValue={settings.defaultApproveMessage ?? ""}
+          onBlur={(e) =>
+            void save({ defaultApproveMessage: e.target.value.trim() ? e.target.value : null })
+          }
         />
       </Field>
 
@@ -967,13 +995,6 @@ function ReposPane({
     });
   };
 
-  const setPriority = (repo: string, priority: RepoPriority) => {
-    const next = { ...settings.repoPriorities };
-    if (priority === "normal") delete next[repo];
-    else next[repo] = priority;
-    void save({ repoPriorities: next });
-  };
-
   const removeRepo = (repo: string) => {
     const priorities = { ...settings.repoPriorities };
     delete priorities[repo];
@@ -988,8 +1009,8 @@ function ReposPane({
       <h2>Repositories</h2>
       <p className="pane-intro">
         <strong>Watched</strong> repos have every open PR tracked, not just the ones involving
-        you. <strong>Priority</strong> weights a repo anywhere it appears — high floats to the
-        top, low sinks, ignored is never tracked at all.
+        you. For priority, an approve-message override, or review instructions, click the ⚙
+        gear icon on a repo group in the main window's repo list.
       </p>
 
       <div className="repo-add">
@@ -1028,7 +1049,6 @@ function ReposPane({
               <th>Repository</th>
               <th className="col-center">Open PRs</th>
               <th className="col-center">Watch all PRs</th>
-              <th>Priority</th>
               <th />
             </tr>
           </thead>
@@ -1039,17 +1059,6 @@ function ReposPane({
                 <td className="col-center mono">{row.activePrs > 0 ? row.activePrs : "—"}</td>
                 <td className="col-center">
                   <Toggle checked={row.watched} onChange={(v) => toggleWatched(row.repo, v)} />
-                </td>
-                <td>
-                  <select
-                    value={row.priority}
-                    onChange={(e) => setPriority(row.repo, e.target.value as RepoPriority)}
-                  >
-                    <option value="high">high</option>
-                    <option value="normal">normal</option>
-                    <option value="low">low</option>
-                    <option value="ignored">ignored</option>
-                  </select>
                 </td>
                 <td className="col-center">
                   {(row.watched || row.priority !== "normal") && (

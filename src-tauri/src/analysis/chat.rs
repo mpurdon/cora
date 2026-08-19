@@ -201,6 +201,15 @@ fn build_system(
             text: conventions,
         });
     }
+    let repo_instructions =
+        crate::analysis::engine::repo_instructions_section(settings, &pr.info.repo);
+    if !repo_instructions.is_empty() {
+        parts.push(SystemPart {
+            label: "Repository instructions",
+            origin: "your settings",
+            text: repo_instructions,
+        });
+    }
     parts.push(SystemPart {
         label: "PR facts",
         origin: "github",
@@ -1463,5 +1472,74 @@ mod tests {
             system_stale: false,
         };
         assert_eq!(session.system(), "one\n\ntwo");
+    }
+
+    fn pr(repo: &str) -> TrackedPr {
+        TrackedPr {
+            info: crate::models::PrInfo {
+                id: "PR_1".into(),
+                number: 1,
+                title: "t".into(),
+                url: "u".into(),
+                repo: repo.into(),
+                author: "a".into(),
+                is_draft: false,
+                state: "OPEN".into(),
+                review_decision: None,
+                my_review_state: None,
+                my_reviewed_at: None,
+                my_review_rerequested: false,
+                ci_status: None,
+                mergeable: "MERGEABLE".into(),
+                additions: 1,
+                deletions: 1,
+                changed_files: 1,
+                total_comments: 0,
+                recent_comments: vec![],
+                head_sha: "abc".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                labels: vec![],
+            },
+            sources: vec![],
+            muted: false,
+            priority: crate::models::PrPriority::Normal,
+            unread: vec![],
+            first_seen: "2026-01-01T00:00:00Z".into(),
+            last_change_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn build_system_includes_repo_instructions_when_set_for_target_repo() {
+        let mut settings = Settings::default();
+        settings
+            .repo_review_instructions
+            .insert("team/core".into(), "Always check for null pointer risk.".into());
+        let parts = build_system(&pr("team/core"), None, &settings);
+        assert!(parts
+            .iter()
+            .any(|p| p.label == "Repository instructions"
+                && p.text.contains("Always check for null pointer risk.")));
+    }
+
+    #[test]
+    fn build_system_omits_repo_instructions_when_unset() {
+        let settings = Settings::default();
+        let parts = build_system(&pr("team/core"), None, &settings);
+        assert!(!parts.iter().any(|p| p.label == "Repository instructions"));
+    }
+
+    #[test]
+    fn build_system_is_byte_identical_to_current_behavior_when_repo_has_no_instructions() {
+        let mut settings = Settings::default();
+        settings
+            .repo_review_instructions
+            .insert("team/other".into(), "irrelevant to this repo".into());
+        let target = pr("team/core");
+        let with_unrelated_map = build_system(&target, None, &settings);
+        let with_empty_map = build_system(&target, None, &Settings::default());
+        let texts_a: Vec<&str> = with_unrelated_map.iter().map(|p| p.text.as_str()).collect();
+        let texts_b: Vec<&str> = with_empty_map.iter().map(|p| p.text.as_str()).collect();
+        assert_eq!(texts_a, texts_b);
     }
 }

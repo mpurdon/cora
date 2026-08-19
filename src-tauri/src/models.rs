@@ -362,6 +362,17 @@ pub struct Settings {
     #[serde(default = "default_callout_feed_limit")]
     #[ts(type = "number")]
     pub callout_feed_limit: u64,
+    /// Approve-review body seeded when nothing else summarizes the review.
+    /// Empty/absent falls back to the hardcoded default.
+    #[serde(default)]
+    pub default_approve_message: Option<String>,
+    /// "owner/name" → approve message, overriding `default_approve_message`.
+    #[serde(default)]
+    pub repo_approve_messages: std::collections::HashMap<String, String>,
+    /// "owner/name" → extra review instructions appended to analysis and
+    /// chat prompts for that repo only.
+    #[serde(default)]
+    pub repo_review_instructions: std::collections::HashMap<String, String>,
 }
 
 fn default_callout_feed_limit() -> u64 {
@@ -485,6 +496,9 @@ impl Default for Settings {
             arch_max_output_tokens: default_arch_max_tokens(),
             code_max_output_tokens: default_code_max_tokens(),
             callout_feed_limit: default_callout_feed_limit(),
+            default_approve_message: None,
+            repo_approve_messages: std::collections::HashMap::new(),
+            repo_review_instructions: std::collections::HashMap::new(),
         }
     }
 }
@@ -829,5 +843,42 @@ mod tests {
         assert!(changes.contains(&ChangeKind::CiChanged));
         assert!(changes.contains(&ChangeKind::NewCommits));
         assert_eq!(changes.len(), 3);
+    }
+
+    /// Persisted settings JSON predating the approve-message fields must still
+    /// load — no migration exists, so absence has to mean "unset", not a parse
+    /// failure that locks the user out of their own settings.
+    #[test]
+    fn settings_without_approve_message_fields_deserializes() {
+        let json = r#"{
+            "watchedRepos": [],
+            "repoPriorities": {},
+            "authorPriorities": {},
+            "pollIntervalSecs": 45,
+            "showCalloutOnStartup": true,
+            "githubGraphqlUrl": "https://api.github.com/graphql",
+            "awsProfile": "default",
+            "awsRegion": "us-east-2",
+            "awsEndpointUrl": "",
+            "bedrockModelId": "us.anthropic.claude-opus-5",
+            "bedrockDrillModelId": "us.anthropic.claude-sonnet-5",
+            "modelPrices": [],
+            "developerMode": false,
+            "customSystemPrompt": "",
+            "reviewIgnoreGlobs": [],
+            "autoAnalyzeReviewRequests": true,
+            "autoAnalyzeDailyCap": 15,
+            "reviewConventions": "",
+            "codeFindingsPass": true,
+            "prMaxAgeDays": 365,
+            "backgroundPollSecs": 300,
+            "archMaxOutputTokens": 16384,
+            "codeMaxOutputTokens": 16384,
+            "calloutFeedLimit": 150
+        }"#;
+        let settings: Settings = serde_json::from_str(json).expect("must deserialize without a migration");
+        assert_eq!(settings.default_approve_message, None);
+        assert!(settings.repo_approve_messages.is_empty());
+        assert!(settings.repo_review_instructions.is_empty());
     }
 }
