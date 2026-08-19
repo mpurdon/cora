@@ -31,6 +31,7 @@ import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
+import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import {
   IconChat,
   IconClipboard,
@@ -61,6 +62,7 @@ import {
   useReviewStore,
   withPending,
 } from "../state/reviewStore";
+import { initSettingsStore, useSettingsStore } from "../state/settingsStore";
 import { SettingsView, type SettingsPane } from "./SettingsView";
 
 /** Reason grouping: a PR appears once, under its most specific reason. */
@@ -285,6 +287,7 @@ function ReviewActions({
   const [error, setError] = useState<string | null>(null);
   // The live conversation drives the auto-seeded request-changes summary.
   const [conversation, setConversation] = useState<PrConversation | null>(null);
+  const settings = useSettingsStore((s) => s.settings);
 
   // A half-written review for one PR must not follow you to the next.
   useEffect(() => {
@@ -314,7 +317,9 @@ function ReviewActions({
     if (!body.trim()) {
       const viewer = reviews?.viewerLogin ?? "";
       const seed =
-        m === "approve" ? approveSeed(conversation, viewer) : requestChangesSeed(conversation, viewer);
+        m === "approve"
+          ? approveSeed(conversation, viewer, settings, pr.repo)
+          : requestChangesSeed(conversation, viewer);
       if (seed) setBody(seed);
     }
   };
@@ -1476,6 +1481,12 @@ export function MainApp() {
   >(null);
   const [showHotkeys, setShowHotkeys] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [repoSettingsTarget, setRepoSettingsTarget] = useState<string | null>(null);
+  const [repoSettingsOpen, setRepoSettingsOpen] = useState(false);
+  const openRepoSettings = (repo: string) => {
+    setRepoSettingsTarget(repo);
+    setRepoSettingsOpen(true);
+  };
   const [pendingComment, setPendingComment] = useState<string | null>(null);
   const [bucketFilter, setBucketFilter] = useState<ActionKind | null>(null);
   const [orgState, setOrgState] = useState<import("../bindings/OrgState").OrgState | null>(null);
@@ -1524,6 +1535,7 @@ export function MainApp() {
   useEffect(() => {
     void init();
     initReviewStore();
+    initSettingsStore();
     refreshOrgState();
     // Org switch (from any window): hard-reset every PR-keyed cache so no
     // data from the previous org lingers, then refetch as the new org.
@@ -1534,6 +1546,7 @@ export function MainApp() {
       useChatStore.getState().reset();
       useDiffStore.getState().reset();
       void init();
+      void useSettingsStore.getState().refresh();
       refreshOrgState();
     });
     const openKinds: import("../bindings/ChangeKind").ChangeKind[] = [
@@ -2137,23 +2150,37 @@ export function MainApp() {
                       )}
                       <span className="spacer" />
                       {groupMode === "repo" && (
-                        <span
-                          className="flag-btn"
-                          role="button"
-                          data-tip={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
-                          aria-label={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const next =
-                              PRIORITY_CYCLE[
-                                (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
-                                  PRIORITY_CYCLE.length
-                              ];
-                            void setRepoPriority(group.key, next);
-                          }}
-                        >
-                          ⚑
-                        </span>
+                        <>
+                          <span
+                            className="flag-btn"
+                            role="button"
+                            data-tip={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
+                            aria-label={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const next =
+                                PRIORITY_CYCLE[
+                                  (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
+                                    PRIORITY_CYCLE.length
+                                ];
+                              void setRepoPriority(group.key, next);
+                            }}
+                          >
+                            ⚑
+                          </span>
+                          <span
+                            className="flag-btn"
+                            role="button"
+                            data-tip="Repo settings — priority, approve message, review instructions"
+                            aria-label="Repo settings"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openRepoSettings(group.key);
+                            }}
+                          >
+                            ⚙
+                          </span>
+                        </>
                       )}
                       {unreadSum > 0 && (
                         <span
@@ -2401,6 +2428,10 @@ export function MainApp() {
                         label: "Open on GitHub",
                         onClick: () => void openUrl(`https://github.com/${menu.repo}`),
                       },
+                      {
+                        label: "Repo settings…",
+                        onClick: () => openRepoSettings(menu.repo),
+                      },
                     ],
                   },
                 ]
@@ -2415,6 +2446,13 @@ export function MainApp() {
         />
       )}
       <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
+      <RepoSettingsDrawer
+        open={repoSettingsOpen}
+        repo={repoSettingsTarget}
+        priority={repoSettingsTarget ? prioOf(repoSettingsTarget) : "normal"}
+        onSetPriority={(repo, p) => void setRepoPriority(repo, p)}
+        onClose={() => setRepoSettingsOpen(false)}
+      />
     </div>
   );
 }

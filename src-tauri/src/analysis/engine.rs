@@ -67,6 +67,22 @@ pub(crate) fn conventions_section(settings: &Settings) -> String {
     }
 }
 
+/// Per-repo review instructions, appended to every model-facing prompt for
+/// that repo only — narrower than `conventions_section`, which applies
+/// everywhere.
+pub(crate) fn repo_instructions_section(settings: &Settings, repo: &str) -> String {
+    let i = settings
+        .repo_review_instructions
+        .get(repo)
+        .map(|s| s.trim())
+        .unwrap_or_default();
+    if i.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n## Repository-specific review instructions for {repo} (from the reviewer's settings — treat as ground truth)\n{i}")
+    }
+}
+
 fn level_instructions(level: AnalysisLevel, focus: Option<&str>) -> String {
     match level {
         AnalysisLevel::Context => "Requested C4 level: CONTEXT + CONTAINER. Show the system in its environment (people, external systems) and the affected containers. One container per deployable or distinct-technology unit: a web app and its BFF/API layer are SEPARATE containers even when they live in one repo or directory — never merge different tech stacks into one container node. This is the default view — keep it at architecture altitude.".into(),
@@ -615,6 +631,7 @@ pub async fn run(
         settings.custom_system_prompt.clone()
     };
     system_prompt.push_str(&conventions_section(settings));
+    system_prompt.push_str(&repo_instructions_section(settings, &pr.info.repo));
 
     // Drill-downs analyze code, not system-wide architecture — the faster
     // tier fits and roughly halves per-turn latency.
@@ -1102,6 +1119,7 @@ pub async fn code_findings(
 
     let mut system = CODE_PASS_PROMPT.to_string();
     system.push_str(&conventions_section(settings));
+    system.push_str(&repo_instructions_section(settings, &pr.info.repo));
 
     let mut specs = RepoTools::specs();
     specs.push((
@@ -1987,6 +2005,26 @@ mod tests {
         assert_eq!(assessment.summary, "Frontend-only change.");
         assert_eq!(assessment.fit, crate::analysis::types::FitVerdict::Fits);
         assert_eq!(assessment.review_plan.len(), 1);
+    }
+
+    #[test]
+    fn repo_instructions_appear_only_for_the_target_repo() {
+        let mut settings = Settings::default();
+        settings
+            .repo_review_instructions
+            .insert("team/core".into(), "Prefer composition over inheritance.".into());
+        let section = repo_instructions_section(&settings, "team/core");
+        assert!(section.contains("Prefer composition over inheritance."));
+        assert!(section.contains("team/core"));
+
+        // A sibling repo with no entry gets nothing, even though the map is non-empty.
+        assert_eq!(repo_instructions_section(&settings, "team/other"), "");
+    }
+
+    #[test]
+    fn repo_instructions_are_byte_identical_to_current_behavior_when_unset() {
+        let settings = Settings::default();
+        assert_eq!(repo_instructions_section(&settings, "team/core"), "");
     }
 
     #[test]

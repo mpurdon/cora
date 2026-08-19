@@ -1,6 +1,23 @@
 import { fileName } from "./fileTree";
 import type { CodeFinding } from "../bindings/CodeFinding";
 import type { PrConversation } from "../bindings/PrConversation";
+import type { Settings } from "../bindings/Settings";
+
+/** The approval sign-off when there's nothing else to summarize and no
+ *  default has been configured — the last rung of the precedence ladder. */
+export const HARDCODED_APPROVE_FALLBACK = "Approving — nothing blocking from me.";
+
+/** Approve-message precedence: a repo's own override, then the settings-wide
+ *  default, then the hardcoded fallback. Blank entries at any level don't
+ *  count — an override cleared back to empty text falls through, same as no
+ *  override at all. */
+export function resolveApproveMessage(settings: Settings | null, repo: string): string {
+  const repoOverride = settings?.repoApproveMessages[repo]?.trim();
+  if (repoOverride) return repoOverride;
+  const globalDefault = settings?.defaultApproveMessage?.trim();
+  if (globalDefault) return globalDefault;
+  return HARDCODED_APPROVE_FALLBACK;
+}
 
 /** First sentence of a possibly-paragraph-length text. Findings from older
  *  analyses can be essays; the PR author gets the headline while the full
@@ -126,7 +143,12 @@ export function isNonBlockingComment(body: string): boolean {
  *  started, so it never claims credit for someone else's review, and falls
  *  back to a plain sign-off when you left nothing to point at (an approval
  *  always says something — silence reads as a rubber stamp). */
-export function approveSeed(conversation: PrConversation | null, viewer: string): string {
+export function approveSeed(
+  conversation: PrConversation | null,
+  viewer: string,
+  settings: Settings | null,
+  repo: string,
+): string {
   const addressed = new Map<string, number>();
   const notes = new Map<string, number>();
   for (const t of conversation?.threads ?? []) {
@@ -162,6 +184,6 @@ export function approveSeed(conversation: PrConversation | null, viewer: string)
       }`,
     );
   }
-  if (clauses.length === 0) return "Approving — nothing blocking from me.";
+  if (clauses.length === 0) return resolveApproveMessage(settings, repo);
   return `Approving — ${clauses.join("; ")}.`;
 }

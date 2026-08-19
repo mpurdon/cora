@@ -3674,6 +3674,14 @@ button.diff-file-header:hover {
   font-size: 11px;
 }
 
+.repo-settings-drawer .field {
+  margin-bottom: 24px;
+}
+
+.repo-settings-reset {
+  margin-top: 8px;
+}
+
 .trace-step {
   display: flex;
   gap: 10px;
