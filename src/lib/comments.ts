@@ -1,6 +1,7 @@
 import { fileName } from "./fileTree";
 import type { CodeFinding } from "../bindings/CodeFinding";
 import type { PrConversation } from "../bindings/PrConversation";
+import type { Settings } from "../bindings/Settings";
 
 /** First sentence of a possibly-paragraph-length text. Findings from older
  *  analyses can be essays; the PR author gets the headline while the full
@@ -164,4 +165,20 @@ export function approveSeed(conversation: PrConversation | null, viewer: string)
   }
   if (clauses.length === 0) return "Approving — nothing blocking from me.";
   return `Approving — ${clauses.join("; ")}.`;
+}
+
+/** Approve-composer seed, in precedence order: this repo's override, else
+ *  the global default, else the dynamic per-PR summary. The one place that
+ *  chain lives — callers should use this instead of `approveSeed` directly. */
+export function resolveApproveMessage(
+  repo: string,
+  settings: Settings,
+  conversation: PrConversation | null,
+  viewer: string,
+): string {
+  const repoOverride = settings.repoApproveMessages[repo]?.trim();
+  if (repoOverride) return repoOverride;
+  const globalDefault = settings.defaultApproveMessage.trim();
+  if (globalDefault) return globalDefault;
+  return approveSeed(conversation, viewer);
 }

@@ -31,6 +31,8 @@ import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
+import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
+import type { Settings } from "../bindings/Settings";
 import {
   IconChat,
   IconClipboard,
@@ -44,10 +46,10 @@ import { events, ipc, onFocusPr } from "../lib/ipc";
 import { flagRank, FLAG_LABEL } from "../lib/flags";
 import { usePersisted, usePersistedFlag } from "../lib/persisted";
 import {
-  approveSeed,
   findingSeed,
   isFindingCommented,
   requestChangesSeed,
+  resolveApproveMessage,
   viewerComments,
 } from "../lib/comments";
 import { setThemeOrg } from "../lib/theme";
@@ -311,12 +313,23 @@ function ReviewActions({
     // conversation — a pointer to your comments when requesting changes, what
     // your review settled when approving. Only when the box is still empty:
     // never clobber text you've typed.
-    if (!body.trim()) {
-      const viewer = reviews?.viewerLogin ?? "";
-      const seed =
-        m === "approve" ? approveSeed(conversation, viewer) : requestChangesSeed(conversation, viewer);
+    if (body.trim()) return;
+    const viewer = reviews?.viewerLogin ?? "";
+    if (m === "request-changes") {
+      const seed = requestChangesSeed(conversation, viewer);
       if (seed) setBody(seed);
+      return;
     }
+    // Approve's seed can be a repo/global override, so it's resolved against
+    // freshly-fetched settings rather than a value threaded through props —
+    // that way an edit made in the repo settings drawer takes effect on the
+    // very next Approve click, no refetch wiring needed.
+    void ipc.getSettings().then((settings) => {
+      const seed = resolveApproveMessage(pr.repo, settings, conversation, viewer);
+      // Re-check at resolve time: the user may have started typing while
+      // this was in flight.
+      if (seed) setBody((current) => (current.trim() ? current : seed));
+    });
   };
 
   if (isFinished(pr)) return null;
@@ -1476,6 +1489,19 @@ export function MainApp() {
   >(null);
   const [showHotkeys, setShowHotkeys] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [repoSettingsRepo, setRepoSettingsRepo] = useState<string | null>(null);
+  const [repoSettings, setRepoSettings] = useState<Settings | null>(null);
+  useEffect(() => {
+    if (!repoSettingsRepo) return;
+    setRepoSettings(null);
+    void ipc.getSettings().then(setRepoSettings);
+  }, [repoSettingsRepo]);
+  const saveRepoSettings = async (patch: Partial<Settings>) => {
+    if (!repoSettings) return;
+    const next = { ...repoSettings, ...patch };
+    setRepoSettings(next);
+    await ipc.setSettings(next);
+  };
   const [pendingComment, setPendingComment] = useState<string | null>(null);
   const [bucketFilter, setBucketFilter] = useState<ActionKind | null>(null);
   const [orgState, setOrgState] = useState<import("../bindings/OrgState").OrgState | null>(null);
@@ -2401,12 +2427,25 @@ export function MainApp() {
                         label: "Open on GitHub",
                         onClick: () => void openUrl(`https://github.com/${menu.repo}`),
                       },
+                      {
+                        label: "Repo settings…",
+                        onClick: () => setRepoSettingsRepo(menu.repo),
+                      },
                     ],
                   },
                 ]
           }
         />
       )}
+      <RepoSettingsDrawer
+        repo={repoSettingsRepo ?? ""}
+        open={!!repoSettingsRepo}
+        onClose={() => setRepoSettingsRepo(null)}
+        settings={repoSettings}
+        onSaveSettings={saveRepoSettings}
+        priority={repoSettingsRepo ? prioOf(repoSettingsRepo) : "normal"}
+        onSetPriority={(p) => repoSettingsRepo && void setRepoPriority(repoSettingsRepo, p)}
+      />
 
       {showHotkeys && (
         <HotkeysHelp
