@@ -332,6 +332,19 @@ pub struct Settings {
     /// libraries, review standards. Injected into analysis and chat prompts.
     #[serde(default)]
     pub review_conventions: String,
+    /// Default text to seed the approve composer with; empty falls back to
+    /// the dynamic per-PR summary. Overridable per repo below.
+    #[serde(default)]
+    pub default_approve_message: String,
+    /// "owner/name" → approve-message override, takes precedence over
+    /// `default_approve_message`.
+    #[serde(default)]
+    pub repo_approve_messages: std::collections::HashMap<String, String>,
+    /// "owner/name" → extra review instructions appended after
+    /// `review_conventions` for that repo's prompts. Applies to future
+    /// analysis/chat runs only, not retroactively.
+    #[serde(default)]
+    pub repo_review_instructions: std::collections::HashMap<String, String>,
     /// Second analysis stage: line-anchored defect + reuse findings over the
     /// review plan's critical/important files.
     #[serde(default = "default_true")]
@@ -484,6 +497,9 @@ impl Default for Settings {
             auto_analyze_review_requests: true,
             auto_analyze_daily_cap: default_auto_analyze_cap(),
             review_conventions: String::new(),
+            default_approve_message: String::new(),
+            repo_approve_messages: std::collections::HashMap::new(),
+            repo_review_instructions: std::collections::HashMap::new(),
             code_findings_pass: true,
             pr_max_age_days: default_pr_max_age_days(),
             background_poll_secs: default_background_poll_secs(),

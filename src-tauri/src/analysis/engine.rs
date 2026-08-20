@@ -83,13 +83,24 @@ C4 graph rules:
 When you are done exploring, you MUST call submit_analysis exactly once with the complete result. Include EVERY field in the schema — when a list has nothing to report, pass an empty array, never omit the field. Do not produce a final text answer."#;
 
 /// Team knowledge no diff reveals, appended to every model-facing prompt.
-pub(crate) fn conventions_section(settings: &Settings) -> String {
+/// `repo` ("owner/name") adds that repo's review instructions, when set,
+/// after the global conventions block.
+pub(crate) fn conventions_section(settings: &Settings, repo: &str) -> String {
     let c = settings.review_conventions.trim();
-    if c.is_empty() {
+    let mut section = if c.is_empty() {
         String::new()
     } else {
         format!("\n\n## Team review conventions (from the reviewer's settings — treat as ground truth)\n{c}")
+    };
+    if let Some(extra) = settings.repo_review_instructions.get(repo) {
+        let extra = extra.trim();
+        if !extra.is_empty() {
+            section.push_str(&format!(
+                "\n\n## Review instructions for {repo} (from the reviewer's settings — treat as ground truth)\n{extra}"
+            ));
+        }
     }
+    section
 }
 
 fn level_instructions(level: AnalysisLevel, focus: Option<&str>) -> String {
@@ -639,7 +650,7 @@ pub async fn run(
         devlog::warn(app, "analysis", "using CUSTOM system prompt from developer settings");
         settings.custom_system_prompt.clone()
     };
-    system_prompt.push_str(&conventions_section(settings));
+    system_prompt.push_str(&conventions_section(settings, &pr.info.repo));
 
     // Drill-downs analyze code, not system-wide architecture — the faster
     // tier fits and roughly halves per-turn latency.
@@ -1128,7 +1139,7 @@ pub async fn code_findings(
     )?;
 
     let mut system = CODE_PASS_PROMPT.to_string();
-    system.push_str(&conventions_section(settings));
+    system.push_str(&conventions_section(settings, &pr.info.repo));
 
     let mut specs = RepoTools::specs();
     specs.push((

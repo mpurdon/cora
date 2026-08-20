@@ -61,6 +61,22 @@ autoAnalyzeDailyCap: number,
  */
 reviewConventions: string, 
 /**
+ * Default text to seed the approve composer with; empty falls back to
+ * the dynamic per-PR summary. Overridable per repo below.
+ */
+defaultApproveMessage: string, 
+/**
+ * "owner/name" → approve-message override, takes precedence over
+ * `default_approve_message`.
+ */
+repoApproveMessages: { [key in string]: string }, 
+/**
+ * "owner/name" → extra review instructions appended after
+ * `review_conventions` for that repo's prompts. Applies to future
+ * analysis/chat runs only, not retroactively.
+ */
+repoReviewInstructions: { [key in string]: string }, 
+/**
  * Second analysis stage: line-anchored defect + reuse findings over the
  * review plan's critical/important files.
  */
