@@ -19,6 +19,31 @@ use crate::error::{AppError, AppResult};
 use crate::models::{Settings, TrackedPr};
 
 const MAX_TURNS: usize = 30;
+/// How much of a PR description to carry into the kickoff. Long enough for a
+/// real write-up, short enough that a template full of checkboxes and pasted
+/// logs can't crowd out the diff.
+const MAX_BODY_CHARS: usize = 4000;
+
+/// The author's own account of the change: what it is for, what was left out
+/// on purpose, which ticket it answers to. The diff cannot show intent, and
+/// re-deriving it burns turns on a question already answered. Capped because a
+/// description is unbounded — templates, checklists and pasted logs routinely
+/// run longer than the code — and truncation is announced, so the model goes
+/// and reads the rest rather than assuming it has all of it.
+fn body_section(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() {
+        return String::new();
+    }
+    if body.chars().count() > MAX_BODY_CHARS {
+        let head: String = body.chars().take(MAX_BODY_CHARS).collect();
+        format!(
+            "\n\n## PR description (author's own words, truncated — full text at the PR URL)\n{head}\n[…truncated]"
+        )
+    } else {
+        format!("\n\n## PR description (author's own words)\n{body}")
+    }
+}
 // The per-pass output-token ceilings live in Settings (arch_max_output_tokens,
 // code_max_output_tokens) so they can be tuned to the configured model's cap.
 // Submissions carry a whole graph + assessment in one tool call, so the
@@ -665,6 +690,8 @@ pub async fn run(
         s
     };
 
+    let body_section = body_section(&pr.info.body);
+
     // Drills anchor on the diff — hand it over in the kickoff so the run
     // opens with the changed code in hand instead of spending turns
     // re-fetching what the context pass already read. (The context run keeps
@@ -707,7 +734,7 @@ pub async fn run(
         "The diff is included below — read only the extra repository context you still need, then submit."
     };
     let kickoff = format!(
-        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}\n\n{}{}{}\n\n{closing}{kickoff_diff}",
+        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}\n\n{}{}{}\n\n{closing}{kickoff_diff}",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -1111,11 +1138,12 @@ pub async fn code_findings(
     ));
 
     let kickoff = format!(
-        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}\n\nFocus on these files from the review plan (critical/important):\n{}\n\nStart with get_pr_diff.",
+        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}{}\n\nFocus on these files from the review plan (critical/important):\n{}\n\nStart with get_pr_diff.",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
         pr.info.head_sha,
+        body_section(&pr.info.body),
         focus_paths
             .iter()
             .map(|p| format!("- {p}"))
@@ -1783,6 +1811,23 @@ fn build_result(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_description_reaches_the_model_whole_or_visibly_cut() {
+        assert_eq!(body_section("   \n  "), "", "an empty description adds no section");
+
+        let short = body_section("Switches billing to the new provider. Flag stays off until Q3.");
+        assert!(short.contains("Flag stays off until Q3."));
+        assert!(!short.contains("truncated"));
+
+        // Over the cap the model must be told it is holding a fragment —
+        // silently cutting it invites conclusions drawn from half a sentence.
+        let long = body_section(&"x".repeat(MAX_BODY_CHARS + 1));
+        assert!(long.contains("truncated"));
+        assert!(long.contains("[…truncated]"));
+        assert!(long.contains(&"x".repeat(MAX_BODY_CHARS)));
+        assert!(!long.contains(&"x".repeat(MAX_BODY_CHARS + 1)));
+    }
     use super::*;
 
     #[test]

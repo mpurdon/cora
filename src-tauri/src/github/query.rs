@@ -10,6 +10,7 @@ use crate::health::{Admission, EndpointHealth};
 pub const PR_FRAGMENT: &str = "
 fragment PrFields on PullRequest {
   id number title url isDraft state updatedAt
+  body
   repository { nameWithOwner }
   author { login }
   reviewDecision

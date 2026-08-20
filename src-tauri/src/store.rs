@@ -928,6 +928,7 @@ mod tests {
             id: id.into(),
             number: 1,
             title: "t".into(),
+            body: String::new(),
             url: "u".into(),
             repo: "o/r".into(),
             author: "a".into(),

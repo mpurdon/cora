@@ -16,7 +16,13 @@ unread: Array<ChangeKind>, firstSeen: string, lastChangeAt: string,
 /**
  * GraphQL node id — stable across renames/pushes.
  */
-id: string, number: number, title: string, url: string, 
+id: string, number: number, title: string, 
+/**
+ * The PR description. Authored intent the diff can't show — what this is
+ * for, what was deliberately left out, which ticket it answers to — so
+ * the analysis reasons from the author's stated goal, not just the code.
+ */
+body: string, url: string, 
 /**
  * "owner/name"
  */

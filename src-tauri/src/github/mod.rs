@@ -15,6 +15,7 @@ pub fn parse_pr(v: &Value) -> Option<PrInfo> {
         id,
         number: v.get("number")?.as_i64()?,
         title: v.get("title")?.as_str()?.to_string(),
+        body: v.get("body").and_then(Value::as_str).unwrap_or("").to_string(),
         url: v.get("url")?.as_str()?.to_string(),
         repo,
         author: v

@@ -31,6 +31,11 @@ pub struct PrInfo {
     #[ts(type = "number")]
     pub number: i64,
     pub title: String,
+    /// The PR description. Authored intent the diff can't show — what this is
+    /// for, what was deliberately left out, which ticket it answers to — so
+    /// the analysis reasons from the author's stated goal, not just the code.
+    #[serde(default)]
+    pub body: String,
     pub url: String,
     /// "owner/name"
     pub repo: String,
@@ -790,6 +795,7 @@ mod tests {
             id: "PR_1".into(),
             number: 1,
             title: "t".into(),
+            body: String::new(),
             url: "u".into(),
             repo: "o/r".into(),
             author: "a".into(),

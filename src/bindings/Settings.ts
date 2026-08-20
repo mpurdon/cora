@@ -90,9 +90,9 @@ archMaxOutputTokens: number,
  */
 codeMaxOutputTokens: number, 
 /**
- * How many activity rows the callout keeps and shows. Drives both the
- * on-insert retention trim and the feed query, so we never store more
- * than we'd display — a shorter feed is easier to reach the bottom of
- * and keeps the per-org database small.
+ * How many activity rows the callout shows — a query cap only. Older
+ * rows stay in the local database (kept up to a high runaway guard, not
+ * deleted), so shrinking the feed just makes it easier to reach the
+ * bottom; it never throws away history.
  */
 calloutFeedLimit: number, };
