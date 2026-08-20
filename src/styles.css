@@ -823,6 +823,13 @@ body.col-resizing * {
   border: 1px solid var(--line);
 }
 
+.repo-overrides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
 .flag-btn {
   color: var(--idle);
   font-size: 11px;
