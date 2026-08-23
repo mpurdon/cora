@@ -139,8 +139,7 @@ export function RepoSettingsDrawer({
                 />
                 <div className="field-hint">
                   Appended after your team review conventions for this repo's analysis and chat
-                  prompts. Applies to future review runs only — it won't change analyses already
-                  run.
+                  prompts.
                 </div>
               </div>
             </>
