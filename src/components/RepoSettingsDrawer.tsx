@@ -106,8 +106,7 @@ export function RepoSettingsDrawer({
                   ))}
                 </select>
                 <div className="field-hint">
-                  Weights this repo everywhere it appears — high floats to the top, low sinks,
-                  ignored is never tracked at all.
+                  Weights this repo everywhere it appears.
                 </div>
               </div>
 
