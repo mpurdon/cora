@@ -10,6 +10,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { tip } from "../components/Tooltip";
+import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { events, ipc } from "../lib/ipc";
@@ -266,15 +267,17 @@ export function SettingsView({
   const [activeOrg, setActiveOrg] = useState<string | null>(null);
   const prs = usePrStore((s) => s.prs);
 
+  const refreshSettings = () => void ipc.getSettings().then(setSettings);
+
   useEffect(() => {
-    void ipc.getSettings().then(setSettings);
+    refreshSettings();
     void ipc.getOrgState().then((s) => setActiveOrg(s.active)).catch(() => {});
   }, []);
 
   useEffect(() => {
     const unlisten = listen(events.orgChanged, () => {
       void ipc.getOrgState().then(s => setActiveOrg(s.active)).catch(() => {});
-      void ipc.getSettings().then(setSettings);
+      refreshSettings();
     });
     return () => { void unlisten.then(fn => fn()); };
   }, []);
@@ -360,7 +363,12 @@ export function SettingsView({
           {pane === "github" && <GitHubPane settings={settings} save={save} />}
           {pane === "orgs" && <OrgsPane />}
           {pane === "repos" && (
-            <ReposPane settings={settings} save={save} activeRepos={prs.map((p) => p.repo)} />
+            <ReposPane
+              settings={settings}
+              save={save}
+              refreshSettings={refreshSettings}
+              activeRepos={prs.map((p) => p.repo)}
+            />
           )}
           {pane === "users" && (
             <UsersPane settings={settings} save={save} activeAuthors={prs.map((p) => p.author)} />
@@ -475,6 +483,19 @@ function GeneralPane({ settings, save }: PaneProps) {
           placeholder="Design-system packages, shared libraries, review standards…"
           defaultValue={settings.reviewConventions}
           onBlur={(e) => void save({ reviewConventions: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Default approve message"
+        hint="Seeds the approve composer for every PR. Leave empty to fall back to a dynamic one-sentence summary of your review comments. Overridable per repo from the Repositories pane."
+      >
+        <textarea
+          className="globs-editor"
+          spellCheck={false}
+          placeholder="Approving — nothing blocking from me."
+          defaultValue={settings.defaultApproveMessage}
+          onBlur={(e) => void save({ defaultApproveMessage: e.target.value })}
         />
       </Field>
 
@@ -914,11 +935,13 @@ function AppearancePane() {
 function ReposPane({
   settings,
   save,
+  refreshSettings,
   activeRepos,
-}: PaneProps & { activeRepos: string[] }) {
+}: PaneProps & { refreshSettings: () => void; activeRepos: string[] }) {
   const [draft, setDraft] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [settingsRepo, setSettingsRepo] = useState<string | null>(null);
 
   const activeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -941,6 +964,8 @@ function ReposPane({
         watched: settings.watchedRepos.includes(repo),
         priority: settings.repoPriorities[repo] ?? ("normal" as RepoPriority),
         activePrs: activeCounts.get(repo) ?? 0,
+        hasApproveOverride: !!settings.repoApproveMessages[repo]?.trim(),
+        hasInstructions: !!settings.repoReviewInstructions[repo]?.trim(),
       }));
   }, [settings, activeCounts, filter]);
 
@@ -967,11 +992,11 @@ function ReposPane({
     });
   };
 
+  // Goes through the dedicated command (not a generic settings patch) so the
+  // change lands in HistoryDrawer's audited repo-priority trail, same as the
+  // group-header priority control in the main PR list.
   const setPriority = (repo: string, priority: RepoPriority) => {
-    const next = { ...settings.repoPriorities };
-    if (priority === "normal") delete next[repo];
-    else next[repo] = priority;
-    void save({ repoPriorities: next });
+    void ipc.setRepoPriority(repo, priority).then(refreshSettings);
   };
 
   const removeRepo = (repo: string) => {
@@ -1028,7 +1053,7 @@ function ReposPane({
               <th>Repository</th>
               <th className="col-center">Open PRs</th>
               <th className="col-center">Watch all PRs</th>
-              <th>Priority</th>
+              <th>Overrides</th>
               <th />
             </tr>
           </thead>
@@ -1041,32 +1066,52 @@ function ReposPane({
                   <Toggle checked={row.watched} onChange={(v) => toggleWatched(row.repo, v)} />
                 </td>
                 <td>
-                  <select
-                    value={row.priority}
-                    onChange={(e) => setPriority(row.repo, e.target.value as RepoPriority)}
-                  >
-                    <option value="high">high</option>
-                    <option value="normal">normal</option>
-                    <option value="low">low</option>
-                    <option value="ignored">ignored</option>
-                  </select>
+                  <div className="repo-overrides">
+                    {row.priority !== "normal" && (
+                      <span className={`prio-tag ${row.priority}`}>{row.priority}</span>
+                    )}
+                    {row.hasApproveOverride && (
+                      <span className="thread-tag" {...tip("Custom approve message")}>
+                        approve
+                      </span>
+                    )}
+                    {row.hasInstructions && (
+                      <span className="thread-tag" {...tip("Custom review instructions")}>
+                        instructions
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="col-center">
-                  {(row.watched || row.priority !== "normal") && (
-                    <button
-                      className="icon-btn"
-                      {...tip("Unwatch and clear priority")}
-                      onClick={() => removeRepo(row.repo)}
-                    >
-                      ✕
+                  <div className="row">
+                    <button className="action-btn" onClick={() => setSettingsRepo(row.repo)}>
+                      Settings…
                     </button>
-                  )}
+                    {(row.watched || row.priority !== "normal") && (
+                      <button
+                        className="icon-btn"
+                        {...tip("Unwatch and clear priority")}
+                        onClick={() => removeRepo(row.repo)}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
+      <RepoSettingsDrawer
+        repo={settingsRepo ?? ""}
+        open={!!settingsRepo}
+        onClose={() => setSettingsRepo(null)}
+        settings={settings}
+        onSaveSettings={save}
+        priority={settingsRepo ? (settings.repoPriorities[settingsRepo] ?? "normal") : "normal"}
+        onSetPriority={(p) => settingsRepo && setPriority(settingsRepo, p)}
+      />
     </section>
   );
 }
