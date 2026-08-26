@@ -75,7 +75,7 @@ const REASONS: { key: PrSource; label: string }[] = [
   { key: "watched-repo", label: "Watched repos" },
 ];
 
-type GroupMode = "org" | "repo" | "reason" | "type";
+type GroupMode = "org" | "repo" | "reason" | "type" | "author";
 type SortMode = "activity" | "attention" | "repo";
 
 const PRIORITY_WEIGHT: Record<RepoPriority, number> = { high: 0, normal: 1, low: 2, ignored: 3 };
@@ -1695,7 +1695,9 @@ export function MainApp() {
             ? [pr.repo, shortRepo(pr.repo)]
             : groupMode === "type"
               ? [parseTitle(pr.title).type, parseTitle(pr.title).type]
-              : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
+              : groupMode === "author"
+                ? [pr.author, pr.author]
+                : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
       const bucket = byKey.get(key) ?? { label, prs: [] };
       bucket.prs.push(pr);
       byKey.set(key, bucket);
@@ -2022,6 +2024,7 @@ export function MainApp() {
                 <option value="repo">by repo</option>
                 <option value="type">by type</option>
                 <option value="reason">by reason</option>
+                <option value="author">Author</option>
               </select>
               <select
                 data-tip="Sort by"
@@ -2141,6 +2144,8 @@ export function MainApp() {
                 const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
                 const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
                 const repoPrio = groupMode === "repo" ? prioOf(group.key) : null;
+                const authorPrio = groupMode === "author" ? authorPrioOf(group.key) : null;
+                const groupPrio = repoPrio ?? authorPrio;
                 return (
                   <div key={group.key} className="rail-group">
                     <button
@@ -2158,8 +2163,8 @@ export function MainApp() {
                       <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
                       <span className="eyebrow">{group.label}</span>
                       <span className="group-count">{group.prs.length}</span>
-                      {repoPrio && repoPrio !== "normal" && (
-                        <span className={`prio-tag ${repoPrio}`}>{repoPrio}</span>
+                      {groupPrio && groupPrio !== "normal" && (
+                        <span className={`prio-tag ${groupPrio}`}>{groupPrio}</span>
                       )}
                       <span className="spacer" />
                       {groupMode === "repo" && (
