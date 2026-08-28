@@ -2024,7 +2024,7 @@ export function MainApp() {
                 <option value="repo">by repo</option>
                 <option value="type">by type</option>
                 <option value="reason">by reason</option>
-                <option value="author">Author</option>
+                <option value="author">by author</option>
               </select>
               <select
                 data-tip="Sort by"
