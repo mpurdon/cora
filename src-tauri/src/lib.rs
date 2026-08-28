@@ -1,4 +1,5 @@
 mod activity;
+mod build_info;
 mod analysis;
 mod commands;
 mod devlog;
@@ -244,6 +245,7 @@ pub fn run() {
             commands::clear_dev_logs,
             commands::get_default_system_prompt,
             commands::get_app_internals,
+            commands::get_build_info,
             commands::poll_now,
             commands::show_main_window,
             commands::show_main_filtered,

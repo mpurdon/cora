@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { BuildInfo } from "../bindings/BuildInfo";
 import type { ActivityItem } from "../bindings/ActivityItem";
 import type { AnalysisError } from "../bindings/AnalysisError";
 import type { ChatEvent } from "../bindings/ChatEvent";
@@ -129,6 +130,7 @@ export const ipc = {
   getDevLogs: () => invoke<LogEntry[]>("get_dev_logs"),
   clearDevLogs: () => invoke<void>("clear_dev_logs"),
   getDefaultSystemPrompt: () => invoke<string>("get_default_system_prompt"),
+  getBuildInfo: () => invoke<BuildInfo>("get_build_info"),
   getAppInternals: () =>
     invoke<{ dataDir: string; dbPath: string; version: string }>("get_app_internals"),
   showMainWindow: (prId?: string) => invoke<void>("show_main_window", { prId: prId ?? null }),
