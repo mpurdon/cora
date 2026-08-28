@@ -6,13 +6,28 @@ use std::process::Command;
 /// what actually identify a build. All of it is optional: a source tarball
 /// with no .git still compiles, it just reports "unknown".
 fn main() {
-    // Rebuild when the checkout moves. HEAD covers commits and branch
-    // switches; the packed refs file covers the branch tip advancing. Only
-    // declared when present — naming a path that doesn't exist makes cargo
-    // rebuild on every invocation.
-    for p in ["../.git/HEAD", "../.git/packed-refs"] {
-        if std::path::Path::new(p).exists() {
-            println!("cargo:rerun-if-changed={p}");
+    // Rebuild when the checkout moves. Three different files move for three
+    // different reasons and missing any one of them stamps a stale commit —
+    // which is the exact failure this whole feature exists to prevent:
+    //   .git/HEAD             switching branches
+    //   .git/refs/heads/<b>   committing on the branch you're already on
+    //   .git/packed-refs      the same, once git has packed the loose refs
+    // Only declared when present: naming a path that doesn't exist makes
+    // cargo re-run this script on every single build.
+    let git_dir = std::path::Path::new("../.git");
+    let mut watch: Vec<std::path::PathBuf> =
+        vec![git_dir.join("HEAD"), git_dir.join("packed-refs")];
+    // Resolve HEAD to the ref it points at, so a commit on the current branch
+    // invalidates the stamp. Detached HEAD has no ref file — HEAD itself
+    // holds the sha and is already watched.
+    if let Ok(head) = std::fs::read_to_string(git_dir.join("HEAD")) {
+        if let Some(r) = head.trim().strip_prefix("ref: ") {
+            watch.push(git_dir.join(r));
+        }
+    }
+    for p in watch {
+        if p.exists() {
+            println!("cargo:rerun-if-changed={}", p.display());
         }
     }
 
