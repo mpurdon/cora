@@ -1924,6 +1924,14 @@ pub fn get_default_system_prompt() -> String {
     crate::analysis::engine::SYSTEM_PROMPT.to_string()
 }
 
+/// Which build is running — version, dev vs release, branch and commit.
+/// Cheap and constant, so the Settings footer can show it without gating it
+/// behind Developer mode the way the rest of the internals are.
+#[tauri::command]
+pub fn get_build_info() -> crate::build_info::BuildInfo {
+    crate::build_info::BuildInfo::current()
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInternals {

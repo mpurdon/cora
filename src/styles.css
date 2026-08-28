@@ -4084,6 +4084,24 @@ button.diff-file-header:hover {
   padding: 0 10px 10px;
 }
 
+/* Build stamp at the foot of the settings nav. Quiet by default — it is
+   reference, not status — but a dirty tree gets the warning colour, because
+   "the commit doesn't match what's running" is worth noticing. */
+.build-stamp {
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  padding: 0 2px 6px;
+  overflow-wrap: anywhere;
+  cursor: default;
+  user-select: text;
+}
+
+.build-stamp.dirty {
+  color: var(--warn);
+}
+
 .settings-nav-item {
   display: flex;
   align-items: center;

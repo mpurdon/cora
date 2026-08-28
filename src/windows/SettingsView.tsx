@@ -28,6 +28,7 @@ import {
 } from "../lib/theme";
 import { usePrStore } from "../state/prStore";
 import { DeveloperPane } from "./DeveloperPane";
+import type { BuildInfo } from "../bindings/BuildInfo";
 
 export type SettingsPane =
   | "general"
@@ -329,6 +330,7 @@ export function SettingsView({
           </button>
         ))}
         <div className="settings-nav-footer">
+          <BuildStamp />
           {saved && <span className="save-note">saved</span>}
           {error && <span className="settings-error">{error}</span>}
           <button className="action-btn" onClick={onClose}>
@@ -380,6 +382,35 @@ export function SettingsView({
         </div>
       )}
     </div>
+  );
+}
+
+/** Which build is running, at the foot of the settings nav. Deliberately
+ *  outside the Developer pane: "am I running what I just built?" is a
+ *  question you ask before you'd think to turn developer mode on, and the
+ *  version alone can't answer it — CORA has been 0.1.0 since the scaffold. */
+function BuildStamp() {
+  const [info, setInfo] = useState<BuildInfo | null>(null);
+  useEffect(() => {
+    void ipc.getBuildInfo().then(setInfo).catch(() => {});
+  }, []);
+  if (!info) return null;
+  const built = new Date(info.builtAt);
+  const tip = [
+    `Version ${info.version}`,
+    info.profile === "dev"
+      ? "Dev build — frontend served by the Vite dev server"
+      : "Release build — bundled frontend",
+    `Branch ${info.branch} at commit ${info.commit}`,
+    info.dirty
+      ? "Tracked files were modified when this was built, so the commit is the base, not the exact source"
+      : "Built from a clean tree",
+    `Built ${built.toLocaleString()}`,
+  ].join("\n");
+  return (
+    <span className={`build-stamp mono${info.dirty ? " dirty" : ""}`} data-tip={tip}>
+      {info.label}
+    </span>
   );
 }
 

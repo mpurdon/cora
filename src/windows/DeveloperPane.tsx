@@ -1,3 +1,4 @@
+import type { BuildInfo } from "../bindings/BuildInfo";
 import { useEffect, useRef, useState } from "react";
 import type { LogEntry } from "../bindings/LogEntry";
 import type { LogLevel } from "../bindings/LogLevel";
@@ -203,9 +204,11 @@ function InternalsView({ settings }: { settings: Settings }) {
     dbPath: string;
     version: string;
   } | null>(null);
+  const [build, setBuild] = useState<BuildInfo | null>(null);
 
   useEffect(() => {
     void ipc.getAppInternals().then(setInternals);
+    void ipc.getBuildInfo().then(setBuild).catch(() => {});
   }, []);
 
   return (
@@ -214,6 +217,21 @@ function InternalsView({ settings }: { settings: Settings }) {
         <dl className="internals-facts">
           <dt>Version</dt>
           <dd className="mono">{internals.version}</dd>
+          {build && (
+            <>
+              <dt>Build</dt>
+              <dd className="mono">
+                {build.profile}
+                {build.dirty ? " (dirty tree)" : ""}
+              </dd>
+              <dt>Source</dt>
+              <dd className="mono">
+                {build.branch} @ {build.commit}
+              </dd>
+              <dt>Built</dt>
+              <dd className="mono">{new Date(build.builtAt).toLocaleString()}</dd>
+            </>
+          )}
           <dt>Data directory</dt>
           <dd className="mono">{internals.dataDir}</dd>
           <dt>Database</dt>
