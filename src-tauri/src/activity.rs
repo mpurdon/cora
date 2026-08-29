@@ -34,9 +34,9 @@ pub fn record(
         return false;
     }
     let important = pr.sources.contains(&PrSource::Authored)
-        || pr.priority == crate::models::PrPriority::High
-        || settings.repo_priorities.get(&pr.info.repo) == Some(&RepoPriority::High)
-        || settings.author_priorities.get(&pr.info.author) == Some(&RepoPriority::High);
+        || pr.priority == crate::models::PrPriority::Important
+        || settings.repo_priorities.get(&pr.info.repo) == Some(&RepoPriority::Important)
+        || settings.author_priorities.get(&pr.info.author) == Some(&RepoPriority::Important);
     // A poll delta has no per-event timestamps, so impose causal order on
     // same-cycle rows: setup → work → verdicts → terminal state. Insertion
     // order is the feed's tie-breaker for identical timestamps.
@@ -150,4 +150,126 @@ pub fn record(
         let _ = store.supersede_activity(&pr.info.id, &["new"]);
     }
     wrote
+}
+
+/// Reconciling a PR's repo/author/pr priority dimensions into one verdict,
+/// and the predicates poller.rs's notification gating asks of it.
+///
+/// The three dimensions can disagree — an `Unimportant` repo hosting a
+/// `Critical` PR, say — and FR-6/FR-7 require the highest-ranked dimension
+/// to win rather than an unimportant one suppressing an otherwise-critical
+/// PR. `RepoPriority`/`PrPriority`'s declaration order is already
+/// attention-ascending (their derived `Ord` reflects it), so reconciliation
+/// is just a `max()` over the three dimensions mapped onto one shared scale.
+pub mod priority {
+    use crate::models::{PrPriority, RepoPriority};
+
+    /// The reconciled verdict for a PR, attention-ascending like the enums
+    /// it's built from.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum EffectivePriority {
+        Unimportant,
+        Someday,
+        Standard,
+        Important,
+        Critical,
+    }
+
+    impl From<RepoPriority> for EffectivePriority {
+        /// `Ignored` repos never reach this far (they're filtered out of the
+        /// tracked set upstream), but if one ever does, it carries no more
+        /// weight than `Unimportant`.
+        fn from(p: RepoPriority) -> Self {
+            match p {
+                RepoPriority::Ignored | RepoPriority::Unimportant => EffectivePriority::Unimportant,
+                RepoPriority::Someday => EffectivePriority::Someday,
+                RepoPriority::Standard => EffectivePriority::Standard,
+                RepoPriority::Important => EffectivePriority::Important,
+                RepoPriority::Critical => EffectivePriority::Critical,
+            }
+        }
+    }
+
+    impl From<PrPriority> for EffectivePriority {
+        fn from(p: PrPriority) -> Self {
+            match p {
+                PrPriority::Unimportant => EffectivePriority::Unimportant,
+                PrPriority::Someday => EffectivePriority::Someday,
+                PrPriority::Standard => EffectivePriority::Standard,
+                PrPriority::Important => EffectivePriority::Important,
+                PrPriority::Critical => EffectivePriority::Critical,
+            }
+        }
+    }
+
+    /// The highest-ranked of the three dimensions wins — a single unimportant
+    /// dimension can never drag down an otherwise-critical PR.
+    pub fn effective_priority(
+        repo: RepoPriority,
+        author: RepoPriority,
+        pr: PrPriority,
+    ) -> EffectivePriority {
+        EffectivePriority::from(repo).max(EffectivePriority::from(author)).max(EffectivePriority::from(pr))
+    }
+
+    /// Worth surfacing as important attention.
+    pub fn is_important(effective: EffectivePriority) -> bool {
+        effective >= EffectivePriority::Important
+    }
+
+    /// Worth suppressing entirely. Because `effective_priority` already took
+    /// the max across dimensions, this can only be true when repo, author,
+    /// and pr were *all* `Unimportant` — a lone `Critical` dimension always
+    /// wins before suppression is even considered, satisfying FR-7's
+    /// unconditional exemption.
+    pub fn is_suppressed(effective: EffectivePriority) -> bool {
+        effective == EffectivePriority::Unimportant
+    }
+
+    /// The narrower condition that re-arms a persistent critical alert:
+    /// both the repo and the PR itself (not just the reconciled effective
+    /// priority) have to be `Critical`.
+    pub fn is_persistent_critical_condition(repo: RepoPriority, pr: PrPriority) -> bool {
+        repo == RepoPriority::Critical && pr == PrPriority::Critical
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn all_unimportant_is_suppressed() {
+            let e = effective_priority(RepoPriority::Unimportant, RepoPriority::Unimportant, PrPriority::Unimportant);
+            assert_eq!(e, EffectivePriority::Unimportant);
+            assert!(is_suppressed(e));
+            assert!(!is_important(e));
+        }
+
+        #[test]
+        fn one_critical_dimension_breaks_suppression() {
+            let e = effective_priority(RepoPriority::Unimportant, RepoPriority::Critical, PrPriority::Unimportant);
+            assert_eq!(e, EffectivePriority::Critical);
+            assert!(!is_suppressed(e));
+            assert!(is_important(e));
+        }
+
+        #[test]
+        fn effective_priority_takes_the_max() {
+            let e = effective_priority(RepoPriority::Important, RepoPriority::Unimportant, PrPriority::Important);
+            assert_eq!(e, EffectivePriority::Important);
+        }
+
+        #[test]
+        fn persistent_critical_requires_both_repo_and_pr() {
+            assert!(is_persistent_critical_condition(RepoPriority::Critical, PrPriority::Critical));
+            assert!(!is_persistent_critical_condition(RepoPriority::Critical, PrPriority::Important));
+            assert!(!is_persistent_critical_condition(RepoPriority::Important, PrPriority::Critical));
+        }
+
+        #[test]
+        fn is_important_boundary() {
+            assert!(is_important(EffectivePriority::Important));
+            assert!(!is_important(EffectivePriority::Standard));
+        }
+    }
 }

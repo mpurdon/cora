@@ -198,6 +198,7 @@ impl Store {
                 unread: serde_json::from_str(&unread).unwrap_or_default(),
                 first_seen,
                 last_change_at,
+                needs_attention: false,
             });
         }
         Ok(prs)
@@ -277,7 +278,7 @@ impl Store {
                 None => (
                     now.to_string(),
                     false,
-                    crate::models::PrPriority::Normal,
+                    crate::models::PrPriority::Standard,
                     Vec::new(),
                     Vec::new(),
                     now.to_string(),
@@ -316,6 +317,7 @@ impl Store {
             unread,
             first_seen,
             last_change_at,
+            needs_attention: false,
         })
     }
 
