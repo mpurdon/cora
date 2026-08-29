@@ -26,6 +26,11 @@ import {
   setActiveTheme,
   type Theme,
 } from "../lib/theme";
+import {
+  REPO_PRIORITY_ORDER,
+  REPO_PRIORITY_LABEL,
+  isDefaultRepoPriority,
+} from "../lib/priority";
 import { usePrStore } from "../state/prStore";
 import { DeveloperPane } from "./DeveloperPane";
 import type { BuildInfo } from "../bindings/BuildInfo";
@@ -993,7 +998,7 @@ function ReposPane({
       .map((repo) => ({
         repo,
         watched: settings.watchedRepos.includes(repo),
-        priority: settings.repoPriorities[repo] ?? ("normal" as RepoPriority),
+        priority: settings.repoPriorities[repo] ?? ("standard" as RepoPriority),
         activePrs: activeCounts.get(repo) ?? 0,
         hasApproveOverride: !!settings.repoApproveMessages[repo]?.trim(),
         hasInstructions: !!settings.repoReviewInstructions[repo]?.trim(),
@@ -1098,8 +1103,8 @@ function ReposPane({
                 </td>
                 <td>
                   <div className="repo-overrides">
-                    {row.priority !== "normal" && (
-                      <span className={`prio-tag ${row.priority}`}>{row.priority}</span>
+                    {!isDefaultRepoPriority(row.priority) && (
+                      <span className={`prio-tag ${row.priority}`}>{REPO_PRIORITY_LABEL[row.priority]}</span>
                     )}
                     {row.hasApproveOverride && (
                       <span className="thread-tag" {...tip("Custom approve message")}>
@@ -1118,7 +1123,7 @@ function ReposPane({
                     <button className="action-btn" onClick={() => setSettingsRepo(row.repo)}>
                       Settings…
                     </button>
-                    {(row.watched || row.priority !== "normal") && (
+                    {(row.watched || !isDefaultRepoPriority(row.priority)) && (
                       <button
                         className="icon-btn"
                         {...tip("Unwatch and clear priority")}
@@ -1140,7 +1145,7 @@ function ReposPane({
         onClose={() => setSettingsRepo(null)}
         settings={settings}
         onSaveSettings={save}
-        priority={settingsRepo ? (settings.repoPriorities[settingsRepo] ?? "normal") : "normal"}
+        priority={settingsRepo ? (settings.repoPriorities[settingsRepo] ?? "standard") : "standard"}
         onSetPriority={(p) => settingsRepo && setPriority(settingsRepo, p)}
       />
     </section>
@@ -1184,14 +1189,14 @@ function UsersPane({
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
       .map((author) => ({
         author,
-        priority: settings.authorPriorities[author] ?? ("normal" as RepoPriority),
+        priority: settings.authorPriorities[author] ?? ("standard" as RepoPriority),
         activePrs: activeCounts.get(author) ?? 0,
       }));
   }, [settings, activeCounts, added, filter]);
 
   const setPriority = (author: string, priority: RepoPriority) => {
     const next = { ...settings.authorPriorities };
-    if (priority === "normal") delete next[author];
+    if (priority === "standard") delete next[author];
     else next[author] = priority;
     void save({ authorPriorities: next });
   };
@@ -1265,18 +1270,19 @@ function UsersPane({
                     value={row.priority}
                     onChange={(e) => setPriority(row.author, e.target.value as RepoPriority)}
                   >
-                    <option value="high">high</option>
-                    <option value="normal">normal</option>
-                    <option value="low">low</option>
-                    <option value="ignored">ignored</option>
+                    {REPO_PRIORITY_ORDER.map((p) => (
+                      <option key={p} value={p}>
+                        {REPO_PRIORITY_LABEL[p]}
+                      </option>
+                    ))}
                   </select>
                 </td>
                 <td className="col-center">
-                  {row.priority !== "normal" && (
+                  {!isDefaultRepoPriority(row.priority) && (
                     <button
                       className="icon-btn"
                       {...tip("Clear priority")}
-                      onClick={() => setPriority(row.author, "normal")}
+                      onClick={() => setPriority(row.author, "standard")}
                     >
                       ✕
                     </button>
