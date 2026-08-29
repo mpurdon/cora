@@ -25,7 +25,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
-import type { PrPriority } from "../bindings/PrPriority";
 import type { PrReviews } from "../bindings/PrReviews";
 import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
@@ -53,6 +52,13 @@ import {
   viewerComments,
 } from "../lib/comments";
 import { setThemeOrg } from "../lib/theme";
+import {
+  REPO_PRIORITY_WEIGHT,
+  PR_PRIORITY_WEIGHT,
+  REPO_PRIORITY_ORDER,
+  PR_PRIORITY_ORDER,
+  cycleNext,
+} from "../lib/priority";
 import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
@@ -77,10 +83,6 @@ const REASONS: { key: PrSource; label: string }[] = [
 
 type GroupMode = "org" | "repo" | "reason" | "type" | "author";
 type SortMode = "activity" | "attention" | "repo";
-
-const PRIORITY_WEIGHT: Record<RepoPriority, number> = { high: 0, normal: 1, low: 2, ignored: 3 };
-const PR_PRIORITY_WEIGHT: Record<PrPriority, number> = { high: 0, normal: 1, low: 2 };
-const PRIORITY_CYCLE: RepoPriority[] = ["normal", "high", "low", "ignored"];
 
 /** "Ready for my review" requirements, one per lamp. */
 type ReadyFilters = { ciPass: boolean; reviewNeeded: boolean; noConflicts: boolean };
@@ -1676,9 +1678,9 @@ export function MainApp() {
     // draws level with work from a repo you'd otherwise reach for first. Then
     // per-PR priority, then the chosen sort.
     const pull = (pr: TrackedPr) =>
-      PRIORITY_WEIGHT.normal -
-      PRIORITY_WEIGHT[prioOf(pr.repo)] +
-      (PRIORITY_WEIGHT.normal - PRIORITY_WEIGHT[authorPrioOf(pr.author)]);
+      REPO_PRIORITY_WEIGHT.standard -
+      REPO_PRIORITY_WEIGHT[prioOf(pr.repo)] +
+      (REPO_PRIORITY_WEIGHT.standard - REPO_PRIORITY_WEIGHT[authorPrioOf(pr.author)]);
     const sorted = [...visible].sort(
       (a, b) =>
         pull(b) - pull(a) ||
@@ -2163,7 +2165,7 @@ export function MainApp() {
                       <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
                       <span className="eyebrow">{group.label}</span>
                       <span className="group-count">{group.prs.length}</span>
-                      {groupPrio && groupPrio !== "normal" && (
+                      {groupPrio && groupPrio !== "standard" && (
                         <span className={`prio-tag ${groupPrio}`}>{groupPrio}</span>
                       )}
                       <span className="spacer" />
@@ -2171,15 +2173,14 @@ export function MainApp() {
                         <span
                           className="flag-btn"
                           role="button"
-                          data-tip={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
-                          aria-label={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
+                          data-tip={`Priority: ${repoPrio}. Click to cycle through priority levels.`}
+                          aria-label={`Priority: ${repoPrio}. Click to cycle through priority levels.`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            const next =
-                              PRIORITY_CYCLE[
-                                (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
-                                  PRIORITY_CYCLE.length
-                              ];
+                            const next = cycleNext(
+                              REPO_PRIORITY_ORDER,
+                              repoPrio ?? "standard"
+                            );
                             void setRepoPriority(group.key, next);
                           }}
                         >
@@ -2348,7 +2349,7 @@ export function MainApp() {
               ? [
                   {
                     title: `PR #${menu.pr.number} priority`,
-                    items: (["high", "normal", "low"] as PrPriority[]).map((p) => ({
+                    items: [...PR_PRIORITY_ORDER].map((p) => ({
                       label: p,
                       checked: menu.pr.priority === p,
                       onClick: () => void ipc.setPrPriority(menu.pr.id, p),
@@ -2448,7 +2449,7 @@ export function MainApp() {
         onClose={() => setRepoSettingsRepo(null)}
         settings={repoSettings}
         onSaveSettings={saveRepoSettings}
-        priority={repoSettingsRepo ? prioOf(repoSettingsRepo) : "normal"}
+        priority={repoSettingsRepo ? prioOf(repoSettingsRepo) : "standard"}
         onSetPriority={(p) => repoSettingsRepo && void setRepoPriority(repoSettingsRepo, p)}
       />
 
