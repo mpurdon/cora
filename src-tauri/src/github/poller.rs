@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager};
@@ -26,6 +26,12 @@ pub struct OrgLoops(pub std::sync::Mutex<std::collections::HashSet<String>>);
 
 const MAX_BACKOFF_SECS: u64 = 300;
 const LOW_RATE_LIMIT: i64 = 100;
+/// How often a persistent-critical PR re-pings after its first alert — long
+/// enough not to spam, short enough that a stuck-critical PR keeps
+/// interrupting rather than going quiet for a work session. Not
+/// user-configurable: this path exists specifically to override suppression
+/// and mute, so it shouldn't inherit the poll interval's tuning.
+const PERSISTENT_REASSERT_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 use crate::store::MECHANICAL_KINDS;
 
@@ -155,12 +161,28 @@ fn source_for_alias(alias: &str) -> Option<PrSource> {
 /// replied, or CI went red on your own PR.
 fn notify_for_changes(
     app: &AppHandle,
+    settings: &crate::models::Settings,
     pr: &crate::models::TrackedPr,
     changes: &[ChangeKind],
     // Set when the change belongs to a background org — the notification
     // says whose news it is.
     org_prefix: Option<&str>,
 ) {
+    // A repo/author/PR combination that resolves to a suppressed effective
+    // priority stays silent — but stays in the rail; suppression is about
+    // notifications, not tracking. A `Critical` PR always escapes this (see
+    // `activity::priority::is_suppressed`), so the persistent-critical path
+    // below never needs to route around it.
+    let repo_priority =
+        settings.repo_priorities.get(&pr.info.repo).copied().unwrap_or(RepoPriority::Standard);
+    let author_priority =
+        settings.author_priorities.get(&pr.info.author).copied().unwrap_or(RepoPriority::Standard);
+    let effective =
+        crate::activity::priority::effective_priority(repo_priority, author_priority, pr.priority);
+    if crate::activity::priority::is_suppressed(effective) {
+        return;
+    }
+
     let short = format!(
         "{}{}#{}",
         org_prefix.map(|o| format!("[{o}] ")).unwrap_or_default(),
@@ -199,6 +221,70 @@ fn notify_for_changes(
             Some(crate::notify::FocusTarget { pr_id: pr.info.id.clone(), comment_id: None }),
         );
     }
+}
+
+/// Per-PR timestamp of the last persistent-critical re-alert. In-memory
+/// only: a restart just costs one extra alert on the first tick a stuck
+/// PR is seen again, which beats a whole ack-adjacent table for a value
+/// this disposable.
+static LAST_CRITICAL_REASSERT: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn last_critical_reassert() -> &'static Mutex<HashMap<String, Instant>> {
+    LAST_CRITICAL_REASSERT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The fingerprint a critical acknowledgment is pinned to: the head SHA, or
+/// `updated_at` for a PR with no commits yet. Mirrors
+/// `commands::acknowledge_critical_pr`'s choice, so a stored ack and a
+/// freshly observed PR agree on what "still the same" means.
+fn critical_fingerprint(pr: &crate::models::TrackedPr) -> &str {
+    if pr.info.head_sha.is_empty() {
+        &pr.info.updated_at
+    } else {
+        &pr.info.head_sha
+    }
+}
+
+/// A PR that's `Critical` in a `Critical` repo is exempt from suppression
+/// (handled in `notify_for_changes`) *and* keeps re-alerting on an interval
+/// until it's acknowledged or a new commit invalidates the stale ack —
+/// muting or a quiet effective priority elsewhere can't make it go away.
+/// Runs inside the existing per-PR poll loop; no separate timer. Returns
+/// whether this PR should carry `needs_attention` in this cycle's snapshot.
+fn maybe_reassert_critical(
+    app: &AppHandle,
+    store: &Arc<Store>,
+    settings: &crate::models::Settings,
+    pr: &crate::models::TrackedPr,
+    org_prefix: Option<&str>,
+) -> bool {
+    let repo_priority =
+        settings.repo_priorities.get(&pr.info.repo).copied().unwrap_or(RepoPriority::Standard);
+    if !crate::activity::priority::is_persistent_critical_condition(repo_priority, pr.priority) {
+        last_critical_reassert().lock().unwrap().remove(&pr.info.id);
+        return false;
+    }
+
+    let fingerprint = critical_fingerprint(pr);
+    let acknowledged = matches!(
+        store.get_critical_ack(&pr.info.id),
+        Ok(Some((acked_fingerprint, _))) if acked_fingerprint == fingerprint
+    );
+    if acknowledged {
+        last_critical_reassert().lock().unwrap().remove(&pr.info.id);
+        return false;
+    }
+
+    let mut last_emitted = last_critical_reassert().lock().unwrap();
+    let due = match last_emitted.get(&pr.info.id) {
+        Some(at) => at.elapsed() >= PERSISTENT_REASSERT_INTERVAL,
+        None => true,
+    };
+    if due {
+        crate::notify::emit_persistent_alert(app, pr, org_prefix);
+        last_emitted.insert(pr.info.id.clone(), Instant::now());
+    }
+    true
 }
 
 /// Kick off a background L1 analysis for a PR that just entered the review
@@ -368,6 +454,11 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
     let stale_cutoff = (settings.pr_max_age_days > 0)
         .then(|| Utc::now() - chrono::Duration::days(settings.pr_max_age_days as i64));
     let mut activity_written = false;
+    // Persistent-critical verdicts computed this cycle, applied to the
+    // snapshot below — `store.visible_prs()` never persists `needs_attention`
+    // itself, so this is the one place that can populate it without it going
+    // stale between ticks.
+    let mut needs_attention: HashMap<String, bool> = HashMap::new();
     for (id, (info, sources)) in &merged {
         // Ignored repos and ignored authors never enter (or stay in) the
         // tracked set — dependabot with author priority "ignored" vanishes.
@@ -413,6 +504,20 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
         {
             maybe_prewarm(app, &store, &settings, &stored.info, head_moved);
         }
+        // Persistent critical re-assertion runs every cycle regardless of
+        // whether anything changed, and regardless of mute — that's the
+        // point of the "unconditional exemption": a stuck-critical PR keeps
+        // demanding attention on its own schedule, not the poll's delta.
+        needs_attention.insert(
+            id.clone(),
+            maybe_reassert_critical(
+                app,
+                &store,
+                &settings,
+                &stored,
+                if active { None } else { Some(login) },
+            ),
+        );
         // Nothing moved, or you've muted this PR: no feed row, no ping, no event.
         let announce = !changes.is_empty() && !stored.muted;
         if announce {
@@ -423,7 +528,7 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
             // Awareness crosses org boundaries; data does not. Background
             // orgs still ping natively (org-prefixed), but never touch the
             // active org's UI events.
-            notify_for_changes(app, &stored, &changes, if active { None } else { Some(login) });
+            notify_for_changes(app, &settings, &stored, &changes, if active { None } else { Some(login) });
         }
         // A finished PR — closed or merged — has nothing left to review, so it
         // drops out of the rail (the "finished" chip reveals it on demand) and
@@ -458,7 +563,14 @@ async fn poll_once(app: &AppHandle, login: &str, active: bool) -> AppResult<Opti
     }
 
     if active {
-        let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
+        let mut snapshot = store.visible_prs()?;
+        for pr in &mut snapshot {
+            // Defaults to false for anything this cycle didn't touch (e.g. a
+            // PR the search query didn't return) — it self-corrects the next
+            // time that PR appears in `merged`.
+            pr.needs_attention = needs_attention.get(&pr.info.id).copied().unwrap_or(false);
+        }
+        let _ = app.emit(events::PRS_SNAPSHOT, snapshot);
     }
     crate::devlog::debug(
         app,

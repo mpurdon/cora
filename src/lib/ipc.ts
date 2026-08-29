@@ -135,6 +135,7 @@ export const ipc = {
     invoke<{ dataDir: string; dbPath: string; version: string }>("get_app_internals"),
   showMainWindow: (prId?: string) => invoke<void>("show_main_window", { prId: prId ?? null }),
   toggleCallout: () => invoke<void>("toggle_callout"),
+  acknowledgeCriticalPr: (prId: string) => invoke<void>("acknowledge_critical_pr", { prId }),
 };
 
 export function onPrsSnapshot(cb: (prs: TrackedPr[]) => void): Promise<UnlistenFn> {
