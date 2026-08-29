@@ -43,6 +43,7 @@ import {
 import { PrFilesRail } from "../components/PrFilesRail";
 import { events, ipc, onFocusPr } from "../lib/ipc";
 import { flagRank, FLAG_LABEL } from "../lib/flags";
+import { REPO_PRIORITY_WEIGHT, PR_PRIORITY_WEIGHT, REPO_PRIORITY_ORDER, PR_PRIORITY_ORDER, cycleNext } from "../lib/priority";
 import { usePersisted, usePersistedFlag } from "../lib/persisted";
 import {
   findingSeed,
@@ -87,11 +88,16 @@ const REASONS: { key: PrSource; label: string }[] = [
 type GroupMode = "org" | "repo" | "reason" | "type" | "author";
 type SortMode = "activity" | "attention" | "repo";
 
+<<<<<<< HEAD
 /** Opening a persistently-critical PR is itself the acknowledgment. */
 function openPr(pr: TrackedPr) {
   if (pr.needsAttention) void ipc.acknowledgeCriticalPr(pr.id);
   void openUrl(pr.url);
 }
+=======
+const PRIORITY_WEIGHT = REPO_PRIORITY_WEIGHT;
+const PRIORITY_CYCLE = REPO_PRIORITY_ORDER;
+>>>>>>> ghost/ghost-70bcc6
 
 /** "Ready for my review" requirements, one per lamp. */
 type ReadyFilters = { ciPass: boolean; reviewNeeded: boolean; noConflicts: boolean };
@@ -1689,9 +1695,15 @@ export function MainApp() {
     // "standard" (the scale's neutral center) so above-standard levels pull
     // positive and below-standard levels pull negative, symmetrically.
     const pull = (pr: TrackedPr) =>
+<<<<<<< HEAD
       REPO_PRIORITY_WEIGHT[prioOf(pr.repo)] -
       REPO_PRIORITY_WEIGHT.standard +
       (REPO_PRIORITY_WEIGHT[authorPrioOf(pr.author)] - REPO_PRIORITY_WEIGHT.standard);
+=======
+      PRIORITY_WEIGHT.standard -
+      PRIORITY_WEIGHT[prioOf(pr.repo)] +
+      (PRIORITY_WEIGHT.standard - PRIORITY_WEIGHT[authorPrioOf(pr.author)]);
+>>>>>>> ghost/ghost-70bcc6
     const sorted = [...visible].sort(
       (a, b) =>
         pull(b) - pull(a) ||
@@ -2177,9 +2189,13 @@ export function MainApp() {
                       <span className="eyebrow">{group.label}</span>
                       <span className="group-count">{group.prs.length}</span>
                       {groupPrio && groupPrio !== "standard" && (
+<<<<<<< HEAD
                         <span className={`prio-tag ${groupPrio}`} data-tip={REPO_PRIORITY_TOOLTIP[groupPrio]}>
                           {REPO_PRIORITY_LABEL[groupPrio]}
                         </span>
+=======
+                        <span className={`prio-tag ${groupPrio}`}>{groupPrio}</span>
+>>>>>>> ghost/ghost-70bcc6
                       )}
                       <span className="spacer" />
                       {groupMode === "repo" && (
@@ -2190,7 +2206,11 @@ export function MainApp() {
                           aria-label={`Priority: ${REPO_PRIORITY_LABEL[repoPrio ?? "standard"]}. Click to cycle.`}
                           onClick={(e) => {
                             e.stopPropagation();
+<<<<<<< HEAD
                             const next = cycleNext(REPO_PRIORITY_ORDER, repoPrio ?? "standard");
+=======
+                            const next = cycleNext(PRIORITY_CYCLE, repoPrio ?? "standard");
+>>>>>>> ghost/ghost-70bcc6
                             void setRepoPriority(group.key, next);
                           }}
                         >
@@ -2360,7 +2380,11 @@ export function MainApp() {
                   {
                     title: `PR #${menu.pr.number} priority`,
                     items: PR_PRIORITY_ORDER.map((p) => ({
+<<<<<<< HEAD
                       label: PR_PRIORITY_LABEL[p],
+=======
+                      label: p,
+>>>>>>> ghost/ghost-70bcc6
                       checked: menu.pr.priority === p,
                       onClick: () => void ipc.setPrPriority(menu.pr.id, p),
                     })),
@@ -2400,7 +2424,11 @@ export function MainApp() {
                   {
                     title: `@${menu.pr.author} priority (all their PRs)`,
                     items: REPO_PRIORITY_ORDER.map((p) => ({
+<<<<<<< HEAD
                       label: REPO_PRIORITY_LABEL[p],
+=======
+                      label: p,
+>>>>>>> ghost/ghost-70bcc6
                       checked: authorPrioOf(menu.pr.author) === p,
                       onClick: () => void setAuthorPriority(menu.pr.author, p),
                     })),
@@ -2408,7 +2436,11 @@ export function MainApp() {
                   {
                     title: `${menu.pr.repo} priority`,
                     items: REPO_PRIORITY_ORDER.map((p) => ({
+<<<<<<< HEAD
                       label: REPO_PRIORITY_LABEL[p],
+=======
+                      label: p,
+>>>>>>> ghost/ghost-70bcc6
                       checked: prioOf(menu.pr.repo) === p,
                       onClick: () => void setRepoPriority(menu.pr.repo, p),
                     })),
@@ -2427,7 +2459,11 @@ export function MainApp() {
                   {
                     title: `${menu.repo} priority`,
                     items: REPO_PRIORITY_ORDER.map((p) => ({
+<<<<<<< HEAD
                       label: REPO_PRIORITY_LABEL[p],
+=======
+                      label: p,
+>>>>>>> ghost/ghost-70bcc6
                       checked: prioOf(menu.repo) === p,
                       onClick: () => void setRepoPriority(menu.repo, p),
                     })),

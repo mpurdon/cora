@@ -2,7 +2,19 @@ import { useEffect, useState } from "react";
 import { tip } from "./Tooltip";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
+<<<<<<< HEAD
 import { REPO_PRIORITY_LABEL, REPO_PRIORITY_ORDER } from "../lib/priority";
+=======
+
+const PRIORITIES: RepoPriority[] = [
+  "ignored",
+  "unimportant",
+  "someday",
+  "standard",
+  "important",
+  "critical",
+];
+>>>>>>> ghost/ghost-70bcc6
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
