@@ -126,32 +126,53 @@ pub struct TrackedPr {
     pub unread: Vec<ChangeKind>,
     pub first_seen: String,
     pub last_change_at: String,
+    /// Persistent critical re-assertion state — set elsewhere (poll-time
+    /// re-derivation), always false at construction here.
+    #[serde(default)]
+    pub needs_attention: bool,
 }
 
-/// Per-PR attention weighting, set from the PR tree's context menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// Per-PR attention weighting, set from the PR tree's context menu. Ordered
+/// attention-ascending so derived `PartialOrd`/`Ord` compare correctly.
+/// `low`/`normal`/`high` are the pre-rename wire names, kept as aliases so
+/// old serialized strings still deserialize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "kebab-case")]
 pub enum PrPriority {
-    High,
-    Normal,
-    Low,
+    Unimportant,
+    #[serde(alias = "low")]
+    Someday,
+    #[serde(alias = "normal")]
+    Standard,
+    #[serde(alias = "high")]
+    Important,
+    Critical,
 }
+
+/// (wire key, legacy key or "" if none, variant) for every `PrPriority`
+/// variant, attention-ascending — the single source of truth `as_str`/
+/// `parse` are both table-driven over.
+const PR_PRIORITY_TABLE: &[(&str, &str, PrPriority)] = &[
+    ("unimportant", "", PrPriority::Unimportant),
+    ("someday", "low", PrPriority::Someday),
+    ("standard", "normal", PrPriority::Standard),
+    ("important", "high", PrPriority::Important),
+    ("critical", "", PrPriority::Critical),
+];
 
 impl PrPriority {
     pub fn as_str(&self) -> &'static str {
-        match self {
-            PrPriority::High => "high",
-            PrPriority::Normal => "normal",
-            PrPriority::Low => "low",
-        }
+        PR_PRIORITY_TABLE.iter().find(|(_, _, v)| v == self).map(|(s, _, _)| *s).unwrap()
     }
+    /// Accepts both current wire keys and legacy `high`/`normal`/`low`
+    /// strings, so `undo_audit` round-trips old audit-log entries losslessly.
     pub fn parse(s: &str) -> Self {
-        match s {
-            "high" => PrPriority::High,
-            "low" => PrPriority::Low,
-            _ => PrPriority::Normal,
-        }
+        PR_PRIORITY_TABLE
+            .iter()
+            .find(|(wire, legacy, _)| *wire == s || (!legacy.is_empty() && *legacy == s))
+            .map(|(_, _, v)| *v)
+            .unwrap_or(PrPriority::Standard)
     }
 }
 
@@ -253,28 +274,51 @@ pub struct PrCommit {
     pub url: String,
 }
 
-/// Per-repo attention weighting. Ignored repos are never tracked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// Per-repo attention weighting. Ignored repos are never tracked. Ordered
+/// attention-ascending so derived `PartialOrd`/`Ord` compare correctly.
+/// `low`/`normal`/`high` are the pre-rename wire names, kept as aliases so
+/// old serialized strings still deserialize; `ignored` is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "kebab-case")]
 pub enum RepoPriority {
-    High,
-    Normal,
-    Low,
     Ignored,
+    Unimportant,
+    #[serde(alias = "low")]
+    Someday,
+    #[serde(alias = "normal")]
+    Standard,
+    #[serde(alias = "high")]
+    Important,
+    Critical,
 }
 
+/// (wire key, legacy key or "" if none, variant) for every `RepoPriority`
+/// variant, attention-ascending — the single source of truth `as_str`/
+/// `parse` are both table-driven over.
+const REPO_PRIORITY_TABLE: &[(&str, &str, RepoPriority)] = &[
+    ("ignored", "", RepoPriority::Ignored),
+    ("unimportant", "", RepoPriority::Unimportant),
+    ("someday", "low", RepoPriority::Someday),
+    ("standard", "normal", RepoPriority::Standard),
+    ("important", "high", RepoPriority::Important),
+    ("critical", "", RepoPriority::Critical),
+];
+
 impl RepoPriority {
+    pub fn as_str(&self) -> &'static str {
+        REPO_PRIORITY_TABLE.iter().find(|(_, _, v)| v == self).map(|(s, _, _)| *s).unwrap()
+    }
     /// None for anything unrecognised — the undo path stores an empty string
     /// to mean "there was no entry", and callers that need strictness say so.
+    /// Accepts both current wire keys and legacy `high`/`normal`/`low`/
+    /// `ignored` strings, so `undo_audit` round-trips old audit-log entries
+    /// losslessly.
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "high" => Some(RepoPriority::High),
-            "normal" => Some(RepoPriority::Normal),
-            "low" => Some(RepoPriority::Low),
-            "ignored" => Some(RepoPriority::Ignored),
-            _ => None,
-        }
+        REPO_PRIORITY_TABLE
+            .iter()
+            .find(|(wire, legacy, _)| *wire == s || (!legacy.is_empty() && *legacy == s))
+            .map(|(_, _, v)| *v)
     }
 }
 
@@ -467,7 +511,7 @@ fn default_drill_model() -> String {
 }
 
 fn default_pr_priority() -> PrPriority {
-    PrPriority::Normal
+    PrPriority::Standard
 }
 
 fn default_pr_max_age_days() -> u64 {
@@ -851,5 +895,36 @@ mod tests {
         assert!(changes.contains(&ChangeKind::CiChanged));
         assert!(changes.contains(&ChangeKind::NewCommits));
         assert_eq!(changes.len(), 3);
+    }
+
+    #[test]
+    fn pr_priority_as_str_round_trips_through_parse() {
+        for (wire, _, variant) in PR_PRIORITY_TABLE {
+            assert_eq!(variant.as_str(), *wire);
+            assert_eq!(PrPriority::parse(variant.as_str()), *variant);
+        }
+    }
+
+    #[test]
+    fn pr_priority_legacy_strings_still_parse() {
+        assert_eq!(PrPriority::parse("high"), PrPriority::Important);
+        assert_eq!(PrPriority::parse("normal"), PrPriority::Standard);
+        assert_eq!(PrPriority::parse("low"), PrPriority::Someday);
+    }
+
+    #[test]
+    fn repo_priority_as_str_round_trips_through_parse() {
+        for (wire, _, variant) in REPO_PRIORITY_TABLE {
+            assert_eq!(variant.as_str(), *wire);
+            assert_eq!(RepoPriority::parse(variant.as_str()), Some(*variant));
+        }
+    }
+
+    #[test]
+    fn repo_priority_legacy_strings_still_parse() {
+        assert_eq!(RepoPriority::parse("high"), Some(RepoPriority::Important));
+        assert_eq!(RepoPriority::parse("normal"), Some(RepoPriority::Standard));
+        assert_eq!(RepoPriority::parse("low"), Some(RepoPriority::Someday));
+        assert_eq!(RepoPriority::parse("ignored"), Some(RepoPriority::Ignored));
     }
 }
