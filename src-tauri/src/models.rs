@@ -327,11 +327,11 @@ impl RepoPriority {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub watched_repos: Vec<String>,
-    /// "owner/name" → priority; absent means Normal.
+    /// "owner/name" → priority; absent means Standard.
     #[serde(default)]
     pub repo_priorities: std::collections::HashMap<String, RepoPriority>,
-    /// PR author login → priority; absent means Normal. Ignored authors'
-    /// PRs (dependabot…) never enter tracking; High authors' activity is
+    /// PR author login → priority; absent means Standard. Ignored authors'
+    /// PRs (dependabot…) never enter tracking; Important authors' activity is
     /// always important.
     #[serde(default)]
     pub author_priorities: std::collections::HashMap<String, RepoPriority>,

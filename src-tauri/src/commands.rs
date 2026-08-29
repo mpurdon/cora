@@ -428,7 +428,7 @@ pub fn undo_audit(
         }
         "repo-priority" => {
             let mut settings = store.settings()?;
-            // Normal is the absence of an override, so it undoes to a removal
+            // Standard is the absence of an override, so it undoes to a removal
             // rather than to an explicit entry.
             let old = crate::models::RepoPriority::parse(&entry.old_value)
                 .filter(|p| *p != crate::models::RepoPriority::Standard);
@@ -446,7 +446,7 @@ pub fn undo_audit(
         "author-priority" => {
             let mut settings = store.settings()?;
             let login = entry.subject_id.strip_prefix("author:").unwrap_or(&entry.subject_id);
-            // Normal is the absence of an override, so it undoes to a removal
+            // Standard is the absence of an override, so it undoes to a removal
             // rather than to an explicit entry.
             let old = crate::models::RepoPriority::parse(&entry.old_value)
                 .filter(|p| *p != crate::models::RepoPriority::Standard);
@@ -786,6 +786,25 @@ pub fn set_pr_priority(
         .unwrap_or(crate::models::PrPriority::Standard);
     store.set_pr_priority(&id, priority)?;
     store.add_audit("pr-priority", &id, &label, old.as_str(), priority.as_str())?;
+    let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
+    Ok(())
+}
+
+/// Dismiss a PR's persistent critical re-assertion until it next changes —
+/// the fingerprint (head SHA, or `updated_at` for PRs with no commits yet)
+/// is what re-arms `needs_attention` once the PR moves again.
+#[tauri::command]
+pub fn acknowledge_critical_pr(app: AppHandle, orgs: State<'_, crate::orgs::Orgs>, pr_id: String) -> AppResult<()> {
+    let store = orgs.active();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other(format!("no tracked PR with id {pr_id}")))?;
+    let fingerprint = if pr.info.head_sha.is_empty() {
+        &pr.info.updated_at
+    } else {
+        &pr.info.head_sha
+    };
+    store.record_critical_ack(&pr_id, fingerprint)?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
     Ok(())
 }
