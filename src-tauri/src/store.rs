@@ -61,6 +61,11 @@ CREATE TABLE IF NOT EXISTS review_marks (
   head_sha TEXT NOT NULL,
   at       TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS critical_acks (
+  pr_id                  TEXT PRIMARY KEY,
+  acknowledged_fingerprint TEXT NOT NULL,
+  acknowledged_at        INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS viewed_files (
   pr_id     TEXT NOT NULL,
   path      TEXT NOT NULL,
@@ -193,6 +198,7 @@ impl Store {
                 unread: serde_json::from_str(&unread).unwrap_or_default(),
                 first_seen,
                 last_change_at,
+                needs_attention: false,
             });
         }
         Ok(prs)
@@ -272,7 +278,7 @@ impl Store {
                 None => (
                     now.to_string(),
                     false,
-                    crate::models::PrPriority::Normal,
+                    crate::models::PrPriority::Standard,
                     Vec::new(),
                     Vec::new(),
                     now.to_string(),
@@ -311,6 +317,7 @@ impl Store {
             unread,
             first_seen,
             last_change_at,
+            needs_attention: false,
         })
     }
 
@@ -448,6 +455,35 @@ impl Store {
             params![pr_id, mark.head_sha, mark.at],
         )?;
         Ok(mark)
+    }
+
+    // -- critical acknowledgments (survive restarts, invalidated on new head) --
+
+    pub fn record_critical_ack(&self, pr_id: &str, fingerprint: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO critical_acks (pr_id, acknowledged_fingerprint, acknowledged_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(pr_id) DO UPDATE SET acknowledged_fingerprint = ?2, acknowledged_at = ?3",
+            params![pr_id, fingerprint, chrono::Utc::now().timestamp()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_critical_ack(&self, pr_id: &str) -> AppResult<Option<(String, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT acknowledged_fingerprint, acknowledged_at FROM critical_acks WHERE pr_id = ?1",
+                params![pr_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn clear_critical_ack(&self, pr_id: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM critical_acks WHERE pr_id = ?1", params![pr_id])?;
+        Ok(())
     }
 
     // -- generic kv (settings, counters) ---------------------------------------
