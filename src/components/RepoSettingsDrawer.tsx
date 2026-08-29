@@ -3,7 +3,14 @@ import { tip } from "./Tooltip";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 
-const PRIORITIES: RepoPriority[] = ["high", "normal", "low", "ignored"];
+const PRIORITIES: RepoPriority[] = [
+  "ignored",
+  "unimportant",
+  "someday",
+  "standard",
+  "important",
+  "critical",
+];
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;

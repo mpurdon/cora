@@ -25,7 +25,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
-import type { PrPriority } from "../bindings/PrPriority";
 import type { PrReviews } from "../bindings/PrReviews";
 import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
@@ -44,6 +43,7 @@ import {
 import { PrFilesRail } from "../components/PrFilesRail";
 import { events, ipc, onFocusPr } from "../lib/ipc";
 import { flagRank, FLAG_LABEL } from "../lib/flags";
+import { REPO_PRIORITY_WEIGHT, PR_PRIORITY_WEIGHT, REPO_PRIORITY_ORDER, PR_PRIORITY_ORDER, cycleNext } from "../lib/priority";
 import { usePersisted, usePersistedFlag } from "../lib/persisted";
 import {
   findingSeed,
@@ -78,9 +78,8 @@ const REASONS: { key: PrSource; label: string }[] = [
 type GroupMode = "org" | "repo" | "reason" | "type" | "author";
 type SortMode = "activity" | "attention" | "repo";
 
-const PRIORITY_WEIGHT: Record<RepoPriority, number> = { high: 0, normal: 1, low: 2, ignored: 3 };
-const PR_PRIORITY_WEIGHT: Record<PrPriority, number> = { high: 0, normal: 1, low: 2 };
-const PRIORITY_CYCLE: RepoPriority[] = ["normal", "high", "low", "ignored"];
+const PRIORITY_WEIGHT = REPO_PRIORITY_WEIGHT;
+const PRIORITY_CYCLE = REPO_PRIORITY_ORDER;
 
 /** "Ready for my review" requirements, one per lamp. */
 type ReadyFilters = { ciPass: boolean; reviewNeeded: boolean; noConflicts: boolean };
@@ -1458,7 +1457,7 @@ export function MainApp() {
     setWatchedRepos(watched);
   };
   const prioOf = useCallback(
-    (repo: string): RepoPriority => priorities[repo] ?? "normal",
+    (repo: string): RepoPriority => priorities[repo] ?? "standard",
     [priorities],
   );
   const setRepoPriority = async (repo: string, p: RepoPriority) => {
@@ -1467,7 +1466,7 @@ export function MainApp() {
     setPriorities(s.repoPriorities);
   };
   const authorPrioOf = useCallback(
-    (author: string): RepoPriority => authorPriorities[author] ?? "normal",
+    (author: string): RepoPriority => authorPriorities[author] ?? "standard",
     [authorPriorities],
   );
   const setAuthorPriority = async (author: string, p: RepoPriority) => {
@@ -1676,9 +1675,9 @@ export function MainApp() {
     // draws level with work from a repo you'd otherwise reach for first. Then
     // per-PR priority, then the chosen sort.
     const pull = (pr: TrackedPr) =>
-      PRIORITY_WEIGHT.normal -
+      PRIORITY_WEIGHT.standard -
       PRIORITY_WEIGHT[prioOf(pr.repo)] +
-      (PRIORITY_WEIGHT.normal - PRIORITY_WEIGHT[authorPrioOf(pr.author)]);
+      (PRIORITY_WEIGHT.standard - PRIORITY_WEIGHT[authorPrioOf(pr.author)]);
     const sorted = [...visible].sort(
       (a, b) =>
         pull(b) - pull(a) ||
@@ -2163,7 +2162,7 @@ export function MainApp() {
                       <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
                       <span className="eyebrow">{group.label}</span>
                       <span className="group-count">{group.prs.length}</span>
-                      {groupPrio && groupPrio !== "normal" && (
+                      {groupPrio && groupPrio !== "standard" && (
                         <span className={`prio-tag ${groupPrio}`}>{groupPrio}</span>
                       )}
                       <span className="spacer" />
@@ -2175,11 +2174,7 @@ export function MainApp() {
                           aria-label={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            const next =
-                              PRIORITY_CYCLE[
-                                (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
-                                  PRIORITY_CYCLE.length
-                              ];
+                            const next = cycleNext(PRIORITY_CYCLE, repoPrio ?? "standard");
                             void setRepoPriority(group.key, next);
                           }}
                         >
@@ -2348,7 +2343,7 @@ export function MainApp() {
               ? [
                   {
                     title: `PR #${menu.pr.number} priority`,
-                    items: (["high", "normal", "low"] as PrPriority[]).map((p) => ({
+                    items: PR_PRIORITY_ORDER.map((p) => ({
                       label: p,
                       checked: menu.pr.priority === p,
                       onClick: () => void ipc.setPrPriority(menu.pr.id, p),
@@ -2388,7 +2383,7 @@ export function MainApp() {
                   },
                   {
                     title: `@${menu.pr.author} priority (all their PRs)`,
-                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
+                    items: REPO_PRIORITY_ORDER.map((p) => ({
                       label: p,
                       checked: authorPrioOf(menu.pr.author) === p,
                       onClick: () => void setAuthorPriority(menu.pr.author, p),
@@ -2396,7 +2391,7 @@ export function MainApp() {
                   },
                   {
                     title: `${menu.pr.repo} priority`,
-                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
+                    items: REPO_PRIORITY_ORDER.map((p) => ({
                       label: p,
                       checked: prioOf(menu.pr.repo) === p,
                       onClick: () => void setRepoPriority(menu.pr.repo, p),
@@ -2415,7 +2410,7 @@ export function MainApp() {
               : [
                   {
                     title: `${menu.repo} priority`,
-                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
+                    items: REPO_PRIORITY_ORDER.map((p) => ({
                       label: p,
                       checked: prioOf(menu.repo) === p,
                       onClick: () => void setRepoPriority(menu.repo, p),
@@ -2448,7 +2443,7 @@ export function MainApp() {
         onClose={() => setRepoSettingsRepo(null)}
         settings={repoSettings}
         onSaveSettings={saveRepoSettings}
-        priority={repoSettingsRepo ? prioOf(repoSettingsRepo) : "normal"}
+        priority={repoSettingsRepo ? prioOf(repoSettingsRepo) : "standard"}
         onSetPriority={(p) => repoSettingsRepo && void setRepoPriority(repoSettingsRepo, p)}
       />
 
