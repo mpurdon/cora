@@ -1100,14 +1100,20 @@ function ReposPane({
                 <td>
                   <div className="repo-overrides">
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> ghost/ghost-20bca7
                     {!isDefaultRepoPriority(row.priority) && (
                       <span className={`prio-tag ${row.priority}`}>
                         {REPO_PRIORITY_LABEL[row.priority]}
                       </span>
+<<<<<<< HEAD
 =======
                     {row.priority !== "standard" && (
                       <span className={`prio-tag ${row.priority}`}>{row.priority}</span>
 >>>>>>> ghost/ghost-70bcc6
+=======
+>>>>>>> ghost/ghost-20bca7
                     )}
                     {row.hasApproveOverride && (
                       <span className="thread-tag" {...tip("Custom approve message")}>
@@ -1127,10 +1133,14 @@ function ReposPane({
                       Settings…
                     </button>
 <<<<<<< HEAD
+<<<<<<< HEAD
                     {(row.watched || !isDefaultRepoPriority(row.priority)) && (
 =======
                     {(row.watched || row.priority !== "standard") && (
 >>>>>>> ghost/ghost-70bcc6
+=======
+                    {(row.watched || !isDefaultRepoPriority(row.priority)) && (
+>>>>>>> ghost/ghost-20bca7
                       <button
                         className="icon-btn"
                         {...tip("Unwatch and clear priority")}
@@ -1204,10 +1214,14 @@ function UsersPane({
   const setPriority = (author: string, priority: RepoPriority) => {
     const next = { ...settings.authorPriorities };
 <<<<<<< HEAD
+<<<<<<< HEAD
     if (isDefaultRepoPriority(priority)) delete next[author];
 =======
     if (priority === "standard") delete next[author];
 >>>>>>> ghost/ghost-70bcc6
+=======
+    if (isDefaultRepoPriority(priority)) delete next[author];
+>>>>>>> ghost/ghost-20bca7
     else next[author] = priority;
     void save({ authorPriorities: next });
   };
@@ -1282,6 +1296,9 @@ function UsersPane({
                     onChange={(e) => setPriority(row.author, e.target.value as RepoPriority)}
                   >
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> ghost/ghost-20bca7
                     {REPO_PRIORITY_ORDER.map((p) => (
                       <option key={p} value={p}>
                         {REPO_PRIORITY_LABEL[p]}
@@ -1291,6 +1308,7 @@ function UsersPane({
                 </td>
                 <td className="col-center">
                   {!isDefaultRepoPriority(row.priority) && (
+<<<<<<< HEAD
 =======
                     <option value="ignored">ignored</option>
                     <option value="unimportant">unimportant</option>
@@ -1303,6 +1321,8 @@ function UsersPane({
                 <td className="col-center">
                   {row.priority !== "standard" && (
 >>>>>>> ghost/ghost-70bcc6
+=======
+>>>>>>> ghost/ghost-20bca7
                     <button
                       className="icon-btn"
                       {...tip("Clear priority")}

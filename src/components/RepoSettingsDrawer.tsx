@@ -3,6 +3,7 @@ import { tip } from "./Tooltip";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 <<<<<<< HEAD
+<<<<<<< HEAD
 import { REPO_PRIORITY_LABEL, REPO_PRIORITY_ORDER } from "../lib/priority";
 =======
 
@@ -15,6 +16,9 @@ const PRIORITIES: RepoPriority[] = [
   "critical",
 ];
 >>>>>>> ghost/ghost-70bcc6
+=======
+import { REPO_PRIORITY_LABEL, REPO_PRIORITY_ORDER } from "../lib/priority";
+>>>>>>> ghost/ghost-20bca7
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
