@@ -59,4 +59,9 @@ totalComments: number,
  * The most recent comments, oldest first — drives the human-comment
  * attention signal and reply notifications.
  */
-recentComments: Array<RecentComment>, headSha: string, updatedAt: string, labels: Array<Label>, };
+recentComments: Array<RecentComment>, headSha: string, updatedAt: string, labels: Array<Label>,
+/**
+ * Persistent critical re-assertion state — set elsewhere (poll-time
+ * re-derivation), always false at construction here.
+ */
+needsAttention: boolean, };

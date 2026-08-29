@@ -589,6 +589,23 @@ input:focus-visible {
   color: var(--warn);
 }
 
+.feed-critical-badge {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink-0);
+  background: var(--bad);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 13px;
+}
+
+.feed-item.persistent-critical .feed-dot {
+  background: var(--bad);
+}
+
 .feed-repo {
   flex: none;
   max-width: 75cqw;

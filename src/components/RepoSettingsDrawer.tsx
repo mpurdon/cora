@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { tip } from "./Tooltip";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
-
-const PRIORITIES: RepoPriority[] = ["high", "normal", "low", "ignored"];
+import { REPO_PRIORITY_LABEL, REPO_PRIORITY_ORDER } from "../lib/priority";
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
@@ -99,9 +98,9 @@ export function RepoSettingsDrawer({
                   value={priority}
                   onChange={(e) => onSetPriority(e.target.value as RepoPriority)}
                 >
-                  {PRIORITIES.map((p) => (
+                  {REPO_PRIORITY_ORDER.map((p) => (
                     <option key={p} value={p}>
-                      {p}
+                      {REPO_PRIORITY_LABEL[p]}
                     </option>
                   ))}
                 </select>

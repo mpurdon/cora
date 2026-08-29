@@ -436,7 +436,7 @@ fn chat_specs() -> Vec<(&'static str, &'static str, Value)> {
         "set_pr_priority",
         "Set this PR's priority in the reviewer's queue. Applies immediately.",
         json!({"type": "object", "properties": {
-            "priority": {"type": "string", "enum": ["high", "normal", "low"]}
+            "priority": {"type": "string", "enum": ["unimportant", "someday", "standard", "important", "critical"]}
         }, "required": ["priority"]}),
     ));
     specs.push((
@@ -444,7 +444,7 @@ fn chat_specs() -> Vec<(&'static str, &'static str, Value)> {
         "Set a repository's priority, or ignore it entirely. Applies immediately.",
         json!({"type": "object", "properties": {
             "repo": {"type": "string", "description": "owner/name; defaults to this PR's repo"},
-            "priority": {"type": "string", "enum": ["high", "normal", "low", "ignored"]}
+            "priority": {"type": "string", "enum": ["ignored", "unimportant", "someday", "standard", "important", "critical"]}
         }, "required": ["priority"]}),
     ));
     specs.push((
@@ -452,7 +452,7 @@ fn chat_specs() -> Vec<(&'static str, &'static str, Value)> {
         "Set an author's priority — how much their PRs are surfaced. Applies immediately.",
         json!({"type": "object", "properties": {
             "author": {"type": "string", "description": "Login; defaults to this PR's author"},
-            "priority": {"type": "string", "enum": ["high", "normal", "low", "ignored"]}
+            "priority": {"type": "string", "enum": ["ignored", "unimportant", "someday", "standard", "important", "critical"]}
         }, "required": ["priority"]}),
     ));
     specs.push((

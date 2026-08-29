@@ -197,6 +197,7 @@ pub fn run() {
             commands::set_pr_priority,
             commands::set_repo_priority,
             commands::set_author_priority,
+            commands::acknowledge_critical_pr,
             commands::get_audit_log,
             commands::get_activity,
             commands::mark_activity_read,
