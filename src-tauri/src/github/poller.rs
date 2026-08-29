@@ -168,18 +168,15 @@ fn notify_for_changes(
     // says whose news it is.
     org_prefix: Option<&str>,
 ) {
-    // A repo/author/PR combination that resolves to a suppressed effective
-    // priority stays silent — but stays in the rail; suppression is about
-    // notifications, not tracking. A `Critical` PR always escapes this (see
-    // `activity::priority::is_suppressed`), so the persistent-critical path
-    // below never needs to route around it.
+    // A repo/author/PR combination that is suppressed stays silent — but stays
+    // in the rail; suppression is about notifications, not tracking. A `Critical`
+    // PR always escapes suppression (see `activity::priority::is_suppressed`), so
+    // the persistent-critical path below never needs to route around it.
     let repo_priority =
         settings.repo_priorities.get(&pr.info.repo).copied().unwrap_or(RepoPriority::Standard);
     let author_priority =
         settings.author_priorities.get(&pr.info.author).copied().unwrap_or(RepoPriority::Standard);
-    let effective =
-        crate::activity::priority::effective_priority(repo_priority, author_priority, pr.priority);
-    if crate::activity::priority::is_suppressed(effective) {
+    if crate::activity::priority::is_suppressed(repo_priority, author_priority, pr.priority) {
         return;
     }
 

@@ -271,6 +271,14 @@ pub fn set_repo_priority(
         .get(&repo)
         .copied()
         .unwrap_or(crate::models::RepoPriority::Standard);
+    // If lowering below Critical, clear critical acks for all PRs in this repo.
+    if old == crate::models::RepoPriority::Critical && priority != crate::models::RepoPriority::Critical {
+        for pr in store.visible_prs()? {
+            if pr.info.repo == repo {
+                let _ = store.clear_critical_ack(&pr.info.id);
+            }
+        }
+    }
     if priority == crate::models::RepoPriority::Standard {
         settings.repo_priorities.remove(&repo);
     } else {
@@ -784,6 +792,10 @@ pub fn set_pr_priority(
         .get_pr(&id)?
         .map(|p| p.priority)
         .unwrap_or(crate::models::PrPriority::Standard);
+    // If lowering below Critical, clear the critical ack.
+    if old == crate::models::PrPriority::Critical && priority != crate::models::PrPriority::Critical {
+        let _ = store.clear_critical_ack(&id);
+    }
     store.set_pr_priority(&id, priority)?;
     store.add_audit("pr-priority", &id, &label, old.as_str(), priority.as_str())?;
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
