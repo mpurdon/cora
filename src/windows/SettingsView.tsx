@@ -27,11 +27,6 @@ import {
   setActiveTheme,
   type Theme,
 } from "../lib/theme";
-import {
-  REPO_PRIORITY_ORDER,
-  REPO_PRIORITY_LABEL,
-  isDefaultRepoPriority,
-} from "../lib/priority";
 import { usePrStore } from "../state/prStore";
 import { DeveloperPane } from "./DeveloperPane";
 import type { BuildInfo } from "../bindings/BuildInfo";
@@ -1104,26 +1099,10 @@ function ReposPane({
                 </td>
                 <td>
                   <div className="repo-overrides">
-<<<<<<< HEAD
-                    {!isDefaultRepoPriority(row.priority) && (
-                      <span className={`prio-tag ${row.priority}`}>{REPO_PRIORITY_LABEL[row.priority]}</span>
-=======
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> ghost/ghost-20bca7
                     {!isDefaultRepoPriority(row.priority) && (
                       <span className={`prio-tag ${row.priority}`}>
                         {REPO_PRIORITY_LABEL[row.priority]}
                       </span>
-<<<<<<< HEAD
-=======
-                    {row.priority !== "standard" && (
-                      <span className={`prio-tag ${row.priority}`}>{row.priority}</span>
->>>>>>> ghost/ghost-70bcc6
-=======
->>>>>>> ghost/ghost-20bca7
->>>>>>> ghost/ghost-7c038b
                     )}
                     {row.hasApproveOverride && (
                       <span className="thread-tag" {...tip("Custom approve message")}>
@@ -1142,19 +1121,7 @@ function ReposPane({
                     <button className="action-btn" onClick={() => setSettingsRepo(row.repo)}>
                       Settings…
                     </button>
-<<<<<<< HEAD
                     {(row.watched || !isDefaultRepoPriority(row.priority)) && (
-=======
-<<<<<<< HEAD
-<<<<<<< HEAD
-                    {(row.watched || !isDefaultRepoPriority(row.priority)) && (
-=======
-                    {(row.watched || row.priority !== "standard") && (
->>>>>>> ghost/ghost-70bcc6
-=======
-                    {(row.watched || !isDefaultRepoPriority(row.priority)) && (
->>>>>>> ghost/ghost-20bca7
->>>>>>> ghost/ghost-7c038b
                       <button
                         className="icon-btn"
                         {...tip("Unwatch and clear priority")}
@@ -1227,19 +1194,7 @@ function UsersPane({
 
   const setPriority = (author: string, priority: RepoPriority) => {
     const next = { ...settings.authorPriorities };
-<<<<<<< HEAD
-    if (priority === "standard") delete next[author];
-=======
-<<<<<<< HEAD
-<<<<<<< HEAD
     if (isDefaultRepoPriority(priority)) delete next[author];
-=======
-    if (priority === "standard") delete next[author];
->>>>>>> ghost/ghost-70bcc6
-=======
-    if (isDefaultRepoPriority(priority)) delete next[author];
->>>>>>> ghost/ghost-20bca7
->>>>>>> ghost/ghost-7c038b
     else next[author] = priority;
     void save({ authorPriorities: next });
   };
@@ -1313,13 +1268,6 @@ function UsersPane({
                     value={row.priority}
                     onChange={(e) => setPriority(row.author, e.target.value as RepoPriority)}
                   >
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> ghost/ghost-20bca7
->>>>>>> ghost/ghost-7c038b
                     {REPO_PRIORITY_ORDER.map((p) => (
                       <option key={p} value={p}>
                         {REPO_PRIORITY_LABEL[p]}
@@ -1329,24 +1277,6 @@ function UsersPane({
                 </td>
                 <td className="col-center">
                   {!isDefaultRepoPriority(row.priority) && (
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
-=======
-                    <option value="ignored">ignored</option>
-                    <option value="unimportant">unimportant</option>
-                    <option value="someday">someday</option>
-                    <option value="standard">standard</option>
-                    <option value="important">important</option>
-                    <option value="critical">critical</option>
-                  </select>
-                </td>
-                <td className="col-center">
-                  {row.priority !== "standard" && (
->>>>>>> ghost/ghost-70bcc6
-=======
->>>>>>> ghost/ghost-20bca7
->>>>>>> ghost/ghost-7c038b
                     <button
                       className="icon-btn"
                       {...tip("Clear priority")}
