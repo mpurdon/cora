@@ -14,6 +14,7 @@ import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { events, ipc } from "../lib/ipc";
+import { isDefaultRepoPriority, REPO_PRIORITY_LABEL, REPO_PRIORITY_ORDER } from "../lib/priority";
 import {
   activeThemeId,
   allThemes,
@@ -1049,8 +1050,8 @@ function ReposPane({
       <h2>Repositories</h2>
       <p className="pane-intro">
         <strong>Watched</strong> repos have every open PR tracked, not just the ones involving
-        you. <strong>Priority</strong> weights a repo anywhere it appears — high floats to the
-        top, low sinks, ignored is never tracked at all.
+        you. <strong>Priority</strong> weights a repo anywhere it appears — critical floats to
+        the top, unimportant sinks, ignored is never tracked at all.
       </p>
 
       <div className="repo-add">
@@ -1103,8 +1104,26 @@ function ReposPane({
                 </td>
                 <td>
                   <div className="repo-overrides">
+<<<<<<< HEAD
                     {!isDefaultRepoPriority(row.priority) && (
                       <span className={`prio-tag ${row.priority}`}>{REPO_PRIORITY_LABEL[row.priority]}</span>
+=======
+<<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> ghost/ghost-20bca7
+                    {!isDefaultRepoPriority(row.priority) && (
+                      <span className={`prio-tag ${row.priority}`}>
+                        {REPO_PRIORITY_LABEL[row.priority]}
+                      </span>
+<<<<<<< HEAD
+=======
+                    {row.priority !== "standard" && (
+                      <span className={`prio-tag ${row.priority}`}>{row.priority}</span>
+>>>>>>> ghost/ghost-70bcc6
+=======
+>>>>>>> ghost/ghost-20bca7
+>>>>>>> ghost/ghost-7c038b
                     )}
                     {row.hasApproveOverride && (
                       <span className="thread-tag" {...tip("Custom approve message")}>
@@ -1123,7 +1142,19 @@ function ReposPane({
                     <button className="action-btn" onClick={() => setSettingsRepo(row.repo)}>
                       Settings…
                     </button>
+<<<<<<< HEAD
                     {(row.watched || !isDefaultRepoPriority(row.priority)) && (
+=======
+<<<<<<< HEAD
+<<<<<<< HEAD
+                    {(row.watched || !isDefaultRepoPriority(row.priority)) && (
+=======
+                    {(row.watched || row.priority !== "standard") && (
+>>>>>>> ghost/ghost-70bcc6
+=======
+                    {(row.watched || !isDefaultRepoPriority(row.priority)) && (
+>>>>>>> ghost/ghost-20bca7
+>>>>>>> ghost/ghost-7c038b
                       <button
                         className="icon-btn"
                         {...tip("Unwatch and clear priority")}
@@ -1196,7 +1227,19 @@ function UsersPane({
 
   const setPriority = (author: string, priority: RepoPriority) => {
     const next = { ...settings.authorPriorities };
+<<<<<<< HEAD
     if (priority === "standard") delete next[author];
+=======
+<<<<<<< HEAD
+<<<<<<< HEAD
+    if (isDefaultRepoPriority(priority)) delete next[author];
+=======
+    if (priority === "standard") delete next[author];
+>>>>>>> ghost/ghost-70bcc6
+=======
+    if (isDefaultRepoPriority(priority)) delete next[author];
+>>>>>>> ghost/ghost-20bca7
+>>>>>>> ghost/ghost-7c038b
     else next[author] = priority;
     void save({ authorPriorities: next });
   };
@@ -1216,7 +1259,7 @@ function UsersPane({
     <section className="pane-section pane-wide">
       <h2>Users ({rows.length})</h2>
       <p className="pane-intro">
-        <strong>Priority</strong> weights a PR author everywhere — high authors float to the
+        <strong>Priority</strong> weights a PR author everywhere — critical authors float to the
         top of every group and their activity is always featured; ignored authors (bots,
         dependabot) are never tracked at all. Right-clicking a PR sets this too.
       </p>
@@ -1270,6 +1313,13 @@ function UsersPane({
                     value={row.priority}
                     onChange={(e) => setPriority(row.author, e.target.value as RepoPriority)}
                   >
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> ghost/ghost-20bca7
+>>>>>>> ghost/ghost-7c038b
                     {REPO_PRIORITY_ORDER.map((p) => (
                       <option key={p} value={p}>
                         {REPO_PRIORITY_LABEL[p]}
@@ -1279,6 +1329,24 @@ function UsersPane({
                 </td>
                 <td className="col-center">
                   {!isDefaultRepoPriority(row.priority) && (
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+=======
+                    <option value="ignored">ignored</option>
+                    <option value="unimportant">unimportant</option>
+                    <option value="someday">someday</option>
+                    <option value="standard">standard</option>
+                    <option value="important">important</option>
+                    <option value="critical">critical</option>
+                  </select>
+                </td>
+                <td className="col-center">
+                  {row.priority !== "standard" && (
+>>>>>>> ghost/ghost-70bcc6
+=======
+>>>>>>> ghost/ghost-20bca7
+>>>>>>> ghost/ghost-7c038b
                     <button
                       className="icon-btn"
                       {...tip("Clear priority")}
