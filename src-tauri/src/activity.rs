@@ -40,9 +40,7 @@ pub fn record(
         return false;
     }
     let important = pr.sources.contains(&PrSource::Authored)
-        || pr.priority == crate::models::PrPriority::Important
-        || settings.repo_priorities.get(&pr.info.repo) == Some(&RepoPriority::Important)
-        || settings.author_priorities.get(&pr.info.author) == Some(&RepoPriority::Important);
+        || priority::is_important(priority::effective_priority(repo_priority, author_priority, pr.priority));
     // A poll delta has no per-event timestamps, so impose causal order on
     // same-cycle rows: setup → work → verdicts → terminal state. Insertion
     // order is the feed's tie-breaker for identical timestamps.

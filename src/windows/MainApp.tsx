@@ -84,7 +84,7 @@ const REASONS: { key: PrSource; label: string }[] = [
   { key: "watched-repo", label: "Watched repos" },
 ];
 
-type GroupMode = "org" | "repo" | "reason" | "type" | "author";
+type GroupMode = "org" | "repo" | "reason" | "type";
 type SortMode = "activity" | "attention" | "repo";
 
 /** Opening a persistently-critical PR is itself the acknowledgment. */
@@ -1685,15 +1685,12 @@ export function MainApp() {
     // worth exactly what ranking a repo down costs, so a name you want to see
     // draws level with work from a repo you'd otherwise reach for first. Then
     // per-PR priority, then the chosen sort. Both axes are offset against
-    // "standard" (the scale's neutral center) so above-standard levels pull
-    // positive and below-standard levels pull negative, symmetrically.
-    const pull = (pr: TrackedPr) =>
-      REPO_PRIORITY_WEIGHT[prioOf(pr.repo)] -
-      REPO_PRIORITY_WEIGHT.standard +
-      (REPO_PRIORITY_WEIGHT[authorPrioOf(pr.author)] - REPO_PRIORITY_WEIGHT.standard);
+    // Ordering: repo priority, then the author's priority within the group,
+    // then per-PR priority, then the chosen sort.
     const sorted = [...visible].sort(
       (a, b) =>
-        pull(b) - pull(a) ||
+        REPO_PRIORITY_WEIGHT[prioOf(b.repo)] - REPO_PRIORITY_WEIGHT[prioOf(a.repo)] ||
+        REPO_PRIORITY_WEIGHT[authorPrioOf(b.author)] - REPO_PRIORITY_WEIGHT[authorPrioOf(a.author)] ||
         PR_PRIORITY_WEIGHT[b.priority] - PR_PRIORITY_WEIGHT[a.priority] ||
         SORTERS[sortMode](a, b),
     );
@@ -1707,29 +1704,14 @@ export function MainApp() {
             ? [pr.repo, shortRepo(pr.repo)]
             : groupMode === "type"
               ? [parseTitle(pr.title).type, parseTitle(pr.title).type]
-              : groupMode === "author"
-                ? [pr.author, pr.author]
-                : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
+              : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
       const bucket = byKey.get(key) ?? { label, prs: [] };
       bucket.prs.push(pr);
       byKey.set(key, bucket);
     }
     const entries = [...byKey.entries()].map(([key, v]) => ({ key, ...v }));
-    // A group's pull is its rows' added up, not just its best one, so two
-    // high-ranked authors outrank one while a hundred ordinary PRs — pulling
-    // nothing each — sum to nothing. Its best row then floors that sum, so
-    // what a group holds can only lift it: one high-ranked author still
-    // surfaces an org that also carries work you've ranked down.
-    const groupPull = (g: { prs: TrackedPr[] }) => {
-      let summed = 0;
-      let best = -Infinity;
-      for (const pr of g.prs) {
-        const p = pull(pr);
-        summed += p;
-        best = Math.max(best, p);
-      }
-      return Math.max(summed, best);
-    };
+    const groupWeight = (g: { prs: TrackedPr[] }) =>
+      Math.min(...g.prs.map((p) => REPO_PRIORITY_WEIGHT[prioOf(p.repo)]));
     if (groupMode === "reason") {
       entries.sort(
         (a, b) =>
@@ -1739,11 +1721,11 @@ export function MainApp() {
       // known types alphabetical, "unknown" last
       entries.sort(
         (a, b) =>
-          groupPull(b) - groupPull(a) ||
+          groupWeight(b) - groupWeight(a) ||
           (a.key === "unknown" ? 1 : b.key === "unknown" ? -1 : a.label.localeCompare(b.label)),
       );
     } else {
-      entries.sort((a, b) => groupPull(b) - groupPull(a) || a.label.localeCompare(b.label));
+      entries.sort((a, b) => groupWeight(b) - groupWeight(a) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
   }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed, showFinished]);
@@ -2036,7 +2018,6 @@ export function MainApp() {
                 <option value="repo">by repo</option>
                 <option value="type">by type</option>
                 <option value="reason">by reason</option>
-                <option value="author">by author</option>
               </select>
               <select
                 data-tip="Sort by"
@@ -2156,8 +2137,6 @@ export function MainApp() {
                 const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
                 const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
                 const repoPrio = groupMode === "repo" ? prioOf(group.key) : null;
-                const authorPrio = groupMode === "author" ? authorPrioOf(group.key) : null;
-                const groupPrio = repoPrio ?? authorPrio;
                 return (
                   <div key={group.key} className="rail-group">
                     <button
@@ -2175,9 +2154,9 @@ export function MainApp() {
                       <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
                       <span className="eyebrow">{group.label}</span>
                       <span className="group-count">{group.prs.length}</span>
-                      {groupPrio && groupPrio !== "standard" && (
-                        <span className={`prio-tag ${groupPrio}`} data-tip={REPO_PRIORITY_TOOLTIP[groupPrio]}>
-                          {REPO_PRIORITY_LABEL[groupPrio]}
+                      {repoPrio && repoPrio !== "standard" && (
+                        <span className={`prio-tag ${repoPrio}`} data-tip={REPO_PRIORITY_TOOLTIP[repoPrio]}>
+                          {REPO_PRIORITY_LABEL[repoPrio]}
                         </span>
                       )}
                       <span className="spacer" />
@@ -2358,11 +2337,17 @@ export function MainApp() {
               ? [
                   {
                     title: `PR #${menu.pr.number} priority`,
-                    items: PR_PRIORITY_ORDER.map((p) => ({
-                      label: PR_PRIORITY_LABEL[p],
-                      checked: menu.pr.priority === p,
-                      onClick: () => void ipc.setPrPriority(menu.pr.id, p),
-                    })),
+                    items: [
+                      ...PR_PRIORITY_ORDER.map((p) => ({
+                        label: PR_PRIORITY_LABEL[p],
+                        checked: menu.pr.priority === p,
+                        onClick: () => void ipc.setPrPriority(menu.pr.id, p),
+                      })),
+                      {
+                        label: `Cycle priority (${PR_PRIORITY_LABEL[cycleNext(PR_PRIORITY_ORDER, menu.pr.priority)]})`,
+                        onClick: () => void ipc.setPrPriority(menu.pr.id, cycleNext(PR_PRIORITY_ORDER, menu.pr.priority)),
+                      },
+                    ],
                   },
                   {
                     items: [
