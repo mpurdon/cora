@@ -49,3 +49,23 @@ pub fn send(app: &AppHandle, title: &str, body: &str, target: Option<FocusTarget
         crate::devlog::debug(app, "app", format!("notified: {title}"));
     }
 }
+
+/// Re-ping for a PR stuck in the persistent-critical state — both its repo
+/// and the PR itself marked Critical, still unacknowledged. Reuses the same
+/// notification + focus-target path as an ordinary `send`; only the wording
+/// marks it as a re-assertion rather than a first alert, so a user who
+/// glances at notification history can tell the two apart.
+pub fn emit_persistent_alert(app: &AppHandle, pr: &crate::models::TrackedPr, org_prefix: Option<&str>) {
+    let short = format!(
+        "{}{}#{}",
+        org_prefix.map(|o| format!("[{o}] ")).unwrap_or_default(),
+        pr.info.repo.split('/').nth(1).unwrap_or(&pr.info.repo),
+        pr.info.number
+    );
+    send(
+        app,
+        &format!("Still critical: {short}"),
+        &pr.info.title,
+        Some(FocusTarget { pr_id: pr.info.id.clone(), comment_id: None }),
+    );
+}
