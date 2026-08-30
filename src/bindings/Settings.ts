@@ -4,12 +4,12 @@ import type { RepoPriority } from "./RepoPriority";
 
 export type Settings = { watchedRepos: Array<string>, 
 /**
- * "owner/name" → priority; absent means Normal.
+ * "owner/name" → priority; absent means Standard.
  */
 repoPriorities: { [key in string]: RepoPriority }, 
 /**
- * PR author login → priority; absent means Normal. Ignored authors'
- * PRs (dependabot…) never enter tracking; High authors' activity is
+ * PR author login → priority; absent means Standard. Ignored authors'
+ * PRs (dependabot…) never enter tracking; Important authors' activity is
  * always important.
  */
 authorPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, 
