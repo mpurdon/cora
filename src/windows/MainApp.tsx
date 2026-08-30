@@ -1710,8 +1710,9 @@ export function MainApp() {
       byKey.set(key, bucket);
     }
     const entries = [...byKey.entries()].map(([key, v]) => ({ key, ...v }));
-    const groupWeight = (g: { prs: TrackedPr[] }) =>
-      Math.min(...g.prs.map((p) => REPO_PRIORITY_WEIGHT[prioOf(p.repo)]));
+    const prWeight = (p: TrackedPr) =>
+      REPO_PRIORITY_WEIGHT[prioOf(p.repo)] + REPO_PRIORITY_WEIGHT[authorPrioOf(p.author)];
+    const groupWeight = (g: { prs: TrackedPr[] }) => Math.max(...g.prs.map(prWeight));
     if (groupMode === "reason") {
       entries.sort(
         (a, b) =>
