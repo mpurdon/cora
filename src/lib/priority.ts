@@ -76,11 +76,39 @@ export const PR_PRIORITY_TOOLTIP: Record<PrPriority, string> = {
   critical: "Highest attention — always notifies.",
 };
 
+/** UI-only: attention-descending, for rendering menus top-to-bottom. Never use for sorting/weighting. */
+export const REPO_PRIORITY_DISPLAY_ORDER: RepoPriority[] = [
+  ...REPO_PRIORITY_ORDER,
+].reverse();
+
+/** UI-only: attention-descending, for rendering menus top-to-bottom. Never use for sorting/weighting. */
+export const PR_PRIORITY_DISPLAY_ORDER: PrPriority[] = [
+  ...PR_PRIORITY_ORDER,
+].reverse();
+
+export const REPO_PRIORITY_ICON: Record<
+  RepoPriority,
+  { icon: string; label: string }
+> = {
+  ignored: { icon: "⊘", label: REPO_PRIORITY_LABEL.ignored },
+  unimportant: { icon: "○", label: REPO_PRIORITY_LABEL.unimportant },
+  someday: { icon: "◔", label: REPO_PRIORITY_LABEL.someday },
+  standard: { icon: "◑", label: REPO_PRIORITY_LABEL.standard },
+  important: { icon: "◕", label: REPO_PRIORITY_LABEL.important },
+  critical: { icon: "●", label: REPO_PRIORITY_LABEL.critical },
+};
+
+export const PR_PRIORITY_ICON: Record<
+  PrPriority,
+  { icon: string; label: string }
+> = {
+  unimportant: { icon: "○", label: PR_PRIORITY_LABEL.unimportant },
+  someday: { icon: "◔", label: PR_PRIORITY_LABEL.someday },
+  standard: { icon: "◑", label: PR_PRIORITY_LABEL.standard },
+  important: { icon: "◕", label: PR_PRIORITY_LABEL.important },
+  critical: { icon: "●", label: PR_PRIORITY_LABEL.critical },
+};
+
 export function isDefaultRepoPriority(p?: RepoPriority): boolean {
   return p === undefined || p === "standard";
-}
-
-export function cycleNext<T>(order: T[], current: T): T {
-  const next = order.indexOf(current) + 1;
-  return order[next % order.length];
 }
