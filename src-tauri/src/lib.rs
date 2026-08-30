@@ -1,5 +1,4 @@
 mod activity;
-mod build_info;
 mod analysis;
 mod commands;
 mod devlog;
@@ -197,6 +196,7 @@ pub fn run() {
             commands::set_pr_priority,
             commands::set_repo_priority,
             commands::set_author_priority,
+            commands::acknowledge_critical_pr,
             commands::get_audit_log,
             commands::get_activity,
             commands::mark_activity_read,
@@ -245,7 +245,6 @@ pub fn run() {
             commands::clear_dev_logs,
             commands::get_default_system_prompt,
             commands::get_app_internals,
-            commands::get_build_info,
             commands::poll_now,
             commands::show_main_window,
             commands::show_main_filtered,

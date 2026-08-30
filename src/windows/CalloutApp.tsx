@@ -22,6 +22,7 @@ import {
 } from "../components/icons";
 import { ContextMenu } from "../components/ContextMenu";
 import { events, ipc } from "../lib/ipc";
+import { REPO_PRIORITY_LABEL } from "../lib/priority";
 import { setThemeOrg } from "../lib/theme";
 import { usePrStore } from "../state/prStore";
 
@@ -113,10 +114,12 @@ function lineText(item: ActivityItem): string {
 
 function Row({
   item,
+  persistentCritical,
   onOpen,
   onMenu,
 }: {
   item: ActivityItem;
+  persistentCritical: boolean;
   onOpen: (item: ActivityItem) => void;
   onMenu: (e: React.MouseEvent, item: ActivityItem) => void;
 }) {
@@ -139,7 +142,7 @@ function Row({
   return (
     <button
       {...rowTip}
-      className={`feed-item${item.read ? "" : " unread"}${item.important ? " important" : ""}`}
+      className={`feed-item${item.read ? "" : " unread"}${item.important ? " important" : ""}${persistentCritical ? " persistent-critical" : ""}`}
       onClick={() => onOpen(item)}
       onContextMenu={(e) => onMenu(e, item)}
     >
@@ -151,6 +154,14 @@ function Row({
         <span className="feed-repo mono">
           {item.repo.split("/")[1] ?? item.repo}#{item.number}
         </span>
+        {persistentCritical && (
+          <span
+            className="feed-critical-badge"
+            {...tip(`${REPO_PRIORITY_LABEL.critical} — persists until opened`)}
+          >
+            {REPO_PRIORITY_LABEL.critical}
+          </span>
+        )}
         {lineText(item) && <span className="feed-text">{lineText(item)}</span>}
       </span>
       <span className="feed-actor">{item.actor ? `@${item.actor}` : ""}</span>
@@ -336,6 +347,13 @@ export function CalloutApp() {
     return counts;
   }, [prs]);
 
+  // Persistent critical re-assertion: the backend keeps re-emitting these
+  // until the reviewer opens the PR, so the feed row (not just the OS
+  // notification) needs to say so — dismissing the callout doesn't count.
+  const prById = useMemo(() => new Map(prs.map((pr) => [pr.id, pr])), [prs]);
+  const isPersistentCritical = (item: ActivityItem) =>
+    prById.get(item.prId)?.needsAttention === true;
+
   // Featured: anything you flagged, plus unread activity on important PRs
   // (your own PRs, high-priority repos/PRs).
   const featured = items.filter((i) => i.flag !== "" || (i.important && !i.read));
@@ -350,8 +368,9 @@ export function CalloutApp() {
   }
   const unreadCount = items.filter((i) => !i.read).length;
 
-  const openItem = (item: ActivityItem) => {
+  const onOpenFromCallout = (item: ActivityItem) => {
     void ipc.markActivityRead([item.id], true);
+    if (isPersistentCritical(item)) void ipc.acknowledgeCriticalPr(item.prId);
     void ipc.showMainWindow(item.prId);
     if (item.commentId) {
       void emit("focus:comment", { prId: item.prId, commentId: item.commentId });
@@ -467,10 +486,16 @@ export function CalloutApp() {
               <>
                 <div className="feed-group eyebrow featured-label">★ featured</div>
                 {featured.map((item) => (
-                  <Row key={item.id} item={item} onOpen={openItem} onMenu={(e, it) => {
-                    e.preventDefault();
-                    setMenu({ x: e.clientX, y: e.clientY, item: it });
-                  }} />
+                  <Row
+                    key={item.id}
+                    item={item}
+                    persistentCritical={isPersistentCritical(item)}
+                    onOpen={onOpenFromCallout}
+                    onMenu={(e, it) => {
+                      e.preventDefault();
+                      setMenu({ x: e.clientX, y: e.clientY, item: it });
+                    }}
+                  />
                 ))}
               </>
             )}
@@ -478,10 +503,16 @@ export function CalloutApp() {
               <div key={label + groupItems[0]?.id}>
                 <div className="feed-group eyebrow">{label}</div>
                 {groupItems.map((item) => (
-                  <Row key={item.id} item={item} onOpen={openItem} onMenu={(e, it) => {
-                    e.preventDefault();
-                    setMenu({ x: e.clientX, y: e.clientY, item: it });
-                  }} />
+                  <Row
+                    key={item.id}
+                    item={item}
+                    persistentCritical={isPersistentCritical(item)}
+                    onOpen={onOpenFromCallout}
+                    onMenu={(e, it) => {
+                      e.preventDefault();
+                      setMenu({ x: e.clientX, y: e.clientY, item: it });
+                    }}
+                  />
                 ))}
               </div>
             ))}
