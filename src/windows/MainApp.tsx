@@ -30,6 +30,7 @@ import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
+import { PrioritySelector } from "../components/PrioritySelector";
 import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { Settings } from "../bindings/Settings";
 import {
@@ -64,12 +65,13 @@ import {
 } from "../state/reviewStore";
 import { SettingsView, type SettingsPane } from "./SettingsView";
 import {
-  cycleNext,
+  PR_PRIORITY_DISPLAY_ORDER,
+  PR_PRIORITY_ICON,
   PR_PRIORITY_LABEL,
-  PR_PRIORITY_ORDER,
   PR_PRIORITY_WEIGHT,
+  REPO_PRIORITY_DISPLAY_ORDER,
+  REPO_PRIORITY_ICON,
   REPO_PRIORITY_LABEL,
-  REPO_PRIORITY_ORDER,
   REPO_PRIORITY_TOOLTIP,
   REPO_PRIORITY_WEIGHT,
 } from "../lib/priority";
@@ -2161,21 +2163,6 @@ export function MainApp() {
                         </span>
                       )}
                       <span className="spacer" />
-                      {groupMode === "repo" && (
-                        <span
-                          className="flag-btn"
-                          role="button"
-                          data-tip={`Priority: ${REPO_PRIORITY_LABEL[repoPrio ?? "standard"]}. Click to cycle.`}
-                          aria-label={`Priority: ${REPO_PRIORITY_LABEL[repoPrio ?? "standard"]}. Click to cycle.`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const next = cycleNext(REPO_PRIORITY_ORDER, repoPrio ?? "standard");
-                            void setRepoPriority(group.key, next);
-                          }}
-                        >
-                          ⚑
-                        </span>
-                      )}
                       {unreadSum > 0 && (
                         <span
                           className="unread-count"
@@ -2339,14 +2326,19 @@ export function MainApp() {
                   {
                     title: `PR #${menu.pr.number} priority`,
                     items: [
-                      ...PR_PRIORITY_ORDER.map((p) => ({
-                        label: PR_PRIORITY_LABEL[p],
-                        checked: menu.pr.priority === p,
-                        onClick: () => void ipc.setPrPriority(menu.pr.id, p),
-                      })),
                       {
-                        label: `Cycle priority (${PR_PRIORITY_LABEL[cycleNext(PR_PRIORITY_ORDER, menu.pr.priority)]})`,
-                        onClick: () => void ipc.setPrPriority(menu.pr.id, cycleNext(PR_PRIORITY_ORDER, menu.pr.priority)),
+                        type: "custom",
+                        key: "pr-priority",
+                        render: () => (
+                          <PrioritySelector
+                            levels={PR_PRIORITY_DISPLAY_ORDER}
+                            value={menu.pr.priority}
+                            onChange={(p) => void ipc.setPrPriority(menu.pr.id, p)}
+                            getLabel={(p) => PR_PRIORITY_LABEL[p]}
+                            getIcon={(p) => PR_PRIORITY_ICON[p].icon}
+                            groupLabel={`PR #${menu.pr.number} priority`}
+                          />
+                        ),
                       },
                     ],
                   },
@@ -2384,19 +2376,41 @@ export function MainApp() {
                   },
                   {
                     title: `@${menu.pr.author} priority (all their PRs)`,
-                    items: REPO_PRIORITY_ORDER.map((p) => ({
-                      label: REPO_PRIORITY_LABEL[p],
-                      checked: authorPrioOf(menu.pr.author) === p,
-                      onClick: () => void setAuthorPriority(menu.pr.author, p),
-                    })),
+                    items: [
+                      {
+                        type: "custom",
+                        key: "author-priority",
+                        render: () => (
+                          <PrioritySelector
+                            levels={REPO_PRIORITY_DISPLAY_ORDER}
+                            value={authorPrioOf(menu.pr.author)}
+                            onChange={(p) => void setAuthorPriority(menu.pr.author, p)}
+                            getLabel={(p) => REPO_PRIORITY_LABEL[p]}
+                            getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
+                            groupLabel={`@${menu.pr.author} priority`}
+                          />
+                        ),
+                      },
+                    ],
                   },
                   {
                     title: `${menu.pr.repo} priority`,
-                    items: REPO_PRIORITY_ORDER.map((p) => ({
-                      label: REPO_PRIORITY_LABEL[p],
-                      checked: prioOf(menu.pr.repo) === p,
-                      onClick: () => void setRepoPriority(menu.pr.repo, p),
-                    })),
+                    items: [
+                      {
+                        type: "custom",
+                        key: "repo-priority",
+                        render: () => (
+                          <PrioritySelector
+                            levels={REPO_PRIORITY_DISPLAY_ORDER}
+                            value={prioOf(menu.pr.repo)}
+                            onChange={(p) => void setRepoPriority(menu.pr.repo, p)}
+                            getLabel={(p) => REPO_PRIORITY_LABEL[p]}
+                            getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
+                            groupLabel={`${menu.pr.repo} priority`}
+                          />
+                        ),
+                      },
+                    ],
                   },
                   {
                     items: [
@@ -2411,11 +2425,22 @@ export function MainApp() {
               : [
                   {
                     title: `${menu.repo} priority`,
-                    items: REPO_PRIORITY_ORDER.map((p) => ({
-                      label: REPO_PRIORITY_LABEL[p],
-                      checked: prioOf(menu.repo) === p,
-                      onClick: () => void setRepoPriority(menu.repo, p),
-                    })),
+                    items: [
+                      {
+                        type: "custom",
+                        key: "repo-priority",
+                        render: () => (
+                          <PrioritySelector
+                            levels={REPO_PRIORITY_DISPLAY_ORDER}
+                            value={prioOf(menu.repo)}
+                            onChange={(p) => void setRepoPriority(menu.repo, p)}
+                            getLabel={(p) => REPO_PRIORITY_LABEL[p]}
+                            getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
+                            groupLabel={`${menu.repo} priority`}
+                          />
+                        ),
+                      },
+                    ],
                   },
                   {
                     items: [

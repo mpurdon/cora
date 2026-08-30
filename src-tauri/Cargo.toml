@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time", "sync"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
-ts-rs = { version = "12.0.1", features = ["chrono-impl"] }
+ts-rs = { version = "12.0.1", features = ["chrono-impl", "no-serde-warnings"] }
 thiserror = "2.0.18"
 chrono = "0.4.45"
 tauri-plugin-window-state = "2.4.1"

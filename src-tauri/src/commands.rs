@@ -289,8 +289,8 @@ pub fn set_repo_priority(
         "repo-priority",
         &repo,
         &repo,
-        &format!("{old:?}").to_lowercase(),
-        &format!("{priority:?}").to_lowercase(),
+        &old.as_str().to_string(),
+        &priority.as_str().to_string(),
     )?;
     trigger.0.notify_waiters();
     let _ = app.emit(events::PRS_SNAPSHOT, store.visible_prs()?);
@@ -324,8 +324,8 @@ pub fn set_author_priority(
         "author-priority",
         &format!("author:{author}"),
         &format!("@{author}"),
-        &format!("{old:?}").to_lowercase(),
-        &format!("{priority:?}").to_lowercase(),
+        &old.as_str().to_string(),
+        &priority.as_str().to_string(),
     )?;
     // Ignoring takes effect immediately — untrack + scrub the feed rather
     // than waiting a poll cycle.
