@@ -898,10 +898,12 @@ mod tests {
     }
 
     #[test]
-    fn pr_priority_as_str_round_trips_through_parse() {
+    fn pr_priority_as_str_round_trips_through_parse_and_matches_serde() {
         for (wire, _, variant) in PR_PRIORITY_TABLE {
             assert_eq!(variant.as_str(), *wire);
             assert_eq!(PrPriority::parse(variant.as_str()), *variant);
+            let serialized = serde_json::to_string(variant).unwrap();
+            assert_eq!(serialized, format!("\"{wire}\""));
         }
     }
 
@@ -913,10 +915,12 @@ mod tests {
     }
 
     #[test]
-    fn repo_priority_as_str_round_trips_through_parse() {
+    fn repo_priority_as_str_round_trips_through_parse_and_matches_serde() {
         for (wire, _, variant) in REPO_PRIORITY_TABLE {
             assert_eq!(variant.as_str(), *wire);
             assert_eq!(RepoPriority::parse(variant.as_str()), Some(*variant));
+            let serialized = serde_json::to_string(variant).unwrap();
+            assert_eq!(serialized, format!("\"{wire}\""));
         }
     }
 
