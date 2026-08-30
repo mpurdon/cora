@@ -1,15 +1,22 @@
 import { useEffect, useRef } from "react";
 
 export interface MenuItem {
+  type?: "item";
   label: string;
   checked?: boolean;
   danger?: boolean;
   onClick: () => void;
 }
 
+export interface MenuCustomRow {
+  type: "custom";
+  key: string;
+  render: () => React.ReactNode;
+}
+
 export interface MenuSection {
   title?: string;
-  items: MenuItem[];
+  items: (MenuItem | MenuCustomRow)[];
 }
 
 /** Lightweight custom context menu (native menus can't render in-window). */
@@ -57,20 +64,30 @@ export function ContextMenu({
       {sections.map((section, si) => (
         <div key={si} className="menu-section">
           {section.title && <div className="menu-title">{section.title}</div>}
-          {section.items.map((item, ii) => (
-            <button
-              key={ii}
-              role="menuitem"
-              className={`menu-item${item.danger ? " danger" : ""}`}
-              onClick={() => {
-                item.onClick();
-                onClose();
-              }}
-            >
-              <span className="menu-check">{item.checked ? "✓" : ""}</span>
-              {item.label}
-            </button>
-          ))}
+          {section.items.map((item, ii) => {
+            switch (item.type) {
+              case "custom":
+                return <div key={item.key}>{item.render()}</div>;
+              case "item":
+              case undefined:
+                return (
+                  <button
+                    key={ii}
+                    role="menuitem"
+                    className={`menu-item${item.danger ? " danger" : ""}`}
+                    onClick={() => {
+                      item.onClick();
+                      onClose();
+                    }}
+                  >
+                    <span className="menu-check">{item.checked ? "✓" : ""}</span>
+                    {item.label}
+                  </button>
+                );
+              default:
+                return item satisfies never;
+            }
+          })}
         </div>
       ))}
     </div>
