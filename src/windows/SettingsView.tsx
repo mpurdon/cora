@@ -14,7 +14,11 @@ import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { events, ipc } from "../lib/ipc";
-import { isDefaultRepoPriority, REPO_PRIORITY_LABEL, REPO_PRIORITY_ORDER } from "../lib/priority";
+import {
+  isDefaultRepoPriority,
+  REPO_PRIORITY_DISPLAY_ORDER,
+  REPO_PRIORITY_LABEL,
+} from "../lib/priority";
 import {
   activeThemeId,
   allThemes,
@@ -1237,7 +1241,7 @@ function UsersPane({
                     value={row.priority}
                     onChange={(e) => setPriority(row.author, e.target.value as RepoPriority)}
                   >
-                    {REPO_PRIORITY_ORDER.map((p) => (
+                    {REPO_PRIORITY_DISPLAY_ORDER.map((p) => (
                       <option key={p} value={p}>
                         {REPO_PRIORITY_LABEL[p]}
                       </option>
