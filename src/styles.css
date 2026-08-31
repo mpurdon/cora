@@ -316,6 +316,10 @@ input:focus-visible {
   outline-offset: 1px;
 }
 
+.priority-selector-item svg {
+  display: block;
+}
+
 /* Selected level: a ring plus fill, not just a colour swap, so the choice
    reads even without colour vision. */
 .priority-selector-item.selected {
