@@ -825,13 +825,26 @@ body.col-resizing * {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
-  border-radius: 6px;
+  margin: 0 -6px;
+  padding: 6px 14px;
+  border-radius: 0;
   text-align: left;
+  background: color-mix(in srgb, var(--text) 6%, var(--ink-1));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.group-header[aria-expanded="false"] {
+  background: color-mix(in srgb, var(--text) 3%, var(--ink-1));
 }
 
 .group-header:hover {
-  background: var(--ink-2);
+  background: color-mix(in srgb, var(--text) 10%, var(--ink-1));
+}
+
+.group-header .eyebrow {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .group-header .chevron {
