@@ -25,12 +25,12 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
-import type { PrPriority } from "../bindings/PrPriority";
 import type { PrReviews } from "../bindings/PrReviews";
 import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
+import { PrioritySelector } from "../components/PrioritySelector";
 import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { Settings } from "../bindings/Settings";
 import {
@@ -64,6 +64,17 @@ import {
   withPending,
 } from "../state/reviewStore";
 import { SettingsView, type SettingsPane } from "./SettingsView";
+import {
+  PR_PRIORITY_DISPLAY_ORDER,
+  PR_PRIORITY_ICON,
+  PR_PRIORITY_LABEL,
+  PR_PRIORITY_WEIGHT,
+  REPO_PRIORITY_DISPLAY_ORDER,
+  REPO_PRIORITY_ICON,
+  REPO_PRIORITY_LABEL,
+  REPO_PRIORITY_TOOLTIP,
+  REPO_PRIORITY_WEIGHT,
+} from "../lib/priority";
 
 /** Reason grouping: a PR appears once, under its most specific reason. */
 const REASONS: { key: PrSource; label: string }[] = [
@@ -75,13 +86,14 @@ const REASONS: { key: PrSource; label: string }[] = [
   { key: "watched-repo", label: "Watched repos" },
 ];
 
-type GroupMode = "org" | "repo" | "reason" | "type" | "author";
+type GroupMode = "org" | "repo" | "reason" | "type";
 type SortMode = "activity" | "attention" | "repo";
 
-const PRIORITY_WEIGHT: Record<RepoPriority, number> = { high: 0, normal: 1, low: 2, ignored: 3 };
-const PR_PRIORITY_WEIGHT: Record<PrPriority, number> = { high: 0, normal: 1, low: 2 };
-const PRIORITY_CYCLE: RepoPriority[] = ["normal", "high", "low", "ignored"];
-
+/** Opening a persistently-critical PR is itself the acknowledgment. */
+function openPr(pr: TrackedPr) {
+  if (pr.needsAttention) void ipc.acknowledgeCriticalPr(pr.id);
+  void openUrl(pr.url);
+}
 /** "Ready for my review" requirements, one per lamp. */
 type ReadyFilters = { ciPass: boolean; reviewNeeded: boolean; noConflicts: boolean };
 const NO_READY_FILTERS: ReadyFilters = { ciPass: false, reviewNeeded: false, noConflicts: false };
@@ -1292,7 +1304,7 @@ function Detail({
         <span className="spacer" />
         <RefreshPrButton prId={pr.id} />
         <CopyButton text={pr.url} what="the PR link" icon={<IconLink />} />
-        <button className="icon-btn" data-tip="Open on GitHub" aria-label="Open on GitHub" onClick={() => void openUrl(pr.url)}>
+        <button className="icon-btn" data-tip="Open on GitHub" aria-label="Open on GitHub" onClick={() => openPr(pr)}>
           <IconExternal />
         </button>
         <button
@@ -1458,7 +1470,7 @@ export function MainApp() {
     setWatchedRepos(watched);
   };
   const prioOf = useCallback(
-    (repo: string): RepoPriority => priorities[repo] ?? "normal",
+    (repo: string): RepoPriority => priorities[repo] ?? "standard",
     [priorities],
   );
   const setRepoPriority = async (repo: string, p: RepoPriority) => {
@@ -1467,7 +1479,7 @@ export function MainApp() {
     setPriorities(s.repoPriorities);
   };
   const authorPrioOf = useCallback(
-    (author: string): RepoPriority => authorPriorities[author] ?? "normal",
+    (author: string): RepoPriority => authorPriorities[author] ?? "standard",
     [authorPriorities],
   );
   const setAuthorPriority = async (author: string, p: RepoPriority) => {
@@ -1674,15 +1686,14 @@ export function MainApp() {
     // the repo deciding with the author as a tiebreak. Ranking an author up is
     // worth exactly what ranking a repo down costs, so a name you want to see
     // draws level with work from a repo you'd otherwise reach for first. Then
-    // per-PR priority, then the chosen sort.
-    const pull = (pr: TrackedPr) =>
-      PRIORITY_WEIGHT.normal -
-      PRIORITY_WEIGHT[prioOf(pr.repo)] +
-      (PRIORITY_WEIGHT.normal - PRIORITY_WEIGHT[authorPrioOf(pr.author)]);
+    // per-PR priority, then the chosen sort. Both axes are offset against
+    // Ordering: repo priority, then the author's priority within the group,
+    // then per-PR priority, then the chosen sort.
     const sorted = [...visible].sort(
       (a, b) =>
-        pull(b) - pull(a) ||
-        PR_PRIORITY_WEIGHT[a.priority] - PR_PRIORITY_WEIGHT[b.priority] ||
+        REPO_PRIORITY_WEIGHT[prioOf(b.repo)] - REPO_PRIORITY_WEIGHT[prioOf(a.repo)] ||
+        REPO_PRIORITY_WEIGHT[authorPrioOf(b.author)] - REPO_PRIORITY_WEIGHT[authorPrioOf(a.author)] ||
+        PR_PRIORITY_WEIGHT[b.priority] - PR_PRIORITY_WEIGHT[a.priority] ||
         SORTERS[sortMode](a, b),
     );
 
@@ -1695,29 +1706,15 @@ export function MainApp() {
             ? [pr.repo, shortRepo(pr.repo)]
             : groupMode === "type"
               ? [parseTitle(pr.title).type, parseTitle(pr.title).type]
-              : groupMode === "author"
-                ? [pr.author, pr.author]
-                : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
+              : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
       const bucket = byKey.get(key) ?? { label, prs: [] };
       bucket.prs.push(pr);
       byKey.set(key, bucket);
     }
     const entries = [...byKey.entries()].map(([key, v]) => ({ key, ...v }));
-    // A group's pull is its rows' added up, not just its best one, so two
-    // high-ranked authors outrank one while a hundred ordinary PRs — pulling
-    // nothing each — sum to nothing. Its best row then floors that sum, so
-    // what a group holds can only lift it: one high-ranked author still
-    // surfaces an org that also carries work you've ranked down.
-    const groupPull = (g: { prs: TrackedPr[] }) => {
-      let summed = 0;
-      let best = -Infinity;
-      for (const pr of g.prs) {
-        const p = pull(pr);
-        summed += p;
-        best = Math.max(best, p);
-      }
-      return Math.max(summed, best);
-    };
+    const prWeight = (p: TrackedPr) =>
+      REPO_PRIORITY_WEIGHT[prioOf(p.repo)] + REPO_PRIORITY_WEIGHT[authorPrioOf(p.author)];
+    const groupWeight = (g: { prs: TrackedPr[] }) => Math.max(...g.prs.map(prWeight));
     if (groupMode === "reason") {
       entries.sort(
         (a, b) =>
@@ -1727,11 +1724,11 @@ export function MainApp() {
       // known types alphabetical, "unknown" last
       entries.sort(
         (a, b) =>
-          groupPull(b) - groupPull(a) ||
+          groupWeight(b) - groupWeight(a) ||
           (a.key === "unknown" ? 1 : b.key === "unknown" ? -1 : a.label.localeCompare(b.label)),
       );
     } else {
-      entries.sort((a, b) => groupPull(b) - groupPull(a) || a.label.localeCompare(b.label));
+      entries.sort((a, b) => groupWeight(b) - groupWeight(a) || a.label.localeCompare(b.label));
     }
     return { grouped: entries, hiddenByReady };
   }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed, showFinished]);
@@ -1861,7 +1858,7 @@ export function MainApp() {
         keys: "o",
         label: "open this PR on GitHub",
         match: (e) => e.key === "o" && !!selected,
-        run: () => selected && void openUrl(selected.url),
+        run: () => selected && openPr(selected),
       },
       {
         keys: "y",
@@ -2024,7 +2021,6 @@ export function MainApp() {
                 <option value="repo">by repo</option>
                 <option value="type">by type</option>
                 <option value="reason">by reason</option>
-                <option value="author">by author</option>
               </select>
               <select
                 data-tip="Sort by"
@@ -2144,8 +2140,6 @@ export function MainApp() {
                 const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
                 const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
                 const repoPrio = groupMode === "repo" ? prioOf(group.key) : null;
-                const authorPrio = groupMode === "author" ? authorPrioOf(group.key) : null;
-                const groupPrio = repoPrio ?? authorPrio;
                 return (
                   <div key={group.key} className="rail-group">
                     <button
@@ -2163,29 +2157,12 @@ export function MainApp() {
                       <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
                       <span className="eyebrow">{group.label}</span>
                       <span className="group-count">{group.prs.length}</span>
-                      {groupPrio && groupPrio !== "normal" && (
-                        <span className={`prio-tag ${groupPrio}`}>{groupPrio}</span>
-                      )}
-                      <span className="spacer" />
-                      {groupMode === "repo" && (
-                        <span
-                          className="flag-btn"
-                          role="button"
-                          data-tip={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
-                          aria-label={`Priority: ${repoPrio}. Click to cycle high → low → ignored.`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const next =
-                              PRIORITY_CYCLE[
-                                (PRIORITY_CYCLE.indexOf(repoPrio ?? "normal") + 1) %
-                                  PRIORITY_CYCLE.length
-                              ];
-                            void setRepoPriority(group.key, next);
-                          }}
-                        >
-                          ⚑
+                      {repoPrio && repoPrio !== "standard" && (
+                        <span className={`prio-tag ${repoPrio}`} data-tip={REPO_PRIORITY_TOOLTIP[repoPrio]}>
+                          {REPO_PRIORITY_LABEL[repoPrio]}
                         </span>
                       )}
+                      <span className="spacer" />
                       {unreadSum > 0 && (
                         <span
                           className="unread-count"
@@ -2348,11 +2325,22 @@ export function MainApp() {
               ? [
                   {
                     title: `PR #${menu.pr.number} priority`,
-                    items: (["high", "normal", "low"] as PrPriority[]).map((p) => ({
-                      label: p,
-                      checked: menu.pr.priority === p,
-                      onClick: () => void ipc.setPrPriority(menu.pr.id, p),
-                    })),
+                    items: [
+                      {
+                        type: "custom",
+                        key: "pr-priority",
+                        render: () => (
+                          <PrioritySelector
+                            levels={PR_PRIORITY_DISPLAY_ORDER}
+                            value={menu.pr.priority}
+                            onChange={(p) => void ipc.setPrPriority(menu.pr.id, p)}
+                            getLabel={(p) => PR_PRIORITY_LABEL[p]}
+                            getIcon={(p) => PR_PRIORITY_ICON[p].icon}
+                            groupLabel={`PR #${menu.pr.number} priority`}
+                          />
+                        ),
+                      },
+                    ],
                   },
                   {
                     items: [
@@ -2377,7 +2365,7 @@ export function MainApp() {
                       },
                       {
                         label: "Open on GitHub",
-                        onClick: () => void openUrl(menu.pr.url),
+                        onClick: () => openPr(menu.pr),
                       },
                       {
                         label: "Untrack",
@@ -2388,19 +2376,41 @@ export function MainApp() {
                   },
                   {
                     title: `@${menu.pr.author} priority (all their PRs)`,
-                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
-                      label: p,
-                      checked: authorPrioOf(menu.pr.author) === p,
-                      onClick: () => void setAuthorPriority(menu.pr.author, p),
-                    })),
+                    items: [
+                      {
+                        type: "custom",
+                        key: "author-priority",
+                        render: () => (
+                          <PrioritySelector
+                            levels={REPO_PRIORITY_DISPLAY_ORDER}
+                            value={authorPrioOf(menu.pr.author)}
+                            onChange={(p) => void setAuthorPriority(menu.pr.author, p)}
+                            getLabel={(p) => REPO_PRIORITY_LABEL[p]}
+                            getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
+                            groupLabel={`@${menu.pr.author} priority`}
+                          />
+                        ),
+                      },
+                    ],
                   },
                   {
                     title: `${menu.pr.repo} priority`,
-                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
-                      label: p,
-                      checked: prioOf(menu.pr.repo) === p,
-                      onClick: () => void setRepoPriority(menu.pr.repo, p),
-                    })),
+                    items: [
+                      {
+                        type: "custom",
+                        key: "repo-priority",
+                        render: () => (
+                          <PrioritySelector
+                            levels={REPO_PRIORITY_DISPLAY_ORDER}
+                            value={prioOf(menu.pr.repo)}
+                            onChange={(p) => void setRepoPriority(menu.pr.repo, p)}
+                            getLabel={(p) => REPO_PRIORITY_LABEL[p]}
+                            getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
+                            groupLabel={`${menu.pr.repo} priority`}
+                          />
+                        ),
+                      },
+                    ],
                   },
                   {
                     items: [
@@ -2415,11 +2425,22 @@ export function MainApp() {
               : [
                   {
                     title: `${menu.repo} priority`,
-                    items: (["high", "normal", "low", "ignored"] as RepoPriority[]).map((p) => ({
-                      label: p,
-                      checked: prioOf(menu.repo) === p,
-                      onClick: () => void setRepoPriority(menu.repo, p),
-                    })),
+                    items: [
+                      {
+                        type: "custom",
+                        key: "repo-priority",
+                        render: () => (
+                          <PrioritySelector
+                            levels={REPO_PRIORITY_DISPLAY_ORDER}
+                            value={prioOf(menu.repo)}
+                            onChange={(p) => void setRepoPriority(menu.repo, p)}
+                            getLabel={(p) => REPO_PRIORITY_LABEL[p]}
+                            getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
+                            groupLabel={`${menu.repo} priority`}
+                          />
+                        ),
+                      },
+                    ],
                   },
                   {
                     items: [
@@ -2448,7 +2469,7 @@ export function MainApp() {
         onClose={() => setRepoSettingsRepo(null)}
         settings={repoSettings}
         onSaveSettings={saveRepoSettings}
-        priority={repoSettingsRepo ? prioOf(repoSettingsRepo) : "normal"}
+        priority={repoSettingsRepo ? prioOf(repoSettingsRepo) : "standard"}
         onSetPriority={(p) => repoSettingsRepo && void setRepoPriority(repoSettingsRepo, p)}
       />
 

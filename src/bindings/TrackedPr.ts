@@ -14,6 +14,11 @@ export type TrackedPr = { sources: Array<PrSource>, muted: boolean, priority: Pr
  */
 unread: Array<ChangeKind>, firstSeen: string, lastChangeAt: string, 
 /**
+ * Persistent critical re-assertion state — set elsewhere (poll-time
+ * re-derivation), always false at construction here.
+ */
+needsAttention: boolean, 
+/**
  * GraphQL node id — stable across renames/pushes.
  */
 id: string, number: number, title: string, 

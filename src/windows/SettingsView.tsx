@@ -15,6 +15,11 @@ import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
 import { events, ipc } from "../lib/ipc";
 import {
+  isDefaultRepoPriority,
+  REPO_PRIORITY_DISPLAY_ORDER,
+  REPO_PRIORITY_LABEL,
+} from "../lib/priority";
+import {
   activeThemeId,
   allThemes,
   cloneTheme,
@@ -28,7 +33,6 @@ import {
 } from "../lib/theme";
 import { usePrStore } from "../state/prStore";
 import { DeveloperPane } from "./DeveloperPane";
-import type { BuildInfo } from "../bindings/BuildInfo";
 
 export type SettingsPane =
   | "general"
@@ -330,7 +334,6 @@ export function SettingsView({
           </button>
         ))}
         <div className="settings-nav-footer">
-          <BuildStamp />
           {saved && <span className="save-note">saved</span>}
           {error && <span className="settings-error">{error}</span>}
           <button className="action-btn" onClick={onClose}>
@@ -382,35 +385,6 @@ export function SettingsView({
         </div>
       )}
     </div>
-  );
-}
-
-/** Which build is running, at the foot of the settings nav. Deliberately
- *  outside the Developer pane: "am I running what I just built?" is a
- *  question you ask before you'd think to turn developer mode on, and the
- *  version alone can't answer it — CORA has been 0.1.0 since the scaffold. */
-function BuildStamp() {
-  const [info, setInfo] = useState<BuildInfo | null>(null);
-  useEffect(() => {
-    void ipc.getBuildInfo().then(setInfo).catch(() => {});
-  }, []);
-  if (!info) return null;
-  const built = new Date(info.builtAt);
-  const tip = [
-    `Version ${info.version}`,
-    info.profile === "dev"
-      ? "Dev build — frontend served by the Vite dev server"
-      : "Release build — bundled frontend",
-    `Branch ${info.branch} at commit ${info.commit}`,
-    info.dirty
-      ? "Tracked files were modified when this was built, so the commit is the base, not the exact source"
-      : "Built from a clean tree",
-    `Built ${built.toLocaleString()}`,
-  ].join("\n");
-  return (
-    <span className={`build-stamp mono${info.dirty ? " dirty" : ""}`} data-tip={tip}>
-      {info.label}
-    </span>
   );
 }
 
@@ -993,7 +967,7 @@ function ReposPane({
       .map((repo) => ({
         repo,
         watched: settings.watchedRepos.includes(repo),
-        priority: settings.repoPriorities[repo] ?? ("normal" as RepoPriority),
+        priority: settings.repoPriorities[repo] ?? ("standard" as RepoPriority),
         activePrs: activeCounts.get(repo) ?? 0,
         hasApproveOverride: !!settings.repoApproveMessages[repo]?.trim(),
         hasInstructions: !!settings.repoReviewInstructions[repo]?.trim(),
@@ -1044,8 +1018,8 @@ function ReposPane({
       <h2>Repositories</h2>
       <p className="pane-intro">
         <strong>Watched</strong> repos have every open PR tracked, not just the ones involving
-        you. <strong>Priority</strong> weights a repo anywhere it appears — high floats to the
-        top, low sinks, ignored is never tracked at all.
+        you. <strong>Priority</strong> weights a repo anywhere it appears — critical floats to
+        the top, unimportant sinks, ignored is never tracked at all.
       </p>
 
       <div className="repo-add">
@@ -1098,8 +1072,10 @@ function ReposPane({
                 </td>
                 <td>
                   <div className="repo-overrides">
-                    {row.priority !== "normal" && (
-                      <span className={`prio-tag ${row.priority}`}>{row.priority}</span>
+                    {!isDefaultRepoPriority(row.priority) && (
+                      <span className={`prio-tag ${row.priority}`}>
+                        {REPO_PRIORITY_LABEL[row.priority]}
+                      </span>
                     )}
                     {row.hasApproveOverride && (
                       <span className="thread-tag" {...tip("Custom approve message")}>
@@ -1118,7 +1094,7 @@ function ReposPane({
                     <button className="action-btn" onClick={() => setSettingsRepo(row.repo)}>
                       Settings…
                     </button>
-                    {(row.watched || row.priority !== "normal") && (
+                    {(row.watched || !isDefaultRepoPriority(row.priority)) && (
                       <button
                         className="icon-btn"
                         {...tip("Unwatch and clear priority")}
@@ -1140,7 +1116,7 @@ function ReposPane({
         onClose={() => setSettingsRepo(null)}
         settings={settings}
         onSaveSettings={save}
-        priority={settingsRepo ? (settings.repoPriorities[settingsRepo] ?? "normal") : "normal"}
+        priority={settingsRepo ? (settings.repoPriorities[settingsRepo] ?? "standard") : "standard"}
         onSetPriority={(p) => settingsRepo && setPriority(settingsRepo, p)}
       />
     </section>
@@ -1184,14 +1160,14 @@ function UsersPane({
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
       .map((author) => ({
         author,
-        priority: settings.authorPriorities[author] ?? ("normal" as RepoPriority),
+        priority: settings.authorPriorities[author] ?? ("standard" as RepoPriority),
         activePrs: activeCounts.get(author) ?? 0,
       }));
   }, [settings, activeCounts, added, filter]);
 
   const setPriority = (author: string, priority: RepoPriority) => {
     const next = { ...settings.authorPriorities };
-    if (priority === "normal") delete next[author];
+    if (isDefaultRepoPriority(priority)) delete next[author];
     else next[author] = priority;
     void save({ authorPriorities: next });
   };
@@ -1211,7 +1187,7 @@ function UsersPane({
     <section className="pane-section pane-wide">
       <h2>Users ({rows.length})</h2>
       <p className="pane-intro">
-        <strong>Priority</strong> weights a PR author everywhere — high authors float to the
+        <strong>Priority</strong> weights a PR author everywhere — critical authors float to the
         top of every group and their activity is always featured; ignored authors (bots,
         dependabot) are never tracked at all. Right-clicking a PR sets this too.
       </p>
@@ -1265,18 +1241,19 @@ function UsersPane({
                     value={row.priority}
                     onChange={(e) => setPriority(row.author, e.target.value as RepoPriority)}
                   >
-                    <option value="high">high</option>
-                    <option value="normal">normal</option>
-                    <option value="low">low</option>
-                    <option value="ignored">ignored</option>
+                    {REPO_PRIORITY_DISPLAY_ORDER.map((p) => (
+                      <option key={p} value={p}>
+                        {REPO_PRIORITY_LABEL[p]}
+                      </option>
+                    ))}
                   </select>
                 </td>
                 <td className="col-center">
-                  {row.priority !== "normal" && (
+                  {!isDefaultRepoPriority(row.priority) && (
                     <button
                       className="icon-btn"
                       {...tip("Clear priority")}
-                      onClick={() => setPriority(row.author, "normal")}
+                      onClick={() => setPriority(row.author, "standard")}
                     >
                       ✕
                     </button>

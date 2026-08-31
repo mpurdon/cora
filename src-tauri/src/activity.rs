@@ -33,10 +33,14 @@ pub fn record(
     if crate::models::is_bot_login(&pr.info.author) {
         return false;
     }
+    // Check suppression: unimportant repos/authors/PRs produce zero feed rows.
+    let repo_priority = settings.repo_priorities.get(&pr.info.repo).copied().unwrap_or(RepoPriority::Standard);
+    let author_priority = settings.author_priorities.get(&pr.info.author).copied().unwrap_or(RepoPriority::Standard);
+    if priority::is_suppressed(repo_priority, author_priority, pr.priority) {
+        return false;
+    }
     let important = pr.sources.contains(&PrSource::Authored)
-        || pr.priority == crate::models::PrPriority::High
-        || settings.repo_priorities.get(&pr.info.repo) == Some(&RepoPriority::High)
-        || settings.author_priorities.get(&pr.info.author) == Some(&RepoPriority::High);
+        || priority::is_important(priority::effective_priority(repo_priority, author_priority, pr.priority));
     // A poll delta has no per-event timestamps, so impose causal order on
     // same-cycle rows: setup → work → verdicts → terminal state. Insertion
     // order is the feed's tie-breaker for identical timestamps.
@@ -150,4 +154,154 @@ pub fn record(
         let _ = store.supersede_activity(&pr.info.id, &["new"]);
     }
     wrote
+}
+
+/// Reconciling a PR's repo/author/pr priority dimensions into one verdict,
+/// and the predicates poller.rs's notification gating asks of it.
+///
+/// The three dimensions can disagree — an `Unimportant` repo hosting a
+/// `Critical` PR, say — and FR-6/FR-7 require the highest-ranked dimension
+/// to win rather than an unimportant one suppressing an otherwise-critical
+/// PR. `RepoPriority`/`PrPriority`'s declaration order is already
+/// attention-ascending (their derived `Ord` reflects it), so reconciliation
+/// is just a `max()` over the three dimensions mapped onto one shared scale.
+pub mod priority {
+    use crate::models::{PrPriority, RepoPriority};
+
+    /// The reconciled verdict for a PR, attention-ascending like the enums
+    /// it's built from.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum EffectivePriority {
+        Unimportant,
+        Someday,
+        Standard,
+        Important,
+        Critical,
+    }
+
+    impl From<RepoPriority> for EffectivePriority {
+        /// `Ignored` repos never reach this far (they're filtered out of the
+        /// tracked set upstream), but if one ever does, it carries no more
+        /// weight than `Unimportant`.
+        fn from(p: RepoPriority) -> Self {
+            match p {
+                RepoPriority::Ignored | RepoPriority::Unimportant => EffectivePriority::Unimportant,
+                RepoPriority::Someday => EffectivePriority::Someday,
+                RepoPriority::Standard => EffectivePriority::Standard,
+                RepoPriority::Important => EffectivePriority::Important,
+                RepoPriority::Critical => EffectivePriority::Critical,
+            }
+        }
+    }
+
+    impl From<PrPriority> for EffectivePriority {
+        fn from(p: PrPriority) -> Self {
+            match p {
+                PrPriority::Unimportant => EffectivePriority::Unimportant,
+                PrPriority::Someday => EffectivePriority::Someday,
+                PrPriority::Standard => EffectivePriority::Standard,
+                PrPriority::Important => EffectivePriority::Important,
+                PrPriority::Critical => EffectivePriority::Critical,
+            }
+        }
+    }
+
+    /// The highest-ranked of the three dimensions wins — a single unimportant
+    /// dimension can never drag down an otherwise-critical PR.
+    pub fn effective_priority(
+        repo: RepoPriority,
+        author: RepoPriority,
+        pr: PrPriority,
+    ) -> EffectivePriority {
+        EffectivePriority::from(repo).max(EffectivePriority::from(author)).max(EffectivePriority::from(pr))
+    }
+
+    /// Worth surfacing as important attention.
+    pub fn is_important(effective: EffectivePriority) -> bool {
+        effective >= EffectivePriority::Important
+    }
+
+    /// Worth suppressing entirely. A repo/author/pr marked `Unimportant` or
+    /// `Ignored` should produce zero notifications — but `Critical` PRs are
+    /// always exempt (FR-7). So suppress if any dimension is marked
+    /// unimportant, unless the PR itself is Critical.
+    pub fn is_suppressed(
+        repo: RepoPriority,
+        author: RepoPriority,
+        pr: PrPriority,
+    ) -> bool {
+        // PR itself is Unimportant -> always suppress
+        if pr == PrPriority::Unimportant {
+            return true;
+        }
+        // Repo is Unimportant/Ignored -> suppress (unless PR is Critical)
+        if repo == RepoPriority::Unimportant || repo == RepoPriority::Ignored {
+            return pr != PrPriority::Critical;
+        }
+        // Author is Unimportant/Ignored -> suppress (unless PR is Critical)
+        if author == RepoPriority::Unimportant || author == RepoPriority::Ignored {
+            return pr != PrPriority::Critical;
+        }
+        false
+    }
+
+    /// The narrower condition that re-arms a persistent critical alert:
+    /// both the repo and the PR itself (not just the reconciled effective
+    /// priority) have to be `Critical`.
+    pub fn is_persistent_critical_condition(repo: RepoPriority, pr: PrPriority) -> bool {
+        repo == RepoPriority::Critical && pr == PrPriority::Critical
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn unimportant_repo_suppresses_standard_pr() {
+            assert!(is_suppressed(RepoPriority::Unimportant, RepoPriority::Standard, PrPriority::Standard));
+        }
+
+        #[test]
+        fn unimportant_repo_does_not_suppress_critical_pr() {
+            assert!(!is_suppressed(RepoPriority::Unimportant, RepoPriority::Standard, PrPriority::Critical));
+        }
+
+        #[test]
+        fn unimportant_author_suppresses_standard_pr() {
+            assert!(is_suppressed(RepoPriority::Standard, RepoPriority::Unimportant, PrPriority::Standard));
+        }
+
+        #[test]
+        fn unimportant_pr_always_suppresses() {
+            assert!(is_suppressed(RepoPriority::Critical, RepoPriority::Critical, PrPriority::Unimportant));
+        }
+
+        #[test]
+        fn ignored_repo_suppresses_standard_pr() {
+            assert!(is_suppressed(RepoPriority::Ignored, RepoPriority::Standard, PrPriority::Standard));
+        }
+
+        #[test]
+        fn ignored_repo_does_not_suppress_critical_pr() {
+            assert!(!is_suppressed(RepoPriority::Ignored, RepoPriority::Standard, PrPriority::Critical));
+        }
+
+        #[test]
+        fn all_standard_does_not_suppress() {
+            assert!(!is_suppressed(RepoPriority::Standard, RepoPriority::Standard, PrPriority::Standard));
+        }
+
+        #[test]
+        fn persistent_critical_requires_both_repo_and_pr() {
+            assert!(is_persistent_critical_condition(RepoPriority::Critical, PrPriority::Critical));
+            assert!(!is_persistent_critical_condition(RepoPriority::Critical, PrPriority::Important));
+            assert!(!is_persistent_critical_condition(RepoPriority::Important, PrPriority::Critical));
+        }
+
+        #[test]
+        fn is_important_boundary() {
+            assert!(is_important(EffectivePriority::Important));
+            assert!(!is_important(EffectivePriority::Standard));
+        }
+    }
 }

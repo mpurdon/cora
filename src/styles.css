@@ -289,6 +289,41 @@ input:focus-visible {
   background: var(--ink-2);
 }
 
+/* Inline icon radiogroup (repo/PR priority). */
+.priority-selector {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.priority-selector-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.priority-selector-item:hover {
+  color: var(--text);
+  background: var(--ink-2);
+}
+
+.priority-selector-item:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+/* Selected level: a ring plus fill, not just a colour swap, so the choice
+   reads even without colour vision. */
+.priority-selector-item.selected {
+  color: var(--text);
+  background: var(--ink-2);
+  box-shadow: inset 0 0 0 1px var(--text);
+}
+
 .callout-list {
   flex: 1;
   overflow-y: auto;
@@ -589,6 +624,23 @@ input:focus-visible {
   color: var(--warn);
 }
 
+.feed-critical-badge {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--ink-0);
+  background: var(--bad);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 13px;
+}
+
+.feed-item.persistent-critical .feed-dot {
+  background: var(--bad);
+}
+
 .feed-repo {
   flex: none;
   max-width: 75cqw;
@@ -812,15 +864,21 @@ body.col-resizing * {
   line-height: 13px;
 }
 
-.prio-tag.high {
+.prio-tag.critical,
+.prio-tag.important {
   color: var(--ink-0);
   background: var(--text);
   font-weight: 700;
 }
 
-.prio-tag.low {
+.prio-tag.unimportant,
+.prio-tag.someday {
   color: var(--idle);
   border: 1px solid var(--line);
+}
+
+.prio-tag.standard {
+  color: var(--text);
 }
 
 .repo-overrides {
@@ -828,23 +886,6 @@ body.col-resizing * {
   flex-wrap: wrap;
   gap: 4px;
   align-items: center;
-}
-
-.flag-btn {
-  color: var(--idle);
-  font-size: 11px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  opacity: 0;
-}
-
-.group-header:hover .flag-btn {
-  opacity: 1;
-}
-
-.flag-btn:hover {
-  color: var(--text);
-  background: var(--ink-0);
 }
 
 .prio-select {
