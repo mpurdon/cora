@@ -10,6 +10,7 @@ import type { C4NodeKind } from "../bindings/C4NodeKind";
 import { AssistantPanel } from "../components/analysis/AssistantPanel";
 import { formatTokens } from "../components/analysis/TraceSteps";
 import { AssessmentView } from "../components/analysis/AssessmentView";
+import { PrDescription } from "../components/analysis/PrDescription";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
 import { DiffPeek, resolveFindingFile } from "../components/analysis/DiffPeek";
@@ -744,18 +745,28 @@ function ProgressLog({ steps }: { steps: { message: string }[] }) {
   );
 }
 
-/** Assessment + C4 tabs share one analysis run per (PR head, drill frame). */
-function AnalysisPanel({
-  pr,
-  tab,
-  highlight,
-  onFocusNodes,
-}: {
+type AnalysisPanelProps = {
   pr: TrackedPr;
   tab: "assessment" | "c4";
   highlight: string[];
   onFocusNodes: (ids: string[]) => void;
-}) {
+};
+
+/** The Assessment tab leads with the PR description in every analysis state —
+ *  idle, running, failed, done — because it's what you read to decide whether
+ *  the run is worth paying for. Keyed by PR so its fold state doesn't leak
+ *  from one PR to the next. */
+function AnalysisPanel(props: AnalysisPanelProps) {
+  return (
+    <>
+      {props.tab === "assessment" && <PrDescription key={props.pr.id} body={props.pr.body} />}
+      <AnalysisRun {...props} />
+    </>
+  );
+}
+
+/** Assessment + C4 tabs share one analysis run per (PR head, drill frame). */
+function AnalysisRun({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps) {
   const { runs, init, ensure, start } = useAnalysisStore();
   const [stack, setStack] = useState<DrillFrame[]>([ROOT_FRAME]);
 

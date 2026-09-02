@@ -1836,6 +1836,25 @@ body.col-resizing * {
 
 /* ---------- analysis: assessment ---------- */
 
+/* The PR description above the analysis. Same column as the assessment so
+   the two read as one page; the body reuses the comment markdown + clamp. */
+.pr-description {
+  max-width: 780px;
+  margin-bottom: 22px;
+}
+
+.pr-description-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.pr-description .comment-body {
+  font-size: 13px;
+}
+
 .assessment {
   max-width: 780px;
 }

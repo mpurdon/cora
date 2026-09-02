@@ -171,7 +171,7 @@ const COMMENT_CLAMP_PX = 320;
  *  that is already fully visible is worse than not offering it at all.
  *  Observed, not measured once, because markdown reflows: images load late,
  *  and the panel is resizable. */
-function useOverflows<T extends HTMLElement>(limit: number) {
+export function useOverflows<T extends HTMLElement>(limit: number) {
   const ref = useRef<T>(null);
   const [over, setOver] = useState(false);
   useEffect(() => {
