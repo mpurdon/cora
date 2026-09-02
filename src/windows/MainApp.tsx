@@ -1331,6 +1331,7 @@ function Detail({
         <ContextMenu
           x={menuAt.x}
           y={menuAt.y}
+          align="right"
           onClose={() => setMenuAt(null)}
           sections={[
             {
