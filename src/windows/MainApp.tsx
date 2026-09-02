@@ -1231,9 +1231,10 @@ function Detail({
     if (ids.length > 0) setTab("c4");
   };
 
-  // A newly opened PR always starts at the Assessment.
+  // A newly opened PR always starts at the Description — the author's intent is
+  // what you read before deciding whether to pay for an analysis.
   useEffect(() => {
-    setTab("assessment");
+    setTab("description");
     setHighlight([]);
   }, [pr.id]);
 
@@ -1425,7 +1426,7 @@ export function MainApp() {
   const [showTrackInput, setShowTrackInput] = useState(false);
   // Lifted from Detail so the assistant panel knows when the Diff tab is
   // active (its File-insights view only makes sense against the diff).
-  const [tab, setTab] = useState<Tab>("assessment");
+  const [tab, setTab] = useState<Tab>("description");
 
   const openSettings = (pane: SettingsPane = "general") => {
     setSettingsPane(pane);
