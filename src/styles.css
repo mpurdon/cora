@@ -4585,6 +4585,48 @@ button.diff-file-header:hover {
   background: color-mix(in srgb, var(--text) 20%, transparent);
 }
 
+/* Code peek: the diff behind a canvas node, as a panel view. Fills the
+   panel and scrolls vertically; long lines scroll inside each file's
+   .diff-body, never the panel. */
+.code-peek {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-peek-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.code-peek-head .spacer {
+  flex: 1;
+}
+
+.code-peek-name {
+  min-width: 0;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-peek-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.code-peek .diff-file-header {
+  padding: 6px 10px;
+}
+
 .panel-switch {
   display: inline-flex;
   border: 1px solid var(--line);
