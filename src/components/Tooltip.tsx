@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { layoutRect, layoutViewport } from "../lib/zoom";
 
 /** Delay before showing, so sweeping the pointer across a list doesn't flash a
  *  card per row. Shorter than the browser's ~1s, since these are informational
@@ -104,7 +105,10 @@ export function TooltipLayer() {
       timer.current = window.setTimeout(() => {
         const content = richContent.get(el)?.() ?? el.getAttribute("data-tip");
         if (!content) return;
-        const r = el.getBoundingClientRect();
+        // Layout px, not the raw client rect: the card is a fixed element
+        // inside the zoomed root, so its `left`/`top` are scaled once more on
+        // the way to the screen (see layoutRect).
+        const r = layoutRect(el);
         // First pass: below the trigger, left-aligned. The measuring effect
         // corrects for the viewport once the card has a size.
         setShown({
@@ -145,14 +149,17 @@ export function TooltipLayer() {
   // trigger or shifts sideways, and that isn't knowable until it has rendered.
   useEffect(() => {
     if (!shown || shown.placed || !cardRef.current || !anchorRef.current) return;
-    const card = cardRef.current.getBoundingClientRect();
-    const anchor = anchorRef.current.getBoundingClientRect();
+    // Everything in layout px, so the comparisons and the resulting
+    // `left`/`top` agree with each other at any zoom.
+    const card = layoutRect(cardRef.current);
+    const anchor = layoutRect(anchorRef.current);
+    const viewport = layoutViewport();
     let { x, y } = shown;
     let flipped = false;
-    if (x + card.width > window.innerWidth - EDGE_GAP) {
-      x = Math.max(EDGE_GAP, window.innerWidth - card.width - EDGE_GAP);
+    if (x + card.width > viewport.width - EDGE_GAP) {
+      x = Math.max(EDGE_GAP, viewport.width - card.width - EDGE_GAP);
     }
-    if (y + card.height > window.innerHeight - EDGE_GAP) {
+    if (y + card.height > viewport.height - EDGE_GAP) {
       // Flip above, but never past the top edge — a card taller than the space
       // above would otherwise render with its head off-screen.
       y = Math.max(EDGE_GAP, anchor.top - card.height - 8);
