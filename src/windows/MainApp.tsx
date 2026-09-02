@@ -653,7 +653,7 @@ function TrackPrInput({
   );
 }
 
-type Tab = "assessment" | "c4" | "diff" | "comments" | "history";
+type Tab = "description" | "assessment" | "c4" | "diff" | "comments" | "history";
 /** A row of the shortcut sheet. `run` present = the app handles the key;
  *  absent = documentation for something the mouse or the OS owns. */
 interface Shortcut {
@@ -681,6 +681,7 @@ const DOC_SHORTCUTS: Shortcut[] = [
 const HOTKEYS_SEEN = "cora.hotkeysSeen.v2";
 
 const TAB_ORDER: [Tab, string][] = [
+  ["description", "Description"],
   ["assessment", "Assessment"],
   ["c4", "Architecture"],
   ["diff", "Diff"],
@@ -752,21 +753,8 @@ type AnalysisPanelProps = {
   onFocusNodes: (ids: string[]) => void;
 };
 
-/** The Assessment tab leads with the PR description in every analysis state —
- *  idle, running, failed, done — because it's what you read to decide whether
- *  the run is worth paying for. Keyed by PR so its fold state doesn't leak
- *  from one PR to the next. */
-function AnalysisPanel(props: AnalysisPanelProps) {
-  return (
-    <>
-      {props.tab === "assessment" && <PrDescription key={props.pr.id} body={props.pr.body} />}
-      <AnalysisRun {...props} />
-    </>
-  );
-}
-
 /** Assessment + C4 tabs share one analysis run per (PR head, drill frame). */
-function AnalysisRun({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps) {
+function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps) {
   const { runs, init, ensure, start } = useAnalysisStore();
   const [stack, setStack] = useState<DrillFrame[]>([ROOT_FRAME]);
 
@@ -1379,6 +1367,7 @@ function Detail({
         ))}
       </div>
 
+      {tab === "description" && <PrDescription body={pr.body} />}
       {(tab === "assessment" || tab === "c4") && (
         <AnalysisPanel pr={pr} tab={tab} highlight={highlight} onFocusNodes={focusNodes} />
       )}
