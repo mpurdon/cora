@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { ipc } from "../lib/ipc";
+import type { C4Node } from "../bindings/C4Node";
 import type { CodeFinding } from "../bindings/CodeFinding";
 
 /** One PR's raw diff + viewed-file digests, shared between the file rail and
@@ -33,12 +34,21 @@ export interface ExplainRequest {
   finding: CodeFinding;
 }
 
+/** A canvas node whose diff the assistant panel is showing — the "code peek"
+ *  raised by clicking a node on the Architecture tab. Stays put until closed
+ *  (or the PR changes), so it survives a switch between panel views. */
+export interface CodePeek {
+  prId: string;
+  node: C4Node;
+}
+
 interface DiffState {
   entries: Record<string, DiffEntry>;
   /** One-shot "scroll the Diff tab to this file" request from the file rail. */
   focusPath: string | null;
   composeRequest: ComposeRequest | null;
   explainRequest: ExplainRequest | null;
+  peek: CodePeek | null;
   /** File currently at the top of the Diff tab's viewport — the file rail
    *  highlights it and keeps it in view (scroll spy). */
   visiblePath: string | null;
@@ -50,6 +60,8 @@ interface DiffState {
   clearCompose: () => void;
   requestExplain: (prId: string, finding: CodeFinding) => void;
   clearExplain: () => void;
+  openPeek: (prId: string, node: C4Node) => void;
+  closePeek: () => void;
   setVisiblePath: (path: string | null) => void;
   /** Org switch: drop every cached diff and transient focus state. */
   reset: () => void;
@@ -60,6 +72,7 @@ export const useDiffStore = create<DiffState>((set, get) => ({
   focusPath: null,
   composeRequest: null,
   explainRequest: null,
+  peek: null,
   visiblePath: null,
 
   reset: () =>
@@ -68,6 +81,7 @@ export const useDiffStore = create<DiffState>((set, get) => ({
       focusPath: null,
       composeRequest: null,
       explainRequest: null,
+      peek: null,
       visiblePath: null,
     }),
 
@@ -133,5 +147,7 @@ export const useDiffStore = create<DiffState>((set, get) => ({
   clearCompose: () => set({ composeRequest: null }),
   requestExplain: (prId, finding) => set({ explainRequest: { prId, finding } }),
   clearExplain: () => set({ explainRequest: null }),
+  openPeek: (prId, node) => set({ peek: { prId, node } }),
+  closePeek: () => set({ peek: null }),
   setVisiblePath: (path) => set({ visiblePath: path }),
 }));

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { tip } from "../Tooltip";
 import type { C4Node } from "../../bindings/C4Node";
-import { ipc } from "../../lib/ipc";
-import { DiffJump, parseDiff, type DiffFile } from "./DiffView";
+import { useDiffStore } from "../../state/diffStore";
+import { DiffJump, parseDiffCached, type DiffFile } from "./DiffView";
 
 /** Lowercase with separators stripped, so naming conventions stop mattering:
  *  "Document Viewer Panel", "document-viewer-panel" and
@@ -108,11 +108,17 @@ export function resolveFindingFile(
 /** Pure diff rendering — no comments, no composers. */
 function BareFileDiff({ file }: { file: DiffFile }) {
   const [open, setOpen] = useState(true);
+  const dirIdx = file.path.lastIndexOf("/");
   return (
     <div className="diff-file">
       <button className="diff-file-header" onClick={() => setOpen((o) => !o)}>
         <span className="chevron">{open ? "▾" : "▸"}</span>
-        <span className="diff-path mono">{file.path}</span>
+        <span className="diff-path mono" data-tip={file.path}>
+          {dirIdx >= 0 && (
+            <span className="diff-path-dir">{file.path.slice(0, dirIdx + 1)}</span>
+          )}
+          <span className="diff-path-name">{file.path.slice(dirIdx + 1)}</span>
+        </span>
         <span className="spacer" />
         <span className="diffstat mono">
           <span className="add">+{file.additions}</span> <span className="del">−{file.deletions}</span>
@@ -141,7 +147,9 @@ function BareFileDiff({ file }: { file: DiffFile }) {
   );
 }
 
-/** Slide-out showing just the diff behind a clicked canvas node. */
+/** The diff behind a clicked canvas node, as a view of the assistant panel.
+ *  Reads the shared diff entry — the Architecture tab fetched it already for
+ *  its sketches — so opening a peek costs nothing. */
 export function DiffPeek({
   prId,
   node,
@@ -151,43 +159,48 @@ export function DiffPeek({
   node: C4Node;
   onClose: () => void;
 }) {
-  const [raw, setRaw] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const entry = useDiffStore((s) => s.entries[prId]);
+  const files = useMemo(() => (entry?.raw ? parseDiffCached(entry.raw) : []), [entry?.raw]);
+  const matched = useMemo(() => matchFiles(files, node), [files, node]);
+  const additions = matched.reduce((n, f) => n + f.additions, 0);
+  const deletions = matched.reduce((n, f) => n + f.deletions, 0);
 
   useEffect(() => {
-    setRaw(null);
-    void ipc
-      .getPrDiff(prId)
-      .then(setRaw)
-      .catch((e) => setError(String(e)));
-  }, [prId]);
-
-  const files = useMemo(() => (raw ? parseDiff(raw) : []), [raw]);
-  const matched = useMemo(() => matchFiles(files, node), [files, node]);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   return (
-    <>
-      <div className="drawer-backdrop" onClick={onClose} />
-      <aside className="activity-drawer code-drawer open">
-        <header className="drawer-header">
-          <span className="drawer-title mono code-drawer-path">{node.name} — diff</span>
-          <button className="icon-btn" {...tip("Close")} onClick={onClose}>
-            ✕
-          </button>
-        </header>
-        <div className="drawer-body code-drawer-body diff-peek-body">
-          {error && <div className="analysis-error">{error}</div>}
-          {raw === null && !error && <div className="drawer-empty">fetching diff…</div>}
-          {raw !== null && matched.length === 0 && (
-            <div className="drawer-empty">
-              couldn't map "{node.name}" to a changed file — it may be unchanged in this PR
-            </div>
-          )}
-          {matched.map((f) => (
-            <BareFileDiff key={f.path} file={f} />
-          ))}
-        </div>
-      </aside>
-    </>
+    <div className="code-peek">
+      <div className="code-peek-head">
+        <span className="code-peek-name mono" data-tip={node.name}>
+          {node.name}
+        </span>
+        {matched.length > 0 && (
+          <span className="diffstat mono">
+            <span className="add">+{additions}</span> <span className="del">−{deletions}</span>
+          </span>
+        )}
+        <span className="spacer" />
+        <button className="icon-btn" {...tip("Close this diff  (Esc)")} onClick={onClose}>
+          ✕
+        </button>
+      </div>
+      <div className="code-peek-body">
+        {entry?.status === "error" && <div className="analysis-error">{entry.error}</div>}
+        {(!entry || entry.status === "loading") && (
+          <div className="drawer-empty">fetching diff…</div>
+        )}
+        {entry?.status === "done" && matched.length === 0 && (
+          <div className="drawer-empty">
+            couldn't map "{node.name}" to a changed file — it may be unchanged in this PR
+          </div>
+        )}
+        {matched.map((f) => (
+          <BareFileDiff key={f.path} file={f} />
+        ))}
+      </div>
+    </div>
   );
 }

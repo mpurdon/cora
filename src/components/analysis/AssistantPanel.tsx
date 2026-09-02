@@ -9,13 +9,17 @@ import { useDiffStore } from "../../state/diffStore";
 import { eli5Prompt } from "../../lib/comments";
 import { CommentBody } from "./CommentsView";
 import { ContextDrawer } from "./ContextDrawer";
+import { DiffPeek } from "./DiffPeek";
 import { FileInsights } from "./FileInsights";
 import { formatTokens, TraceSteps } from "./TraceSteps";
 import { IconArrowUp } from "../icons";
 
+type View = "chat" | "insights" | "code";
+
 /** Right-hand assistant panel: the analysis run's activity plus a
  *  conversation grounded in it. Mutating actions surface as confirm cards.
- *  On the Diff tab a second view, File insights, follows the file in view. */
+ *  On the Diff tab a second view, File insights, follows the file in view;
+ *  a code node clicked on the Architecture tab adds a third, its diff. */
 export function AssistantPanel({
   pr,
   width,
@@ -27,11 +31,31 @@ export function AssistantPanel({
   insightsEnabled: boolean;
   onClose: () => void;
 }) {
-  const [view, setView] = useState<"chat" | "insights">("chat");
-  // Leaving the Diff tab pulls the panel back to the chat, its default.
+  const [view, setView] = useState<View>("chat");
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  // Leaving the Diff tab pulls file insights back to the chat, its default.
   useEffect(() => {
-    if (!insightsEnabled) setView("chat");
+    if (!insightsEnabled) setView((v) => (v === "insights" ? "chat" : v));
   }, [insightsEnabled]);
+
+  // A code peek takes the panel over while it's open and hands back whatever
+  // was showing before when it closes. Another node while peeking just swaps
+  // the diff — the view to return to is the one before the first.
+  const peek = useDiffStore((s) => s.peek);
+  const closePeek = useDiffStore((s) => s.closePeek);
+  const peekNode = peek?.prId === pr.id ? peek.node : null;
+  const viewBeforePeek = useRef<View>("chat");
+  const hadPeek = useRef(false);
+  useEffect(() => {
+    if (peekNode) {
+      if (!hadPeek.current) viewBeforePeek.current = viewRef.current;
+      setView("code");
+    } else if (hadPeek.current) {
+      setView((v) => (v === "code" ? viewBeforePeek.current : v));
+    }
+    hadPeek.current = !!peekNode;
+  }, [peekNode]);
   const session = useChatStore((s) => s.sessions[pr.id]);
   const context = useChatStore((s) => s.contexts[pr.id]);
   const init = useChatStore((s) => s.init);
@@ -121,6 +145,16 @@ export function AssistantPanel({
           >
             File insights
           </button>
+          {peekNode && (
+            <button
+              role="tab"
+              aria-selected={view === "code"}
+              className={view === "code" ? "on" : ""}
+              onClick={() => setView("code")}
+            >
+              Code
+            </button>
+          )}
         </div>
         <span className="eyebrow">#{pr.number}</span>
         <span className="spacer" />
@@ -138,7 +172,9 @@ export function AssistantPanel({
         </button>
       </header>
 
-      {view === "insights" ? (
+      {view === "code" && peekNode ? (
+        <DiffPeek prId={pr.id} node={peekNode} onClose={closePeek} />
+      ) : view === "insights" ? (
         <FileInsights pr={pr} />
       ) : (
         <>

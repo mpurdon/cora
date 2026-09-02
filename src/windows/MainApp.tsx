@@ -12,7 +12,7 @@ import { formatTokens } from "../components/analysis/TraceSteps";
 import { AssessmentView } from "../components/analysis/AssessmentView";
 import { AwsAuthCard } from "../components/analysis/AwsAuthCard";
 import { C4Canvas } from "../components/analysis/C4Canvas";
-import { DiffPeek, resolveFindingFile } from "../components/analysis/DiffPeek";
+import { resolveFindingFile } from "../components/analysis/DiffPeek";
 import { DiffView, fileDigest, parseDiffCached, type DiffFile } from "../components/analysis/DiffView";
 import { CopyButton } from "../components/CopyButton";
 import { codeSkeleton, componentSkeleton, filterGraph } from "../components/analysis/skeleton";
@@ -837,7 +837,6 @@ function AnalysisPanel({
   }, [contextResult, frame, diffFiles]);
 
   const [pendingDrill, setPendingDrill] = useState<C4Node | null>(null);
-  const [diffPeek, setDiffPeek] = useState<C4Node | null>(null);
 
   const pushDrill = (node: C4Node, next: UiLevel) => {
     setPendingDrill(null);
@@ -865,10 +864,11 @@ function AnalysisPanel({
       onPeek={(node) => {
         // Diffs only surface at the code level — higher levels are for
         // navigating the architecture, not reading patches. People and
-        // external systems have nothing to peek at anywhere.
+        // external systems have nothing to peek at anywhere. The peek lives
+        // in the assistant panel, so it goes through the store.
         if (frame.level !== "code") return;
         if (node.kind === "person" || node.kind === "external-system") return;
-        setDiffPeek(node);
+        useDiffStore.getState().openPeek(pr.id, node);
       }}
     />
   );
@@ -995,9 +995,6 @@ function AnalysisPanel({
             <span className="mono sketch-progress">{last?.message}</span>
           </div>
           {canvasFor(sketch)}
-          {diffPeek && (
-            <DiffPeek prId={pr.id} node={diffPeek} onClose={() => setDiffPeek(null)} />
-          )}
         </>
       );
     }
@@ -1053,9 +1050,6 @@ function AnalysisPanel({
             </button>
           </div>
           {canvasFor(sketch)}
-          {diffPeek && (
-            <DiffPeek prId={pr.id} node={diffPeek} onClose={() => setDiffPeek(null)} />
-          )}
         </>
       );
     }
@@ -1141,9 +1135,6 @@ function AnalysisPanel({
             frame.level === "container" && frame.focus
               ? filterGraph(result.graph, frame.focus)
               : result.graph,
-          )}
-          {diffPeek && (
-            <DiffPeek prId={pr.id} node={diffPeek} onClose={() => setDiffPeek(null)} />
           )}
           {pendingDrill && (
             <div className="drill-confirm">
@@ -1406,6 +1397,28 @@ export function MainApp() {
     if (explainRequest) setAssistant(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [explainRequest]);
+  // A code peek (a node clicked on the Architecture tab) shows in the panel,
+  // so it opens the panel. Remember whether the panel was closed at the time:
+  // dropping the peek then closes it again — the panel is left as it was found.
+  const peek = useDiffStore((s) => s.peek);
+  const closePeek = useDiffStore((s) => s.closePeek);
+  const panelBeforePeek = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (peek) {
+      if (panelBeforePeek.current === null) panelBeforePeek.current = assistantOpen;
+      setAssistant(true);
+    } else {
+      if (panelBeforePeek.current === false) setAssistant(false);
+      panelBeforePeek.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peek]);
+  // Closing the panel by any route (✕, the `a` key) drops the peek with it,
+  // and a peek belongs to the PR it was opened on.
+  useEffect(() => {
+    if (!assistantOpen) closePeek();
+  }, [assistantOpen, closePeek]);
+  useEffect(() => closePeek(), [selectedId, closePeek]);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsPane, setSettingsPane] = useState<SettingsPane>("general");
   const [showTrackInput, setShowTrackInput] = useState(false);
