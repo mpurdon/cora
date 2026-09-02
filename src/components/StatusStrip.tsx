@@ -3,8 +3,18 @@ import type { TrackedPr } from "../bindings/TrackedPr";
 import { ciTone, mergeTone, reviewTone } from "../state/prStore";
 import { Tooltip } from "./Tooltip";
 
-/** The signature 3-lamp strip: CI / review / mergeability, top to bottom. */
-export function StatusStrip({ pr, pulsing }: { pr: TrackedPr; pulsing?: boolean }) {
+/** The signature 3-lamp strip: CI / review / mergeability, top to bottom.
+ *  `variant="title"` turns it on its side — three squares, left to right, at
+ *  the height of the heading they sit in front of. */
+export function StatusStrip({
+  pr,
+  pulsing,
+  variant,
+}: {
+  pr: TrackedPr;
+  pulsing?: boolean;
+  variant?: "title";
+}) {
   const lamps = [
     { tone: ciTone(pr), label: `CI checks: ${(pr.ciStatus ?? "none").toLowerCase()}` },
     { tone: reviewTone(pr), label: `review: ${(pr.reviewDecision ?? "none").toLowerCase().replace(/_/g, " ")}` },
@@ -12,7 +22,7 @@ export function StatusStrip({ pr, pulsing }: { pr: TrackedPr; pulsing?: boolean 
   ];
   return (
     <Tooltip
-      className={`strip${pulsing ? " pulsing" : ""}`}
+      className={`strip${variant ? ` ${variant}` : ""}${pulsing ? " pulsing" : ""}`}
       content={() => (
         <ul className="tooltip-list">
           {lamps.map((l, i) => (

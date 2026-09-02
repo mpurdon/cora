@@ -1279,13 +1279,13 @@ function Detail({
         </span>
       </div>
       <h1>
-        {pr.isDraft ? "Draft: " : ""}
-        {clean}
+        <StatusStrip pr={pr} variant="title" />
+        <span className="title-text">
+          {pr.isDraft ? "Draft: " : ""}
+          {clean}
+        </span>
       </h1>
       <div className="facts">
-        <span className="fact">
-          <StatusStrip pr={pr} />
-        </span>
         {type !== "unknown" && <span className="fact mono">{type}</span>}
         <span className="fact mono">{pr.state.toLowerCase()}</span>
         <span className="fact mono diffstat">
