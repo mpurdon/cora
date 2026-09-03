@@ -308,6 +308,244 @@ function InlineThread({
   );
 }
 
+/** A range of new-side lines a review comment anchors to. `end` is the line
+ *  the comment posts against; `start` (≤ end) the top of the range. */
+interface LineRange {
+  start: number;
+  end: number;
+}
+
+/** The press-to-comment machinery, shared by the hunk view and the whole-file
+ *  view so both offer exactly the same affordance. A plain click on a line's
+ *  + is a one-line range; dragging the + down the gutter grows it, the way
+ *  GitHub lets you suggest across several lines. The composer only opens on
+ *  release, so it doesn't flicker under the moving end. Posting goes through
+ *  `addDiffComment` from either view, so the comment lands in the PR
+ *  conversation the same way. */
+function useLineComments({
+  prId,
+  path,
+  lineTextByNew,
+  onChanged,
+}: {
+  prId: string;
+  path: string;
+  /** The current content of every new-side line, so a range can hand the
+   *  composer the exact text it would replace in a suggestion. */
+  lineTextByNew: Map<number, string>;
+  onChanged: () => void;
+}) {
+  const [range, setRange] = useState<LineRange | null>(null);
+  const [seedBody, setSeedBody] = useState("");
+  // While the pointer is held on a + button we're extending a selection.
+  const [selecting, setSelecting] = useState(false);
+  // `anchor` is the line pressed; `last` the line the cursor is currently over,
+  // so a move only re-ranges when it crosses into a new line. `x`/`y` are the
+  // latest cursor position, resolved to a line once per frame — see the move
+  // handler.
+  const drag = useRef<{
+    anchor: number;
+    last: number;
+    x: number;
+    y: number;
+    raf: number;
+  } | null>(null);
+
+  // A drag can end anywhere on the page, so listen globally while one is live.
+  useEffect(() => {
+    const onUp = () => {
+      if (drag.current?.raf) cancelAnimationFrame(drag.current.raf);
+      drag.current = null;
+      setSelecting(false);
+    };
+    window.addEventListener("pointerup", onUp);
+    return () => window.removeEventListener("pointerup", onUp);
+  }, []);
+
+  const rangeText = (r: LineRange) => {
+    const out: string[] = [];
+    for (let n = r.start; n <= r.end; n++) {
+      const t = lineTextByNew.get(n);
+      if (t != null) out.push(t);
+    }
+    return out.join("\n");
+  };
+
+  /** Open a one-line composer on `line`, pre-filled (assessment finding → comment). */
+  const seed = (line: number, body: string) => {
+    setSeedBody(body);
+    setRange({ start: line, end: line });
+  };
+  const close = () => {
+    setRange(null);
+    setSeedBody("");
+  };
+
+  // Press to open a one-line composer; drag down to span a range (the
+  // composer opens on release). Pressing the + of a line whose one-line
+  // composer is already open closes it again — decided here, before we
+  // overwrite the range.
+  const onPointerDown = (n: number) => (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    if (range?.start === n && range?.end === n && !seedBody) {
+      setRange(null);
+      return;
+    }
+    drag.current = { anchor: n, last: n, x: e.clientX, y: e.clientY, raf: 0 };
+    setSelecting(true);
+    setSeedBody("");
+    setRange({ start: n, end: n });
+    // Capture the pointer so we keep getting moves once the cursor leaves
+    // this 16px button — pointerenter on sibling buttons is swallowed by
+    // implicit capture, which is what broke dragging.
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* older engines: fall back to bubbling moves */
+    }
+  };
+
+  // While held, grow the range to the line under the cursor. The captured
+  // button receives every move; elementFromPoint maps the cursor to a real
+  // line, so dragging anywhere over the diff works. One hit-test per frame,
+  // not per event: elementFromPoint forces a layout flush, and the setRange
+  // it feeds has just dirtied layout again (every row in the range gains a
+  // shadow), so at coalesced trackpad rates the pair thrashes a body of
+  // thousands of rows.
+  const onPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const d = drag.current;
+    if (!d) return;
+    d.x = e.clientX;
+    d.y = e.clientY;
+    if (d.raf) return;
+    d.raf = requestAnimationFrame(() => {
+      const cur = drag.current;
+      if (!cur) return;
+      cur.raf = 0;
+      const row = document
+        .elementFromPoint(cur.x, cur.y)
+        ?.closest<HTMLElement>("[data-newline]");
+      const m = row ? Number(row.dataset.newline) : NaN;
+      if (Number.isNaN(m) || m === cur.last) return;
+      cur.last = m;
+      setRange({ start: Math.min(cur.anchor, m), end: Math.max(cur.anchor, m) });
+    });
+  };
+
+  const submit = async (body: string) => {
+    if (!range) return;
+    await ipc.addDiffComment(
+      prId,
+      path,
+      range.end,
+      body,
+      range.start === range.end ? undefined : range.start,
+    );
+    close();
+    onChanged();
+  };
+
+  return { path, range, selecting, seedBody, rangeText, seed, close, onPointerDown, onPointerMove, submit };
+}
+type LineComments = ReturnType<typeof useLineComments>;
+
+/** One row of code with the review affordances hung off it: the + press
+ *  target, the range highlight, any threads already on the line, and the
+ *  composer under the bottom line of an open range. Only lines with a
+ *  new-side number get the +: deleted lines have none, and GitHub can't
+ *  anchor a comment to them in this app's model, so they carry an inert
+ *  spacer instead. */
+function CommentableLine({
+  kind,
+  n,
+  text,
+  threads,
+  comments,
+  onChanged,
+}: {
+  kind: DiffLine["kind"];
+  /** New-side line number; null on deleted lines. */
+  n: number | null;
+  text: string;
+  threads?: ReviewThread[];
+  comments: LineComments;
+  onChanged: () => void;
+}) {
+  const { path, range, selecting, seedBody } = comments;
+  const commentable = n != null && kind !== "hunk";
+  const inRange = n != null && range != null && n >= range.start && n <= range.end;
+  // The composer hangs under the bottom line of the range, once the drag
+  // that selected it has been released.
+  const showComposer = n != null && range != null && range.end === n && !selecting;
+  return (
+    <div>
+      <div
+        className={`diff-line ${kind}${inRange ? " in-range" : ""}`}
+        data-newline={commentable && n != null ? n : undefined}
+      >
+        <span className="code-lineno">{n ?? ""}</span>
+        <span className="diff-gutter">{kind === "add" ? "+" : kind === "del" ? "−" : " "}</span>
+        {commentable && n != null ? (
+          <button
+            className="line-comment-btn"
+            data-tip={`Comment on line ${n} — drag to span several`}
+            aria-label={`Comment on line ${n} — drag to span several`}
+            onPointerDown={comments.onPointerDown(n)}
+            onPointerMove={comments.onPointerMove}
+          >
+            +
+          </button>
+        ) : (
+          // Same-width spacer so del lines' code aligns with add/context
+          // lines (which carry the comment button).
+          <span className="line-comment-btn ghost" aria-hidden="true" />
+        )}
+        {text}
+      </div>
+      {threads?.map((t) => (
+        <InlineThread key={t.id} thread={t} onChanged={onChanged} lineText={text} />
+      ))}
+      {showComposer && range != null && (
+        <div className="inline-thread">
+          <Composer
+            key={seedBody ? "seeded" : "manual"}
+            placeholder={
+              range.start === range.end
+                ? `Comment on ${path}:${range.end}…`
+                : `Comment on ${path}:${range.start}–${range.end}…`
+            }
+            submitLabel="Comment"
+            autoFocus
+            initialBody={seedBody}
+            suggestionSeed={comments.rangeText(range)}
+            onCancel={comments.close}
+            onSubmit={comments.submit}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Inline threads live inside a max-content scroll layer, so % widths resolve
+ *  against the widest code line, not the viewport — that's why they used to
+ *  stop short. Publish the body's visible width as a variable the sticky
+ *  thread reads, so it always spans exactly the scrollport. `mounted` is
+ *  whatever gates the <pre>'s existence, so the observer re-attaches when it
+ *  (re)appears. */
+function useDiffVisibleWidth(bodyRef: React.RefObject<HTMLPreElement | null>, mounted: boolean) {
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const set = () => el.style.setProperty("--diff-visible-w", `${el.clientWidth}px`);
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
+}
+
 function FileDiff({
   file,
   prId,
@@ -355,37 +593,6 @@ function FileDiff({
     if (focused) setOpen(true);
   }, [focused]);
 
-  // The composer anchors to a range of new-side lines. A plain click is a
-  // one-line range; dragging the + button down the gutter grows it, the way
-  // GitHub lets you suggest across several lines. `end` is the line the
-  // comment posts against; `start` (≤ end) the top of the range.
-  const [range, setRange] = useState<{ start: number; end: number } | null>(null);
-  const [seedBody, setSeedBody] = useState("");
-  // While the pointer is held on a + button we're extending a selection; the
-  // composer only opens on release, so it doesn't flicker under the moving end.
-  const [selecting, setSelecting] = useState(false);
-  // `anchor` is the line pressed; `last` the line the cursor is currently over,
-  // so a move only re-ranges when it crosses into a new line. `x`/`y` are the
-  // latest cursor position, resolved to a line once per frame — see the move
-  // handler.
-  const drag = useRef<{
-    anchor: number;
-    last: number;
-    x: number;
-    y: number;
-    raf: number;
-  } | null>(null);
-
-  useEffect(() => {
-    if (compose) {
-      setOpen(true);
-      setSeedBody(compose.body);
-      setRange({ start: compose.line, end: compose.line });
-    }
-  }, [compose]);
-
-  // The current content of every new-side line, so a range can hand the
-  // composer the exact text it would replace in a suggestion.
   const lineTextByNew = useMemo(() => {
     const m = new Map<number, string>();
     for (const l of file.lines) {
@@ -393,40 +600,19 @@ function FileDiff({
     }
     return m;
   }, [file]);
-  const rangeText = (r: { start: number; end: number }) => {
-    const out: string[] = [];
-    for (let n = r.start; n <= r.end; n++) {
-      const t = lineTextByNew.get(n);
-      if (t != null) out.push(t);
+  const comments = useLineComments({ prId, path: file.path, lineTextByNew, onChanged });
+  const { range } = comments;
+
+  useEffect(() => {
+    if (compose) {
+      setOpen(true);
+      comments.seed(compose.line, compose.body);
     }
-    return out.join("\n");
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compose]);
 
-  // A drag can end anywhere on the page, so listen globally while one is live.
-  useEffect(() => {
-    const onUp = () => {
-      if (drag.current?.raf) cancelAnimationFrame(drag.current.raf);
-      drag.current = null;
-      setSelecting(false);
-    };
-    window.addEventListener("pointerup", onUp);
-    return () => window.removeEventListener("pointerup", onUp);
-  }, []);
-
-  // Inline threads live inside a max-content scroll layer, so % widths resolve
-  // against the widest code line, not the viewport — that's why they used to
-  // stop short. Publish the body's visible width as a variable the sticky
-  // thread reads, so it always spans exactly the scrollport.
   const bodyRef = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const set = () => el.style.setProperty("--diff-visible-w", `${el.clientWidth}px`);
-    set();
-    const ro = new ResizeObserver(set);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [open]);
+  useDiffVisibleWidth(bodyRef, open);
 
   // Hunk segments: a header line plus its body, for per-hunk collapsing.
   // Cut once per file rather than on every render of the header.
@@ -446,126 +632,17 @@ function FileDiff({
   // trivial run inside a mixed hunk.
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
 
-  const renderLine = (l: DiffLine, key: string) => {
-    const threads = l.newLine != null ? threadsByLine.get(l.newLine) : undefined;
-    const commentable = l.newLine != null && l.kind !== "hunk";
-    const n = l.newLine;
-    const inRange = n != null && range != null && n >= range.start && n <= range.end;
-    // The composer hangs under the bottom line of the range, once the drag
-    // that selected it has been released.
-    const showComposer = n != null && range != null && range.end === n && !selecting;
-    return (
-      <div key={key}>
-        <div
-          className={`diff-line ${l.kind}${inRange ? " in-range" : ""}`}
-          data-newline={commentable && n != null ? n : undefined}
-        >
-          <span className="code-lineno">{l.newLine ?? ""}</span>
-          <span className="diff-gutter">
-            {l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}
-          </span>
-          {commentable && n != null ? (
-            <button
-              className="line-comment-btn"
-              data-tip={`Comment on line ${n} — drag to span several`}
-              aria-label={`Comment on line ${n} — drag to span several`}
-              // Press to open a one-line composer; drag down to span a range
-              // (the composer opens on release). Pressing the + of a line whose
-              // one-line composer is already open closes it again — decided
-              // here, before we overwrite the range.
-              onPointerDown={(e) => {
-                e.preventDefault();
-                if (range?.start === n && range?.end === n && !seedBody) {
-                  setRange(null);
-                  return;
-                }
-                drag.current = { anchor: n, last: n, x: e.clientX, y: e.clientY, raf: 0 };
-                setSelecting(true);
-                setSeedBody("");
-                setRange({ start: n, end: n });
-                // Capture the pointer so we keep getting moves once the cursor
-                // leaves this 16px button — pointerenter on sibling buttons is
-                // swallowed by implicit capture, which is what broke dragging.
-                try {
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                } catch {
-                  /* older engines: fall back to bubbling moves */
-                }
-              }}
-              // While held, grow the range to the line under the cursor. The
-              // captured button receives every move; elementFromPoint maps the
-              // cursor to a real line, so dragging anywhere over the diff works.
-              // One hit-test per frame, not per event: elementFromPoint forces a
-              // layout flush, and the setRange it feeds has just dirtied layout
-              // again (every row in the range gains a shadow), so at coalesced
-              // trackpad rates the pair thrashes a body of thousands of rows.
-              onPointerMove={(e) => {
-                const d = drag.current;
-                if (!d) return;
-                d.x = e.clientX;
-                d.y = e.clientY;
-                if (d.raf) return;
-                d.raf = requestAnimationFrame(() => {
-                  const cur = drag.current;
-                  if (!cur) return;
-                  cur.raf = 0;
-                  const row = document
-                    .elementFromPoint(cur.x, cur.y)
-                    ?.closest<HTMLElement>("[data-newline]");
-                  const m = row ? Number(row.dataset.newline) : NaN;
-                  if (Number.isNaN(m) || m === cur.last) return;
-                  cur.last = m;
-                  setRange({ start: Math.min(cur.anchor, m), end: Math.max(cur.anchor, m) });
-                });
-              }}
-            >
-              +
-            </button>
-          ) : (
-            // Same-width spacer so del lines' code aligns with add/context
-            // lines (which carry the comment button).
-            <span className="line-comment-btn ghost" aria-hidden="true" />
-          )}
-          {l.text}
-        </div>
-        {threads?.map((t) => (
-          <InlineThread key={t.id} thread={t} onChanged={onChanged} lineText={l.text} />
-        ))}
-        {showComposer && range != null && (
-          <div className="inline-thread">
-            <Composer
-              key={seedBody ? "seeded" : "manual"}
-              placeholder={
-                range.start === range.end
-                  ? `Comment on ${file.path}:${range.end}…`
-                  : `Comment on ${file.path}:${range.start}–${range.end}…`
-              }
-              submitLabel="Comment"
-              autoFocus
-              initialBody={seedBody}
-              suggestionSeed={rangeText(range)}
-              onCancel={() => {
-                setRange(null);
-                setSeedBody("");
-              }}
-              onSubmit={async (body) => {
-                await ipc.addDiffComment(
-                  prId,
-                  file.path,
-                  range.end,
-                  body,
-                  range.start === range.end ? undefined : range.start,
-                );
-                setRange(null);
-                setSeedBody("");
-                onChanged();
-              }}
-            />
-          </div>
-        )}
-      </div>
-    );
-  };
+  const renderLine = (l: DiffLine, key: string) => (
+    <CommentableLine
+      key={key}
+      kind={l.kind}
+      n={l.newLine}
+      text={l.text}
+      threads={l.newLine != null ? threadsByLine.get(l.newLine) : undefined}
+      comments={comments}
+      onChanged={onChanged}
+    />
+  );
 
   return (
     <div className={`diff-file${viewed ? " viewed" : ""}`} data-diff-path={file.path}>
@@ -972,7 +1049,13 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   if (expanded) {
     return (
       <div className={`diff-view${wrap ? " wrap" : ""}`} ref={rootRef}>
-        <FullFileView prId={prId} file={expanded} onClose={closeExpanded} />
+        <FullFileView
+          prId={prId}
+          file={expanded}
+          threadsByLine={threadsByFile.get(expanded.path) ?? new Map()}
+          onChanged={loadComments}
+          onClose={closeExpanded}
+        />
       </div>
     );
   }
@@ -1105,20 +1188,27 @@ function mergeFullFile(content: string, file: DiffFile): FullLine[] {
 }
 
 /** Whole-file takeover of the diff panel: full contents at the PR head with
- *  the diff overlaid, auto-scrolled to the first change. Closing restores
- *  the file list where you left it. */
+ *  the diff overlaid, auto-scrolled to the first change. Every line with a
+ *  new-side number takes review comments exactly as it does in the hunk
+ *  view, and the file's open threads sit under their lines here too. Closing
+ *  restores the file list where you left it. */
 function FullFileView({
   prId,
   file,
+  threadsByLine,
+  onChanged,
   onClose,
 }: {
   prId: string;
   file: DiffFile;
+  threadsByLine: Map<number, ReviewThread[]>;
+  onChanged: () => void;
   onClose: () => void;
 }) {
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bodyRef = useRef<HTMLPreElement>(null);
+  useDiffVisibleWidth(bodyRef, content !== null);
 
   useEffect(() => {
     setContent(null);
@@ -1139,6 +1229,13 @@ function FullFileView({
     () => (content != null ? mergeFullFile(content, file) : []),
     [content, file],
   );
+  // The whole file is here, so every new-side line has text for a suggestion.
+  const lineTextByNew = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const l of merged) if (l.n != null) m.set(l.n, l.text);
+    return m;
+  }, [merged]);
+  const comments = useLineComments({ prId, path: file.path, lineTextByNew, onChanged });
 
   useEffect(() => {
     if (merged.length === 0) return;
@@ -1176,13 +1273,15 @@ function FullFileView({
         <pre className="diff-body" ref={bodyRef}>
           <div className="diff-scroll-inner">
             {merged.map((l, i) => (
-              <div key={i} className={`diff-line ${l.kind}`}>
-                <span className="code-lineno">{l.n ?? ""}</span>
-                <span className="diff-gutter">
-                  {l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}
-                </span>
-                {l.text}
-              </div>
+              <CommentableLine
+                key={i}
+                kind={l.kind}
+                n={l.n}
+                text={l.text}
+                threads={l.n != null ? threadsByLine.get(l.n) : undefined}
+                comments={comments}
+                onChanged={onChanged}
+              />
             ))}
           </div>
         </pre>
