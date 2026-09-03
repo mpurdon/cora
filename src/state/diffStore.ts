@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { ipc } from "../lib/ipc";
+import type { Explainable } from "../lib/comments";
 import type { C4Node } from "../bindings/C4Node";
-import type { CodeFinding } from "../bindings/CodeFinding";
 
 /** One PR's raw diff + viewed-file digests, shared between the file rail and
  *  the Diff tab so opening a PR fetches from GitHub once, not per consumer. */
@@ -26,12 +26,13 @@ export interface ComposeRequest {
 }
 
 /** One-shot "explain this finding in the assistant chat" request, raised from a
- *  finding row. `MainApp` opens the assistant panel; `AssistantPanel` sends the
+ *  finding row — a code finding, a Well-Architected finding, or a boundary
+ *  impact. `MainApp` opens the assistant panel; `AssistantPanel` sends the
  *  seeded prompt and switches to the chat. Carries the PR id so a stale request
  *  can't fire against a different PR's panel. */
 export interface ExplainRequest {
   prId: string;
-  finding: CodeFinding;
+  finding: Explainable;
 }
 
 /** A canvas node whose diff the assistant panel is showing — the "code peek"
@@ -58,7 +59,7 @@ interface DiffState {
   clearFocusFile: () => void;
   requestCompose: (req: ComposeRequest) => void;
   clearCompose: () => void;
-  requestExplain: (prId: string, finding: CodeFinding) => void;
+  requestExplain: (prId: string, finding: Explainable) => void;
   clearExplain: () => void;
   openPeek: (prId: string, node: C4Node) => void;
   closePeek: () => void;
