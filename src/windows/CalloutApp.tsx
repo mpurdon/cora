@@ -364,12 +364,14 @@ export function CalloutApp() {
     prById.get(item.prId)?.needsAttention === true;
 
   // Featured: anything you flagged, plus unread activity from people on
-  // important PRs (your own PRs, high-priority repos/PRs). The app's own
-  // "analysis ready" rows are news you asked for, not news from anyone —
-  // they stay in the day groups. One row per PR: the newest event, with a
+  // important PRs (your own PRs, high-priority repos/PRs) that still wants
+  // something from you. The app's own "analysis ready" rows are news you
+  // asked for, not news from anyone, and a merge or close ends the story —
+  // both stay in the day groups. One row per PR: the newest event, with a
   // count of the others, so five pushes to one PR are one line, not five.
+  const QUIET_KINDS = new Set(["analysis", "merged", "closed"]);
   const featuredAll = items.filter(
-    (i) => i.flag !== "" || (i.important && !i.read && i.kind !== "analysis"),
+    (i) => i.flag !== "" || (i.important && !i.read && !QUIET_KINDS.has(i.kind)),
   );
   const featured: { item: ActivityItem; ids: number[] }[] = [];
   {
