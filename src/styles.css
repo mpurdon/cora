@@ -1322,6 +1322,15 @@ body.col-resizing * {
   opacity: 0.45;
 }
 
+/* Drafts keep their place in the order but recede — not yet asking for a
+   review. Lighter than muted, which is a choice the reviewer made. */
+.rail-row.draft-pr {
+  opacity: 0.55;
+}
+.rail-row.draft-pr.selected {
+  opacity: 0.75;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1539,12 +1548,31 @@ body.col-resizing * {
 /* detail */
 
 .detail {
+  position: relative;
   padding: 26px 32px;
   /* Column that fills the scroll viewport, so live states (the analysis
      progress log) can flex into the leftover space below the header. */
   display: flex;
   flex-direction: column;
   min-height: 100%;
+}
+
+/* The draft stamp: outlined, oversized, top-right of the header, and
+   untouchable. Outline only, so anything under it still reads. */
+.draft-watermark {
+  position: absolute;
+  top: 10px;
+  right: 28px;
+  font-family: var(--mono);
+  font-size: 72px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  line-height: 1;
+  color: transparent;
+  -webkit-text-stroke: 2px color-mix(in srgb, var(--warn) 55%, transparent);
+  transform: rotate(-6deg);
+  pointer-events: none;
+  user-select: none;
 }
 
 .detail .crumbs {

@@ -1265,6 +1265,13 @@ function Detail({
 
   return (
     <div className="detail">
+      {/* A draft is stamped, not prefixed: the mark reads from across the
+          room and leaves the title itself alone. */}
+      {pr.isDraft && (
+        <div className="draft-watermark" aria-hidden="true">
+          DRAFT
+        </div>
+      )}
       <div className="crumbs">
         <span className="eyebrow">
           {pr.repo} · #{pr.number} · by {pr.author} · updated {timeAgo(pr.updatedAt)} ago
@@ -1272,10 +1279,7 @@ function Detail({
       </div>
       <h1>
         <StatusStrip pr={pr} variant="title" />
-        <span className="title-text">
-          {pr.isDraft ? "Draft: " : ""}
-          {clean}
-        </span>
+        <span className="title-text">{clean}</span>
       </h1>
       <div className="facts">
         {type !== "unknown" && <span className="fact mono">{type}</span>}
@@ -2192,7 +2196,7 @@ export function MainApp() {
                       group.prs.map((pr) => (
                         <button
                           key={pr.id}
-                          className={`rail-row${pr.id === selectedId ? " selected" : ""}${pr.muted ? " muted-pr" : ""}${reviewedAndIdle(pr) ? " reviewed-idle" : ""}${isFinished(pr) ? " finished-pr" : ""}`}
+                          className={`rail-row${pr.id === selectedId ? " selected" : ""}${pr.muted ? " muted-pr" : ""}${pr.isDraft ? " draft-pr" : ""}${reviewedAndIdle(pr) ? " reviewed-idle" : ""}${isFinished(pr) ? " finished-pr" : ""}`}
                           onClick={() => select(pr.id)}
                           onContextMenu={(e) => {
                             e.preventDefault();
