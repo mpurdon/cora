@@ -879,7 +879,8 @@ fn window_tokens(model_id: &str, aliases: &[crate::usage::ModelAlias]) -> i64 {
 /// are repo source, GitHub state, or the app's own bookkeeping.
 fn tool_origin(name: &str) -> &'static str {
     match name {
-        "get_file" | "list_tree" | "search_code" | "get_readme_and_docs" => "repo file",
+        "get_file" | "get_files" | "list_tree" | "search_code" | "get_readme_and_docs" => "repo file",
+        "get_file_diff" => "github",
         "get_pr_diff" | "get_commit_diff" | "list_commits" | "list_recent_prs"
         | "get_pr_conversation" => "github",
         "mark_files_viewed" | "set_pr_priority" | "set_repo_priority" | "set_author_priority"
@@ -1053,7 +1054,7 @@ pub fn invalidate_all_contexts(app: &AppHandle) {
 pub fn context(app: &AppHandle, pr_id: &str, include_text: bool) -> AppResult<ChatContext> {
     ensure_session(app, pr_id)?;
     let store = app.state::<crate::orgs::Orgs>().active();
-    let model_id = store.settings()?.bedrock_model_id;
+    let model_id = store.settings()?.chat_model().to_string();
     // Built inside the session lock: the meter refetches on every chat event
     // and tool results are large — cloning the message list to read its size
     // would be the most expensive thing this command does.
@@ -1234,7 +1235,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
             app,
             "chat",
             &client,
-            &settings.bedrock_model_id,
+            settings.chat_model(),
             &system,
             &messages,
             &specs,
@@ -1266,7 +1267,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
                 s.usage = Some(usage);
                 s.requests += 1;
             })?;
-            crate::usage::record(app, &pr, "chat", &settings.bedrock_model_id, u);
+            crate::usage::record(app, &pr, "chat", settings.chat_model(), u);
         }
 
         let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {

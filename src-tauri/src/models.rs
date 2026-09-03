@@ -351,6 +351,16 @@ pub struct Settings {
     /// Cheaper/faster model for Component/Code drill-downs; empty = use main.
     #[serde(default = "default_drill_model")]
     pub bedrock_drill_model_id: String,
+    /// Model for the assistant chat; empty = the drill model (or main when
+    /// there is no drill model). Chat is interactive and its hard thinking
+    /// is already in the analysis it is handed, so the faster tier fits.
+    #[serde(default)]
+    pub bedrock_chat_model_id: String,
+    /// Cheap model that pre-reads a diff too large to show the architecture
+    /// pass whole, clustering files into feature slices so the main model
+    /// reads the few that matter. Empty disables the scout.
+    #[serde(default = "default_scout_model")]
+    pub bedrock_scout_model_id: String,
     /// Dollars per million tokens, per model id, for the usage dashboard.
     /// Inference-profile ARNs name no model, so their rate can only be told
     /// to us; recognizable Claude ids fall back to published rates.
@@ -393,6 +403,12 @@ pub struct Settings {
     /// review plan's critical/important files.
     #[serde(default = "default_true")]
     pub code_findings_pass: bool,
+    /// Run the architecture pass on the drill model when the diff metrics
+    /// say the PR is routine — every file mechanical, or a handful of files
+    /// with almost no added logic. The summary and review plan of a version
+    /// bump don't need the top tier.
+    #[serde(default = "default_true")]
+    pub route_routine_prs_to_drill_model: bool,
     /// PRs with no activity inside this window are hidden from the list and
     /// excluded from search discovery. 0 disables the filter.
     #[serde(default = "default_pr_max_age_days")]
@@ -510,6 +526,12 @@ fn default_drill_model() -> String {
     "us.anthropic.claude-sonnet-5".into()
 }
 
+fn default_scout_model() -> String {
+    // Haiku 4.5's cross-region inference profile. Accounts that route every
+    // model through an application inference profile paste that ARN here.
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0".into()
+}
+
 fn default_pr_priority() -> PrPriority {
     PrPriority::Standard
 }
@@ -534,6 +556,8 @@ impl Default for Settings {
             aws_endpoint_url: String::new(),
             bedrock_model_id: "us.anthropic.claude-opus-5".into(),
             bedrock_drill_model_id: default_drill_model(),
+            bedrock_chat_model_id: String::new(),
+            bedrock_scout_model_id: default_scout_model(),
             model_prices: Vec::new(),
             developer_mode: false,
             custom_system_prompt: String::new(),
@@ -545,11 +569,32 @@ impl Default for Settings {
             repo_approve_messages: std::collections::HashMap::new(),
             repo_review_instructions: std::collections::HashMap::new(),
             code_findings_pass: true,
+            route_routine_prs_to_drill_model: true,
             pr_max_age_days: default_pr_max_age_days(),
             background_poll_secs: default_background_poll_secs(),
             arch_max_output_tokens: default_arch_max_tokens(),
             code_max_output_tokens: default_code_max_tokens(),
             callout_feed_limit: default_callout_feed_limit(),
+        }
+    }
+}
+
+impl Settings {
+    /// The drill tier, falling back to the main model when unset.
+    pub fn drill_model(&self) -> &str {
+        if self.bedrock_drill_model_id.is_empty() {
+            &self.bedrock_model_id
+        } else {
+            &self.bedrock_drill_model_id
+        }
+    }
+
+    /// The assistant's model: its own setting, else the drill tier.
+    pub fn chat_model(&self) -> &str {
+        if self.bedrock_chat_model_id.is_empty() {
+            self.drill_model()
+        } else {
+            &self.bedrock_chat_model_id
         }
     }
 }

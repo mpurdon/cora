@@ -516,6 +516,17 @@ function GeneralPane({ settings, save }: PaneProps) {
       </Field>
 
       <Field
+        label="Routine PRs on the drill-down model"
+        hint="When every changed file is mechanical, or only a handful carry almost no new logic, the architecture pass runs on the cheaper drill-down model instead of the main one."
+      >
+        <Toggle
+          checked={settings.routeRoutinePrsToDrillModel}
+          onChange={(v) => void save({ routeRoutinePrsToDrillModel: v })}
+          label="Route routine PRs to the drill-down model"
+        />
+      </Field>
+
+      <Field
         label="Notifications"
         hint="Note: in dev builds macOS attributes notifications to the terminal that launched CORA; packaged builds notify as CORA."
       >
@@ -1385,6 +1396,26 @@ function AwsPane({ settings, save }: PaneProps) {
         <input
           value={settings.bedrockDrillModelId}
           onChange={(e) => void save({ bedrockDrillModelId: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Assistant model"
+        hint="Model behind the chat assistant. Empty = follow the drill-down model (or the main model if that is empty too)."
+      >
+        <input
+          value={settings.bedrockChatModelId}
+          onChange={(e) => void save({ bedrockChatModelId: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Scout model"
+        hint="Cheap model that pre-reads diffs too large to show the analysis whole, so the architecture pass gets a map of what matters. Empty = off."
+      >
+        <input
+          value={settings.bedrockScoutModelId}
+          onChange={(e) => void save({ bedrockScoutModelId: e.target.value })}
         />
       </Field>
 

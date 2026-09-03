@@ -19,6 +19,11 @@ use crate::error::{AppError, AppResult};
 use crate::models::{Settings, TrackedPr};
 
 const MAX_TURNS: usize = 30;
+/// Turns the model may spend exploring before the research tools are
+/// withdrawn and only submit_analysis remains. A run that reads on turn 29
+/// with no idea it is out of road ends with nothing; the landing gives it
+/// enough turns to write up what it has, plus the resubmit allowance.
+const EXPLORE_TURNS: usize = 24;
 /// How much of a PR description to carry into the kickoff. Long enough for a
 /// real write-up, short enough that a template full of checkboxes and pasted
 /// logs can't crowd out the diff.
@@ -62,7 +67,7 @@ Writing style: the summary is a TLDR — two short sentences maximum, no mechani
 
 Risk calibration for routine bumps: version bumps of pinned dependencies, GitHub Actions, and toolchains (workflow files, lockfiles, version manifests) are low-risk housekeeping by default. Frame them accordingly — reserve elevated risk for major-version jumps, security-relevant dependencies, or bumps that change behavior the repo visibly relies on. Do not dress a patch-level action bump up as an architectural event.
 
-Review plan: classify EVERY file in the diff for the reviewer — critical (must be read carefully), important (real logic worth reading), or mechanical (renames, imports, fallout from the real change, config echoes, boilerplate following an established repo pattern). Order most-important-first. This drives the reviewer's reading order, so be honest about what's mechanical.
+Review plan: classify the changed files for the reviewer — critical (must be read carefully), important (real logic worth reading), or mechanical (renames, imports, fallout from the real change, config echoes, boilerplate following an established repo pattern). Order most-important-first. This drives the reviewer's reading order, so be honest about what's mechanical. Any changed file you leave out of the plan is given a metrics-derived default (mechanical when it adds no logic), so classify what you have read and judged — you do not need to read every file before you submit.
 
 Significance is priced by BLAST RADIUS, not by layer or category. Ask of each file: who is affected beyond the acting user, what data can be lost or corrupted, is the effect reversible? "New endpoint", "API contract", "persists to a collection", "schema change" are categories, not risks — a self-scoped per-user preference toggle and a payment mutation both match those phrases, and only one is critical. Reserve critical for changes that can affect OTHER users' data, money, permissions/auth, irreversible operations, or contracts external teams/systems depend on. A cosmetic or self-scoped feature caps at important no matter how many endpoints, schemas, and handlers it spans. A handler that is entirely the repo's standard middleware boilerplate around a one-line effect is mechanical or important, never critical, regardless of being "a new write path".
 
@@ -70,7 +75,7 @@ One vertical slice shares one risk budget: when a feature adds the same low-stak
 
 Also evaluate the change against the AWS Well-Architected pillars (operational excellence, security, reliability, performance efficiency, cost optimization, sustainability). Report only MATERIAL findings — a missing retry on a new external call matters; a variable name does not.
 
-Method: explore the repository first (README/docs, tree, targeted file reads and searches) until you understand the architecture well enough to place this change in it. Be economical — fetch what you need, not everything.
+Method: explore the repository first (README/docs, tree, targeted file reads and searches) until you understand the architecture well enough to place this change in it. Be economical — fetch what you need, not everything. Issue independent reads together in one turn: get_files and get_file_diff take lists, and every call in a turn runs in parallel, so one file per turn is the slow way. You have a fixed budget of exploration turns, stated in the kickoff; when it is spent the research tools are withdrawn and you must submit with what you have.
 
 C4 graph rules:
 - Build the graph at the requested C4 level, scoped to AFFECTED elements plus their immediate neighbors. Do not map the whole system.
@@ -593,6 +598,14 @@ pub(crate) fn describe_tool_call(name: &str, input: &Value) -> String {
             "searching \"{}\"",
             input.get("query").and_then(Value::as_str).unwrap_or("")
         ),
+        "get_files" => format!(
+            "reading {} files",
+            input.get("paths").and_then(Value::as_array).map_or(0, Vec::len)
+        ),
+        "get_file_diff" => format!(
+            "reading hunks for {} files",
+            input.get("paths").and_then(Value::as_array).map_or(0, Vec::len)
+        ),
         "get_readme_and_docs" => "reading README and docs".into(),
         "list_recent_prs" => "checking recent PRs".into(),
         "list_commits" => "listing the PR's commits".into(),
@@ -652,16 +665,6 @@ pub async fn run(
     };
     system_prompt.push_str(&conventions_section(settings, &pr.info.repo));
 
-    // Drill-downs analyze code, not system-wide architecture — the faster
-    // tier fits and roughly halves per-turn latency.
-    let model_id = if level == AnalysisLevel::Context || settings.bedrock_drill_model_id.is_empty()
-    {
-        settings.bedrock_model_id.clone()
-    } else {
-        settings.bedrock_drill_model_id.clone()
-    };
-    devlog::debug(app, "bedrock", format!("model for {} level: {model_id}", level.as_str()));
-
     let client = bedrock_client(settings).await;
 
     let tools = RepoTools::new(
@@ -686,19 +689,76 @@ pub async fn run(
     } else {
         Vec::new()
     };
+    // Every file, not a prefix: a cut-off list is exactly the signal a big PR
+    // needs most, and 400 lines of it is still under the cost of one file read.
     let metrics_section = if file_metrics.is_empty() {
         String::new()
     } else {
         let mut s = String::from(
-            "\n\nComputed per-file diff metrics — calibrate the review plan against these. Files with no added branches or definitions are wiring/data, not critical, unless they change a contract:\n",
+            "\n\nComputed per-file diff metrics for EVERY changed file — calibrate the review plan against these. Files with no added branches or definitions are wiring/data, not critical, unless they change a contract:\n",
         );
-        for (path, m) in file_metrics.iter().take(80) {
+        for (path, m) in file_metrics.iter().take(MAX_METRICS_ROWS) {
             s.push_str(&format!("- {path}: {}\n", m.summary()));
         }
-        if file_metrics.len() > 80 {
-            s.push_str(&format!("… and {} more files\n", file_metrics.len() - 80));
+        if file_metrics.len() > MAX_METRICS_ROWS {
+            s.push_str(&format!("… and {} more files\n", file_metrics.len() - MAX_METRICS_ROWS));
         }
         s
+    };
+
+    let mut trace: Vec<TraceStep> = Vec::new();
+
+    // Drill-downs analyze code, not system-wide architecture — the faster
+    // tier fits and roughly halves per-turn latency. A routine context-level
+    // run (a bump, a rename sweep) goes there too when the setting allows:
+    // its two-sentence summary and review plan don't need the top tier.
+    let routine = level == AnalysisLevel::Context
+        && settings.route_routine_prs_to_drill_model
+        && settings.drill_model() != settings.bedrock_model_id
+        && is_routine(&file_metrics);
+    let model_id = if level != AnalysisLevel::Context || routine {
+        settings.drill_model().to_string()
+    } else {
+        settings.bedrock_model_id.clone()
+    };
+    if routine {
+        note(
+            app,
+            &mut trace,
+            &pr_id,
+            level,
+            &focus_key,
+            "status",
+            "routine change by the diff metrics — running on the drill model",
+        );
+    }
+    devlog::debug(app, "bedrock", format!("model for {} level: {model_id}", level.as_str()));
+
+    // A diff too big to show whole gets a scout pre-read on the cheap tier:
+    // a map of feature slices and boundary flags, so the main model reads
+    // the five files that matter instead of thirty. Best-effort — without it
+    // the run still has the index.
+    let scout_section = if level == AnalysisLevel::Context
+        && !settings.bedrock_scout_model_id.is_empty()
+        && tools.diff_oversized().await.unwrap_or(false)
+    {
+        note(app, &mut trace, &pr_id, level, &focus_key, "status", "diff is oversized — scouting it first");
+        match tools.pr_diff_full().await {
+            Ok(full) => match crate::analysis::scout::report(app, settings, &client, pr, &full).await {
+                Ok(report) => {
+                    note(app, &mut trace, &pr_id, level, &focus_key, "status", "scout report ready");
+                    report
+                }
+                Err(e) => {
+                    devlog::warn(app, "scout", format!("scout pre-read failed: {e}"));
+                    note(app, &mut trace, &pr_id, level, &focus_key, "status", "scout pre-read failed — continuing without it");
+                    String::new()
+                }
+            },
+            Err(_) => String::new(),
+        }
+    } else {
+        String::new()
     };
 
     let body_section = body_section(&pr.info.body);
@@ -744,8 +804,11 @@ pub async fn run(
     } else {
         "The diff is included below — read only the extra repository context you still need, then submit."
     };
+    let budget = format!(
+        "Budget: {EXPLORE_TURNS} exploration turns, each of which may carry many tool calls in parallel. After that the research tools are withdrawn and only submit_analysis remains, so plan to submit before then."
+    );
     let kickoff = format!(
-        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}\n\n{}{}{}\n\n{closing}{kickoff_diff}",
+        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}\n\n{}{}{}{}\n\n{budget}\n\n{closing}{kickoff_diff}",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -757,6 +820,7 @@ pub async fn run(
         pr.info.url,
         level_instructions(level, focus_node_id.as_deref()),
         metrics_section,
+        scout_section,
         parent_section,
     );
 
@@ -772,11 +836,20 @@ pub async fn run(
     let mut nudged = false;
     let mut resubmits = 0u32;
     let (mut total_in, mut total_out) = (0i32, 0i32);
-    let mut trace: Vec<TraceStep> = Vec::new();
     note(app, &mut trace, &pr_id, level, &focus_key, "status", "starting exploration");
 
-    let specs = analysis_specs();
+    let explore_specs = analysis_specs();
+    // Once the budget is spent the model sees one tool. Withdrawing the rest
+    // is what makes "submit now" stick — a reminder alone competes with the
+    // pull of one more file.
+    let submit_specs: Vec<(&'static str, &'static str, Value)> = explore_specs
+        .iter()
+        .filter(|(name, _, _)| *name == "submit_analysis")
+        .cloned()
+        .collect();
     for turn in 0..MAX_TURNS {
+        let exploring = turn < EXPLORE_TURNS;
+        let specs = if exploring { &explore_specs } else { &submit_specs };
         let started = std::time::Instant::now();
         let resp = converse_once(
             app,
@@ -785,7 +858,7 @@ pub async fn run(
             &model_id,
             &system_prompt,
             &messages,
-            &specs,
+            specs,
             settings.arch_max_output_tokens as i32,
             &mut use_cache,
             &settings.aws_profile,
@@ -849,7 +922,17 @@ pub async fn run(
         // Execute the turn's tool calls concurrently — multi-file reads are
         // the common case and serial awaits were pure added latency.
         let mut tool_results: Vec<ContentBlock> = Vec::new();
-        if !tool_calls.is_empty() {
+        if !tool_calls.is_empty() && !exploring {
+            // The tools were withdrawn from the spec; a call that arrives
+            // anyway gets a refusal, not a read.
+            for (id, _, _) in &tool_calls {
+                tool_results.push(tool_result(
+                    id,
+                    "exploration budget is spent — call submit_analysis with what you have".into(),
+                    true,
+                )?);
+            }
+        } else if !tool_calls.is_empty() {
             let executed = futures::future::join_all(tool_calls.iter().map(
                 |(_, name, input)| {
                     let tools = &tools;
@@ -868,6 +951,22 @@ pub async fn run(
                 devlog::debug(app, "analysis", format!("tool {name} → {} chars", content.len()));
                 tool_results.push(tool_result(id, content, is_error)?);
             }
+        }
+        // The last exploration turn's results carry the landing notice, so
+        // the model learns the tools are gone from the same message that
+        // answers its final reads.
+        let landing = exploring && turn + 1 == EXPLORE_TURNS && submitted.is_none();
+        if landing {
+            note(
+                app,
+                &mut trace,
+                &pr_id,
+                level,
+                &focus_key,
+                "status",
+                "exploration budget spent — asking for the submission",
+            );
+            tool_results.push(ContentBlock::Text(LANDING_NOTICE.into()));
         }
 
         if let Some((submit_id, mut payload)) = submitted {
@@ -1015,7 +1114,11 @@ pub async fn run(
                 ));
             }
             nudged = true;
-            "Call submit_analysis now with your complete result."
+            if exploring {
+                "Call submit_analysis now with your complete result."
+            } else {
+                LANDING_NOTICE
+            }
         };
         messages.push(
             Message::builder()
@@ -1027,8 +1130,32 @@ pub async fn run(
     }
 
     Err(AppError::Other(format!(
-        "analysis did not complete within {MAX_TURNS} turns"
+        "analysis did not complete within {MAX_TURNS} turns ({EXPLORE_TURNS} exploring, {} to submit)",
+        MAX_TURNS - EXPLORE_TURNS
     )))
+}
+
+/// Told to the model once its exploration turns are gone, and again if it
+/// idles afterwards.
+const LANDING_NOTICE: &str = "Exploration budget is spent and the research tools have been withdrawn. Call submit_analysis now with your complete result — every field present, empty arrays where nothing applies. Files you did not read get a metrics-derived default in the review plan; do not invent classifications for them.";
+
+/// Rows of per-file metrics the kickoff will carry. Above this a PR is a
+/// generated-code dump, and the index inside get_pr_diff still has them all.
+const MAX_METRICS_ROWS: usize = 400;
+
+/// A PR whose diff carries no real logic: every file mechanical, or a
+/// handful of files with almost none. The judgement the drill tier is
+/// already trusted with at the code level.
+fn is_routine(metrics: &[(String, FileMetrics)]) -> bool {
+    if metrics.is_empty() {
+        return false;
+    }
+    if metrics.iter().all(|(_, m)| m.is_mechanical()) {
+        return true;
+    }
+    let branches: i64 = metrics.iter().map(|(_, m)| m.added_branches).sum();
+    let defs: i64 = metrics.iter().map(|(_, m)| m.new_defs).sum();
+    metrics.len() <= 4 && branches <= 4 && defs <= 2
 }
 
 // -- second stage: line-anchored code findings --------------------------------
@@ -1124,11 +1251,7 @@ pub async fn code_findings(
         .take(20)
         .collect();
 
-    let model_id = if settings.bedrock_drill_model_id.is_empty() {
-        settings.bedrock_model_id.clone()
-    } else {
-        settings.bedrock_drill_model_id.clone()
-    };
+    let model_id = settings.drill_model().to_string();
     let client = bedrock_client(settings).await;
     let tools = RepoTools::new(
         &settings.github_graphql_url,
@@ -1149,7 +1272,7 @@ pub async fn code_findings(
     ));
 
     let kickoff = format!(
-        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}{}\n\nFocus on these files from the review plan (critical/important):\n{}\n\nStart with get_pr_diff.",
+        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}{}\n\nFocus on these files from the review plan (critical/important):\n{}\n\nBudget: 12 exploration turns, then only submit_code_findings remains. Start with get_pr_diff (indexed when the diff is large — get_file_diff returns the hunks for the files above), and read surrounding context with get_files in one call rather than one file per turn.",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -1170,8 +1293,15 @@ pub async fn code_findings(
     let mut use_cache = true;
     let mut resubmits = 0u32;
     const MAX_CODE_TURNS: usize = 16;
+    const CODE_EXPLORE_TURNS: usize = 12;
+    let submit_specs: Vec<(&'static str, &'static str, Value)> = specs
+        .iter()
+        .filter(|(name, _, _)| *name == "submit_code_findings")
+        .cloned()
+        .collect();
 
-    for _turn in 0..MAX_CODE_TURNS {
+    for turn in 0..MAX_CODE_TURNS {
+        let exploring = turn < CODE_EXPLORE_TURNS;
         let resp = converse_once(
             app,
             "code-pass",
@@ -1179,7 +1309,7 @@ pub async fn code_findings(
             &model_id,
             &system,
             &messages,
-            &specs,
+            if exploring { &specs } else { &submit_specs },
             settings.code_max_output_tokens as i32,
             &mut use_cache,
             &settings.aws_profile,
@@ -1215,7 +1345,15 @@ pub async fn code_findings(
         }
 
         let mut tool_results: Vec<ContentBlock> = Vec::new();
-        if !tool_calls.is_empty() {
+        if !tool_calls.is_empty() && !exploring {
+            for (id, _, _) in &tool_calls {
+                tool_results.push(tool_result(
+                    id,
+                    "exploration budget is spent — call submit_code_findings with what you have".into(),
+                    true,
+                )?);
+            }
+        } else if !tool_calls.is_empty() {
             let executed = futures::future::join_all(tool_calls.iter().map(|(_, name, input)| {
                 let tools = &tools;
                 async move { tools.execute(name, input).await }
@@ -1231,6 +1369,12 @@ pub async fn code_findings(
                 };
                 tool_results.push(tool_result(id, content, is_error)?);
             }
+        }
+        if exploring && turn + 1 == CODE_EXPLORE_TURNS && submitted.is_none() {
+            progress(app, &pr_id, level, "", "code pass: budget spent — asking for findings");
+            tool_results.push(ContentBlock::Text(
+                "Exploration budget is spent and the research tools have been withdrawn. Call submit_code_findings now with the findings you have — an empty list is a valid result.".into(),
+            ));
         }
 
         if let Some((submit_id, mut payload)) = submitted {

@@ -30,6 +30,18 @@ bedrockModelId: string,
  */
 bedrockDrillModelId: string, 
 /**
+ * Model for the assistant chat; empty = the drill model (or main when
+ * there is no drill model). Chat is interactive and its hard thinking
+ * is already in the analysis it is handed, so the faster tier fits.
+ */
+bedrockChatModelId: string, 
+/**
+ * Cheap model that pre-reads a diff too large to show the architecture
+ * pass whole, clustering files into feature slices so the main model
+ * reads the few that matter. Empty disables the scout.
+ */
+bedrockScoutModelId: string, 
+/**
  * Dollars per million tokens, per model id, for the usage dashboard.
  * Inference-profile ARNs name no model, so their rate can only be told
  * to us; recognizable Claude ids fall back to published rates.
@@ -81,6 +93,13 @@ repoReviewInstructions: { [key in string]: string },
  * review plan's critical/important files.
  */
 codeFindingsPass: boolean, 
+/**
+ * Run the architecture pass on the drill model when the diff metrics
+ * say the PR is routine — every file mechanical, or a handful of files
+ * with almost no added logic. The summary and review plan of a version
+ * bump don't need the top tier.
+ */
+routeRoutinePrsToDrillModel: boolean, 
 /**
  * PRs with no activity inside this window are hidden from the list and
  * excluded from search discovery. 0 disables the filter.
