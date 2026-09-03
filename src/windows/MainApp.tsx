@@ -295,7 +295,7 @@ function ReviewActions({
   flow: FlowOwner;
   setFlow: (f: FlowOwner) => void;
 }) {
-  const [mode, setMode] = useState<"approve" | "request-changes" | null>(null);
+  const [mode, setMode] = useState<ReviewMode | null>(null);
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -320,14 +320,15 @@ function ReviewActions({
   useEffect(() => {
     if (flow !== "review") setMode(null);
   }, [flow]);
-  const openMode = (m: "approve" | "request-changes") => {
+  const openMode = (m: ReviewMode) => {
     setFlow("review");
     setMode(m);
     // Both verdicts open with a one-sentence summary written from the live
     // conversation — a pointer to your comments when requesting changes, what
-    // your review settled when approving. Only when the box is still empty:
+    // your review settled when approving. A plain comment carries no verdict
+    // to summarise, so it opens empty. Only when the box is still empty:
     // never clobber text you've typed.
-    if (body.trim()) return;
+    if (body.trim() || m === "comment") return;
     const viewer = reviews?.viewerLogin ?? "";
     if (m === "request-changes") {
       const seed = requestChangesSeed(conversation, viewer);
@@ -390,7 +391,9 @@ function ReviewActions({
           placeholder={
             mode === "approve"
               ? "Optional approval comment…"
-              : "What needs to change? (required)"
+              : mode === "comment"
+                ? "Feedback without a verdict… (required)"
+                : "What needs to change? (required)"
           }
           value={body}
           disabled={busy}
@@ -399,11 +402,17 @@ function ReviewActions({
         {error && <div className="settings-error">{error}</div>}
         <div className="row">
           <button
-            className={`action-btn ${mode === "approve" ? "btn-ok" : "confirm-danger"}`}
-            disabled={busy || (mode === "request-changes" && !body.trim())}
+            className={`action-btn ${mode === "approve" ? "btn-ok" : mode === "comment" ? "" : "confirm-danger"}`}
+            disabled={busy || (mode !== "approve" && !body.trim())}
             onClick={() => void submit()}
           >
-            {busy ? "Submitting…" : mode === "approve" ? "Submit approval" : "Submit request"}
+            {busy
+              ? "Submitting…"
+              : mode === "approve"
+                ? "Submit approval"
+                : mode === "comment"
+                  ? "Submit comment"
+                  : "Submit request"}
           </button>
           <button className="action-btn btn-danger" disabled={busy} onClick={() => setMode(null)}>
             Cancel
@@ -433,9 +442,20 @@ function ReviewActions({
       <button className="action-btn quiet-danger" onClick={() => openMode("request-changes")}>
         ± Request changes
       </button>
+      <button
+        className="action-btn"
+        data-tip="Leave feedback as a review without approving or requesting changes"
+        onClick={() => openMode("comment")}
+      >
+        💬 Comment
+      </button>
     </>
   );
 }
+
+/** The three review events GitHub accepts. A comment review is feedback
+ *  with no verdict — it neither approves nor blocks. */
+type ReviewMode = "approve" | "request-changes" | "comment";
 
 /** Merge / close / reopen with a two-step confirm — no accidental merges.
  *  Close lives in the ⋯ overflow menu; a bump of `closeRequested` starts its
