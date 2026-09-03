@@ -52,6 +52,7 @@ import {
   requestChangesSeed,
   resolveApproveMessage,
   viewerComments,
+  type Explainable,
 } from "../lib/comments";
 import { setThemeOrg } from "../lib/theme";
 import { useChatStore } from "../state/chatStore";
@@ -935,7 +936,7 @@ function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps)
   // Hand a finding to the assistant chat. The store request opens the panel
   // (MainApp) and sends the seeded prompt (AssistantPanel) — no tab switch, so
   // the reviewer keeps the findings in view alongside the explanation.
-  const explainCode = (f: CodeFinding) => {
+  const explainCode = (f: Explainable) => {
     useDiffStore.getState().requestExplain(pr.id, f);
   };
 

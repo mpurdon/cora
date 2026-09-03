@@ -1,7 +1,42 @@
 import { fileName } from "./fileTree";
+import type { BoundaryImpact } from "../bindings/BoundaryImpact";
 import type { CodeFinding } from "../bindings/CodeFinding";
+import type { ImpactKind } from "../bindings/ImpactKind";
+import type { Pillar } from "../bindings/Pillar";
 import type { PrConversation } from "../bindings/PrConversation";
 import type { Settings } from "../bindings/Settings";
+import type { WaFinding } from "../bindings/WaFinding";
+
+/** Human names for the assessment's enum tags, shared by the rows that show
+ *  them and the text (comment seeds, explain prompts) built from them. */
+export const IMPACT_LABEL: Record<ImpactKind, string> = {
+  external: "external system",
+  service: "service boundary",
+  internal: "internal",
+};
+
+export const PILLAR_LABEL: Record<Pillar, string> = {
+  "operational-excellence": "Operational excellence",
+  security: "Security",
+  reliability: "Reliability",
+  "performance-efficiency": "Performance efficiency",
+  "cost-optimization": "Cost optimization",
+  sustainability: "Sustainability",
+};
+
+/** Anything the "explain" button can hand to the assistant: a line-anchored
+ *  code finding, a Well-Architected finding, or a boundary impact. The
+ *  generated bindings carry no tag, so the three are told apart by shape —
+ *  each has a key the other two lack. */
+export type Explainable = CodeFinding | WaFinding | BoundaryImpact;
+
+export function isCodeFinding(f: Explainable): f is CodeFinding {
+  return "path" in f;
+}
+
+export function isWaFinding(f: Explainable): f is WaFinding {
+  return "pillar" in f;
+}
 
 /** First sentence of a possibly-paragraph-length text. Findings from older
  *  analyses can be essays; the PR author gets the headline while the full
@@ -19,21 +54,55 @@ export function findingSeed(f: CodeFinding): string {
   return `${firstSentence(f.finding)}\n\n${firstSentence(f.suggestion)}`;
 }
 
+/** The C4 node ids a finding points at, as a prompt line — or nothing when
+ *  the model gave none. Named so the assistant can look the nodes up in the
+ *  graph rather than guess which code the finding is about. */
+function nodeLine(nodeIds: string[]): string[] {
+  if (nodeIds.length === 0) return [];
+  return [`Architecture nodes (C4 graph ids): ${nodeIds.map((id) => `\`${id}\``).join(", ")}`];
+}
+
 /** The message the "explain" button sends to the assistant. Asks for a
  *  plain-language read that's actionable in a single turn — but terse: it lands
  *  in a narrow side panel, so the prompt enforces short answers under fixed
  *  headings, no preamble or restating the code, so the reviewer can act (edit,
- *  comment, or dismiss) without wading through prose or a clarifying round-trip. */
-export function eli5Prompt(f: CodeFinding): string {
-  const where = f.line != null ? `${f.path}:${f.line}` : f.path;
+ *  comment, or dismiss) without wading through prose or a clarifying round-trip.
+ *
+ *  The three finding shapes differ only in how they're grounded: a code finding
+ *  names a path and line to read; a Well-Architected finding or boundary
+ *  impact has no location, so the prompt names the C4 nodes it touches and asks
+ *  the assistant to find the code behind them with its tools. */
+export function eli5Prompt(f: Explainable): string {
+  let ask: string;
+  let context: string[];
+  let ground: string;
+  if (isCodeFinding(f)) {
+    const where = f.line != null ? `${f.path}:${f.line}` : f.path;
+    ask = `Explain this ${f.kind} finding in plain language and tell me what to do.`;
+    context = [`Finding (${f.severity}) at ${where}:`, `> ${f.finding}`, `Suggested fix: ${f.suggestion}`];
+    ground = `Read the code at ${where} to ground it`;
+  } else if (isWaFinding(f)) {
+    const from = f.nodeIds.length > 0 ? " (start from the nodes above)" : "";
+    ask = `Explain this Well-Architected finding in plain language and tell me what to do.`;
+    context = [
+      `Finding (${f.severity}, ${PILLAR_LABEL[f.pillar]} pillar):`,
+      `> ${f.finding}`,
+      `Recommendation: ${f.recommendation}`,
+      ...nodeLine(f.nodeIds),
+    ];
+    ground = `Use your tools to find and read the code this is about${from} to ground it`;
+  } else {
+    const from = f.nodeIds.length > 0 ? " (start from the nodes above)" : "";
+    ask = `Explain this ${IMPACT_LABEL[f.kind]} boundary impact in plain language and tell me what to do.`;
+    context = [`Impact (${IMPACT_LABEL[f.kind]}):`, `> ${f.description}`, ...nodeLine(f.nodeIds)];
+    ground = `Use your tools to find and read the code on both sides of this boundary${from} to ground it`;
+  }
   return [
-    `Explain this ${f.kind} finding in plain language and tell me what to do. Be terse — this lands in a narrow side panel.`,
+    `${ask} Be terse — this lands in a narrow side panel.`,
     ``,
-    `Finding (${f.severity}) at ${where}:`,
-    `> ${f.finding}`,
-    `Suggested fix: ${f.suggestion}`,
+    ...context,
     ``,
-    `Read the code at ${where} to ground it, then answer under these exact headings — one or two sentences each, no preamble, no sign-off, don't restate the code back to me:`,
+    `${ground}, then answer under these exact headings — one or two sentences each, no preamble, no sign-off, don't restate the code back to me:`,
     `**What it is** — the problem in everyday terms.`,
     `**Why it matters** — the concrete consequence, or say plainly if it's low-stakes or fine to leave.`,
     `**Do on this PR?** — yes or no, and if yes the exact change in a sentence or two (a short snippet only if that's the fastest way to say it).`,

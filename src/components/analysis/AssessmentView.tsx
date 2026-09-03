@@ -1,24 +1,9 @@
 import { useState } from "react";
 import type { Assessment } from "../../bindings/Assessment";
 import type { CodeFinding } from "../../bindings/CodeFinding";
-import type { ImpactKind } from "../../bindings/ImpactKind";
 import type { Pillar } from "../../bindings/Pillar";
 import type { WaFinding } from "../../bindings/WaFinding";
-
-const IMPACT_LABEL: Record<ImpactKind, string> = {
-  external: "external system",
-  service: "service boundary",
-  internal: "internal",
-};
-
-const PILLAR_LABEL: Record<Pillar, string> = {
-  "operational-excellence": "Operational excellence",
-  security: "Security",
-  reliability: "Reliability",
-  "performance-efficiency": "Performance efficiency",
-  "cost-optimization": "Cost optimization",
-  sustainability: "Sustainability",
-};
+import { IMPACT_LABEL, PILLAR_LABEL, type Explainable } from "../../lib/comments";
 
 const FIT_LABEL = {
   fits: "fits the architecture",
@@ -56,16 +41,18 @@ function CommentFindingButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-/** The row of actions on a code finding — explain it, or turn it into a review
- *  comment. Shared by the assessment's findings list and the per-file insights
- *  panel, which show the same finding in two places and must offer the same
- *  verbs for it. */
+/** The row of actions on a finding — explain it, or turn it into a review
+ *  comment. Shared by every finding row (code, Well-Architected, boundary
+ *  impact) here and by the per-file insights panel, which shows the same code
+ *  finding in a second place and must offer the same verbs for it.
+ *  `commented` is only knowable for code findings, which have a line to match
+ *  a review comment against; the other rows leave it out. */
 export function FindingActions({
-  commented,
+  commented = false,
   onExplain,
   onComment,
 }: {
-  commented: boolean;
+  commented?: boolean;
   onExplain: () => void;
   onComment: () => void;
 }) {
@@ -75,7 +62,12 @@ export function FindingActions({
         className="finding-comment-btn"
         role="button"
         data-tip="Explain this finding in plain terms — and what to do about it — in the assistant chat"
-        onClick={onExplain}
+        onClick={(e) => {
+          // The WA and impact rows are themselves buttons (expand / focus
+          // canvas); explaining shouldn't also trigger those.
+          e.stopPropagation();
+          onExplain();
+        }}
       >
         explain
       </span>
@@ -100,10 +92,12 @@ function WaFindingRow({
   finding,
   onFocusNodes,
   onCommentFinding,
+  onExplain,
 }: {
   finding: WaFinding;
   onFocusNodes: (nodeIds: string[]) => void;
   onCommentFinding: (seed: string, nodeIds: string[]) => void;
+  onExplain: (finding: WaFinding) => void;
 }) {
   const [open, setOpen] = useState(false);
   const seed = `**${PILLAR_LABEL[finding.pillar]} · ${finding.severity}**: ${finding.finding}\n\n→ ${finding.recommendation}`;
@@ -113,7 +107,10 @@ function WaFindingRow({
         <span className="chevron">{open ? "▾" : "▸"}</span>
         <span className={`sev sev-${finding.severity}`}>{finding.severity}</span>
         <span className="wa-rec-line">→ {finding.recommendation}</span>
-        <CommentFindingButton onClick={() => onCommentFinding(seed, finding.nodeIds)} />
+        <FindingActions
+          onExplain={() => onExplain(finding)}
+          onComment={() => onCommentFinding(seed, finding.nodeIds)}
+        />
       </button>
       {open && (
         <div className="wa-finding-detail">
@@ -151,8 +148,9 @@ export function AssessmentView({
   onFocusNodes: (nodeIds: string[]) => void;
   onCommentFinding: (seed: string, nodeIds: string[]) => void;
   onCommentCode: (finding: CodeFinding) => void;
-  /** Hand a finding to the assistant chat for a plain-language, actionable read. */
-  onExplainCode: (finding: CodeFinding) => void;
+  /** Hand a finding — code, Well-Architected, or boundary impact — to the
+   *  assistant chat for a plain-language, actionable read. */
+  onExplainCode: (finding: Explainable) => void;
   /** Whether a finding already has a review comment from the viewer. */
   isCommented?: (finding: CodeFinding) => boolean;
 }) {
@@ -204,8 +202,9 @@ export function AssessmentView({
                     {IMPACT_LABEL[impact.kind]}
                   </span>
                   <span className="impact-desc">{impact.description}</span>
-                  <CommentFindingButton
-                    onClick={() =>
+                  <FindingActions
+                    onExplain={() => onExplainCode(impact)}
+                    onComment={() =>
                       onCommentFinding(
                         `**${IMPACT_LABEL[impact.kind]} impact**: ${impact.description}`,
                         impact.nodeIds,
@@ -281,6 +280,7 @@ export function AssessmentView({
                   finding={f}
                   onFocusNodes={onFocusNodes}
                   onCommentFinding={onCommentFinding}
+                  onExplain={onExplainCode}
                 />
               ))}
             </div>
