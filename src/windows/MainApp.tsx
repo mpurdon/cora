@@ -50,6 +50,7 @@ import {
   findingSeed,
   isFindingCommented,
   requestChangesSeed,
+  commentReviewSeed,
   resolveApproveMessage,
   viewerComments,
   type Explainable,
@@ -323,15 +324,17 @@ function ReviewActions({
   const openMode = (m: ReviewMode) => {
     setFlow("review");
     setMode(m);
-    // Both verdicts open with a one-sentence summary written from the live
-    // conversation — a pointer to your comments when requesting changes, what
-    // your review settled when approving. A plain comment carries no verdict
-    // to summarise, so it opens empty. Only when the box is still empty:
-    // never clobber text you've typed.
-    if (body.trim() || m === "comment") return;
+    // Every mode opens with a one-sentence summary written from the live
+    // conversation — a pointer to your comments when requesting changes or
+    // commenting, what your review settled when approving. Only when the box
+    // is still empty: never clobber text you've typed.
+    if (body.trim()) return;
     const viewer = reviews?.viewerLogin ?? "";
-    if (m === "request-changes") {
-      const seed = requestChangesSeed(conversation, viewer);
+    if (m === "request-changes" || m === "comment") {
+      const seed =
+        m === "comment"
+          ? commentReviewSeed(conversation, viewer)
+          : requestChangesSeed(conversation, viewer);
       if (seed) setBody(seed);
       return;
     }
@@ -392,7 +395,7 @@ function ReviewActions({
             mode === "approve"
               ? "Optional approval comment…"
               : mode === "comment"
-                ? "Feedback without a verdict… (required)"
+                ? "Feedback without a verdict… (required unless you've left line comments)"
                 : "What needs to change? (required)"
           }
           value={body}

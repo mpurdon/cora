@@ -159,6 +159,20 @@ function joinFiles(names: string[]): string {
  *  Empty when the viewer hasn't left any file-anchored comments (nothing to
  *  point at — let them write their own). */
 export function requestChangesSeed(conversation: PrConversation | null, viewer: string): string {
+  const mine = myCommentsSummary(conversation, viewer);
+  return mine ? `Requesting changes — see my ${mine}.` : "";
+}
+
+/** The comment-review seed: the same pointer to your line comments, with no
+ *  verdict in front of it. Empty when you haven't commented, so the box asks
+ *  you to say something — GitHub won't take a comment review with no body. */
+export function commentReviewSeed(conversation: PrConversation | null, viewer: string): string {
+  const mine = myCommentsSummary(conversation, viewer);
+  return mine ? `See my ${mine}.` : "";
+}
+
+/** "3 comments on a.ts and b.ts" — your own line comments, counted per file. */
+function myCommentsSummary(conversation: PrConversation | null, viewer: string): string {
   if (!viewer) return "";
   const byFile = new Map<string, number>();
   for (const t of conversation?.threads ?? []) {
@@ -170,7 +184,7 @@ export function requestChangesSeed(conversation: PrConversation | null, viewer: 
   const total = [...byFile.values()].reduce((a, b) => a + b, 0);
   if (total === 0) return "";
   const files = joinFiles([...byFile.keys()].map(fileName));
-  return `Requesting changes — see my ${total} comment${total === 1 ? "" : "s"} on ${files}.`;
+  return `${total} comment${total === 1 ? "" : "s"} on ${files}`;
 }
 
 /** Mirrors the Rust-side gate (models::is_non_blocking_comment): threads
