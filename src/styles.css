@@ -513,6 +513,42 @@ input:focus-visible {
   background: color-mix(in srgb, var(--warn) 10%, transparent);
 }
 
+/* Day groups are buttons: folded by default, the count says what's inside. */
+.feed-group-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+.feed-group-toggle:hover {
+  color: var(--text);
+}
+.feed-group-chevron {
+  width: 10px;
+  font-size: 9px;
+  opacity: 0.8;
+}
+.feed-group-count {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.8;
+}
+
+/* A collapsed featured line: "+3" for the older events it stands for. */
+.feed-more {
+  flex: none;
+  font-size: 10px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 13px;
+}
+
 /* Compact one-line rows as table columns:
    dot · time · icon · repo#num + text (flex) · actor (fixed).
    The feed is a size container — when the callout gets narrow, the actor

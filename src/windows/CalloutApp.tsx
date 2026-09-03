@@ -114,11 +114,14 @@ function lineText(item: ActivityItem): string {
 
 function Row({
   item,
+  more = 0,
   persistentCritical,
   onOpen,
   onMenu,
 }: {
   item: ActivityItem;
+  /** Older featured rows on the same PR this line stands for. */
+  more?: number;
   persistentCritical: boolean;
   onOpen: (item: ActivityItem) => void;
   onMenu: (e: React.MouseEvent, item: ActivityItem) => void;
@@ -134,6 +137,11 @@ function Row({
         {item.summary}
       </div>
       <div style={{ color: "var(--muted)" }}>{item.prTitle}</div>
+      {more > 0 && (
+        <div style={{ color: "var(--muted)" }}>
+          +{more} earlier {more === 1 ? "event" : "events"} on this PR — opening it clears them all
+        </div>
+      )}
       <div className="tooltip-hint" style={{ marginTop: 4 }}>
         click to open · right-click to flag
       </div>
@@ -163,6 +171,7 @@ function Row({
           </span>
         )}
         {lineText(item) && <span className="feed-text">{lineText(item)}</span>}
+        {more > 0 && <span className="feed-more mono">+{more}</span>}
       </span>
       <span className="feed-actor">{item.actor ? `@${item.actor}` : ""}</span>
     </button>
@@ -354,10 +363,28 @@ export function CalloutApp() {
   const isPersistentCritical = (item: ActivityItem) =>
     prById.get(item.prId)?.needsAttention === true;
 
-  // Featured: anything you flagged, plus unread activity on important PRs
-  // (your own PRs, high-priority repos/PRs).
-  const featured = items.filter((i) => i.flag !== "" || (i.important && !i.read));
-  const featuredIds = new Set(featured.map((i) => i.id));
+  // Featured: anything you flagged, plus unread activity from people on
+  // important PRs (your own PRs, high-priority repos/PRs). The app's own
+  // "analysis ready" rows are news you asked for, not news from anyone —
+  // they stay in the day groups. One row per PR: the newest event, with a
+  // count of the others, so five pushes to one PR are one line, not five.
+  const featuredAll = items.filter(
+    (i) => i.flag !== "" || (i.important && !i.read && i.kind !== "analysis"),
+  );
+  const featured: { item: ActivityItem; ids: number[] }[] = [];
+  {
+    const byPr = new Map<string, { item: ActivityItem; ids: number[] }>();
+    for (const item of featuredAll) {
+      const entry = byPr.get(item.prId);
+      if (entry) entry.ids.push(item.id);
+      else {
+        const fresh = { item, ids: [item.id] };
+        byPr.set(item.prId, fresh);
+        featured.push(fresh);
+      }
+    }
+  }
+  const featuredIds = new Set(featuredAll.map((i) => i.id));
   const rest = items.filter((i) => !featuredIds.has(i.id));
   const groups: [string, ActivityItem[]][] = [];
   for (const item of rest) {
@@ -368,8 +395,22 @@ export function CalloutApp() {
   }
   const unreadCount = items.filter((i) => !i.read).length;
 
-  const onOpenFromCallout = (item: ActivityItem) => {
-    void ipc.markActivityRead([item.id], true);
+  // Day groups start folded: the featured block is the callout's job, the
+  // rest is a log you open on purpose. Per session — the callout lives all
+  // day, so an unfold lasts as long as it is useful and no longer.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
+  const toggleGroup = (label: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+
+  // `ids` covers every row a collapsed featured line stands for, so opening
+  // the PR clears them all rather than promoting the next one to the top.
+  const onOpenFromCallout = (item: ActivityItem, ids: number[] = [item.id]) => {
+    void ipc.markActivityRead(ids, true);
     if (isPersistentCritical(item)) void ipc.acknowledgeCriticalPr(item.prId);
     void ipc.showMainWindow(item.prId);
     if (item.commentId) {
@@ -485,12 +526,13 @@ export function CalloutApp() {
             {featured.length > 0 && (
               <>
                 <div className="feed-group eyebrow featured-label">★ featured</div>
-                {featured.map((item) => (
+                {featured.map(({ item, ids }) => (
                   <Row
                     key={item.id}
                     item={item}
+                    more={ids.length - 1}
                     persistentCritical={isPersistentCritical(item)}
-                    onOpen={onOpenFromCallout}
+                    onOpen={(it) => onOpenFromCallout(it, ids)}
                     onMenu={(e, it) => {
                       e.preventDefault();
                       setMenu({ x: e.clientX, y: e.clientY, item: it });
@@ -499,23 +541,39 @@ export function CalloutApp() {
                 ))}
               </>
             )}
-            {groups.map(([label, groupItems]) => (
-              <div key={label + groupItems[0]?.id}>
-                <div className="feed-group eyebrow">{label}</div>
-                {groupItems.map((item) => (
-                  <Row
-                    key={item.id}
-                    item={item}
-                    persistentCritical={isPersistentCritical(item)}
-                    onOpen={onOpenFromCallout}
-                    onMenu={(e, it) => {
-                      e.preventDefault();
-                      setMenu({ x: e.clientX, y: e.clientY, item: it });
-                    }}
-                  />
-                ))}
-              </div>
-            ))}
+            {groups.map(([label, groupItems]) => {
+              const open = openGroups.has(label);
+              const unread = groupItems.filter((i) => !i.read).length;
+              return (
+                <div key={label + groupItems[0]?.id}>
+                  <button
+                    className={`feed-group eyebrow feed-group-toggle${open ? " open" : ""}`}
+                    aria-expanded={open}
+                    onClick={() => toggleGroup(label)}
+                  >
+                    <span className="feed-group-chevron">{open ? "▾" : "▸"}</span>
+                    {label}
+                    <span className="feed-group-count mono">
+                      {unread > 0 ? `${unread} new · ` : ""}
+                      {groupItems.length}
+                    </span>
+                  </button>
+                  {open &&
+                    groupItems.map((item) => (
+                      <Row
+                        key={item.id}
+                        item={item}
+                        persistentCritical={isPersistentCritical(item)}
+                        onOpen={onOpenFromCallout}
+                        onMenu={(e, it) => {
+                          e.preventDefault();
+                          setMenu({ x: e.clientX, y: e.clientY, item: it });
+                        }}
+                      />
+                    ))}
+                </div>
+              );
+            })}
           </div>
 
           {menu && (
