@@ -91,11 +91,50 @@ export function AssistantPanel({
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const activityRef = useRef<HTMLDivElement>(null);
 
+  // Keeping the newest thing in view. Scrolling once, when the store changes,
+  // is a snapshot: it misses whatever moves the list afterwards — the context
+  // meter landing under the composer, a panel resize, the card's textarea
+  // sizing to its text — and it misses entirely when the list isn't mounted
+  // at the time (the panel on File insights, or the code peek, which switches
+  // over by itself); coming back, nothing has changed, so nothing scrolls,
+  // and the card sits below the fold. So the store effect only decides
+  // whether to follow, and a ResizeObserver on the list and its content does
+  // the scrolling — whenever either changes size, the mount included.
+  //
+  // Following is the reader's choice: at (or within 80px of) the bottom, new
+  // messages pull the view down; scrolled up to read, they don't. A pending
+  // action overrides that — it blocks the composer, so its buttons have to
+  // be seen.
+  const follow = useRef(true);
+  const mustShowPending = useRef(false);
+  const scrollDown = () => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    mustShowPending.current = false;
+  };
+  const onListScroll = () => {
+    const el = listRef.current;
+    if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
+  };
   useEffect(() => {
-    listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
+    if (session?.pending) mustShowPending.current = true;
+    if (follow.current || mustShowPending.current) scrollDown();
   }, [session?.items.length, session?.busy, session?.pending]);
+  useEffect(() => {
+    const list = listRef.current;
+    const body = bodyRef.current;
+    if (!list || !body) return;
+    const ro = new ResizeObserver(() => {
+      if (follow.current || mustShowPending.current) scrollDown();
+    });
+    ro.observe(list);
+    ro.observe(body);
+    return () => ro.disconnect();
+  }, [view, peekNode]);
   useEffect(() => {
     if (live) activityRef.current?.scrollTo({ top: activityRef.current.scrollHeight });
   }, [steps.length, live]);
@@ -203,7 +242,8 @@ export function AssistantPanel({
         )}
       </div>
 
-      <div className="chat-list" ref={listRef}>
+      <div className="chat-list" ref={listRef} onScroll={onListScroll}>
+        <div className="chat-list-body" ref={bodyRef}>
         {(session?.items.length ?? 0) === 0 && (
           <div className="chat-empty">
             <p>
@@ -261,6 +301,7 @@ export function AssistantPanel({
             onConfirm={(approve, edited) => void confirm(pr.id, approve, edited)}
           />
         )}
+        </div>
       </div>
 
       <div className="chat-composer">
@@ -329,7 +370,7 @@ function PendingCard({
   return (
     <div className="pending-action">
       <div className="pending-title">
-        {pending.summary}
+        <PendingTitle summary={pending.summary} />
         {edited && <span className="pending-edited">edited</span>}
         {pending.editable && (
           <>
@@ -379,6 +420,34 @@ function PendingCard({
         </button>
       </div>
     </div>
+  );
+}
+
+/** The card's one-line title. A diff comment's summary carries the file path,
+ *  and a monorepo path wraps it three lines deep at panel width — so it's
+ *  split the way the diff view's file header is: the directory gives way
+ *  first, the filename and line never do. The full text lives in the tip. */
+function PendingTitle({ summary }: { summary: string }) {
+  const m = /^Comment on (.+):(\d+)$/.exec(summary);
+  if (!m) {
+    return (
+      <span className="pending-summary" data-tip={summary}>
+        {summary}
+      </span>
+    );
+  }
+  const [, path, line] = m;
+  const dirIdx = path.lastIndexOf("/");
+  return (
+    <span className="pending-summary pending-summary-path" data-tip={`${path}:${line}`}>
+      <span>Comment on</span>
+      <span className="diff-path mono">
+        {dirIdx >= 0 && <span className="diff-path-dir">{path.slice(0, dirIdx + 1)}</span>}
+        <span className="diff-path-name">
+          {path.slice(dirIdx + 1)}:{line}
+        </span>
+      </span>
+    </span>
   );
 }
 

@@ -4845,12 +4845,17 @@ button.diff-file-header:hover {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
   /* The reading area a card can measure itself against — its own height,
      which the activity drawer and composer above and below it move. */
   container-type: size;
+}
+
+/* The conversation as one box, so the panel can watch it grow (a new
+   message, a card's textarea sizing to its text) and keep the end in view. */
+.chat-list-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .chat-empty {
@@ -4920,6 +4925,37 @@ button.diff-file-header:hover {
   font-size: 12px;
   font-weight: 650;
   margin-bottom: 6px;
+}
+
+/* One line however long the summary. The badge and the Write/Preview
+   controls keep their place on the right; only the summary gives. */
+.pending-summary {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A diff comment's title: the path shortens like the diff view's file
+   header — directory first, filename and line never (see .diff-path). */
+.pending-summary-path {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.pending-summary-path > span:first-child {
+  flex: none;
+}
+
+.pending-summary-path .diff-path {
+  font-weight: 500;
+}
+
+.pending-title > .pending-edited,
+.pending-title > .composer-tab {
+  flex: none;
 }
 
 /* The action's text, editable in place or read-only, one look either way so
