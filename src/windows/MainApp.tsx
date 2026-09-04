@@ -90,7 +90,7 @@ const REASONS: { key: PrSource; label: string }[] = [
   { key: "watched-repo", label: "Watched repos" },
 ];
 
-type GroupMode = "org" | "repo" | "reason" | "type";
+type GroupMode = "org" | "repo" | "reason" | "type" | "author";
 type SortMode = "activity" | "attention" | "repo";
 
 /** Opening a persistently-critical PR is itself the acknowledgment. */
@@ -1542,6 +1542,7 @@ export function MainApp() {
   const [menu, setMenu] = useState<
     | { x: number; y: number; kind: "pr"; pr: TrackedPr; analyzed?: boolean }
     | { x: number; y: number; kind: "repo"; repo: string }
+    | { x: number; y: number; kind: "author"; author: string; host: string }
     | null
   >(null);
   const [showHotkeys, setShowHotkeys] = useState(false);
@@ -1751,12 +1752,21 @@ export function MainApp() {
             ? [pr.repo, shortRepo(pr.repo)]
             : groupMode === "type"
               ? [parseTitle(pr.title).type, parseTitle(pr.title).type]
-              : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
+              : groupMode === "author"
+                ? [pr.author, `@${pr.author}`]
+                : [reasonOf(pr), REASONS.find((r) => r.key === reasonOf(pr))!.label];
       const bucket = byKey.get(key) ?? { label, prs: [] };
       bucket.prs.push(pr);
       byKey.set(key, bucket);
     }
     const entries = [...byKey.entries()].map(([key, v]) => ({ key, ...v }));
+    // Your own group reads as yours: the PR sources already know which
+    // PRs you authored, so no viewer lookup is needed.
+    if (groupMode === "author") {
+      for (const g of entries) {
+        if (g.prs.some((p) => p.sources.includes("authored"))) g.label = `you · @${g.key}`;
+      }
+    }
     const prWeight = (p: TrackedPr) =>
       REPO_PRIORITY_WEIGHT[prioOf(p.repo)] + REPO_PRIORITY_WEIGHT[authorPrioOf(p.author)];
     const groupWeight = (g: { prs: TrackedPr[] }) => Math.max(...g.prs.map(prWeight));
@@ -1771,6 +1781,17 @@ export function MainApp() {
         (a, b) =>
           groupWeight(b) - groupWeight(a) ||
           (a.key === "unknown" ? 1 : b.key === "unknown" ? -1 : a.label.localeCompare(b.label)),
+      );
+    } else if (groupMode === "author") {
+      // The author's own priority orders the groups — a repo's rank is a
+      // property of the PRs inside, not of the person. You come first
+      // among equals; the rest alphabetical.
+      const mine = (g: { label: string }) => (g.label.startsWith("you") ? 0 : 1);
+      entries.sort(
+        (a, b) =>
+          REPO_PRIORITY_WEIGHT[authorPrioOf(b.key)] - REPO_PRIORITY_WEIGHT[authorPrioOf(a.key)] ||
+          mine(a) - mine(b) ||
+          a.key.localeCompare(b.key),
       );
     } else {
       entries.sort((a, b) => groupWeight(b) - groupWeight(a) || a.label.localeCompare(b.label));
@@ -2064,6 +2085,7 @@ export function MainApp() {
               >
                 <option value="org">by org</option>
                 <option value="repo">by repo</option>
+                <option value="author">by author</option>
                 <option value="type">by type</option>
                 <option value="reason">by reason</option>
               </select>
@@ -2185,26 +2207,43 @@ export function MainApp() {
                 const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
                 const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
                 const repoPrio = groupMode === "repo" ? prioOf(group.key) : null;
+                const authorPrio = groupMode === "author" ? authorPrioOf(group.key) : null;
+                const groupPrio = repoPrio ?? authorPrio;
                 return (
                   <div key={group.key} className="rail-group">
                     <button
                       className="group-header"
                       onClick={() => toggleGroup(`${groupMode}:${group.key}`)}
                       onContextMenu={(e) => {
-                        // Repo groups get the repo-priority menu; a group's PRs all
-                        // share one repo in by-repo mode.
-                        if (groupMode !== "repo") return;
-                        e.preventDefault();
-                        setMenu({ x: e.clientX, y: e.clientY, kind: "repo", repo: group.key });
+                        // A repo or author group's PRs all share the thing the
+                        // group is keyed on, so the header carries its priority
+                        // menu. Other modes have nothing group-wide to set.
+                        if (groupMode === "repo") {
+                          e.preventDefault();
+                          setMenu({ x: e.clientX, y: e.clientY, kind: "repo", repo: group.key });
+                        } else if (groupMode === "author") {
+                          e.preventDefault();
+                          // The profile link follows the PRs' host, so a GHE
+                          // org doesn't get sent to github.com.
+                          const host = new URL(group.prs[0].url).origin;
+                          setMenu({ x: e.clientX, y: e.clientY, kind: "author", author: group.key, host });
+                        }
                       }}
                       aria-expanded={!isCollapsed}
                     >
                       <span className="chevron">{isCollapsed ? "▸" : "▾"}</span>
                       <span className="eyebrow">{group.label}</span>
                       <span className="group-count">{group.prs.length}</span>
-                      {repoPrio && repoPrio !== "standard" && (
-                        <span className={`prio-tag ${repoPrio}`} data-tip={REPO_PRIORITY_TOOLTIP[repoPrio]}>
-                          {REPO_PRIORITY_LABEL[repoPrio]}
+                      {groupPrio && groupPrio !== "standard" && (
+                        <span
+                          className={`prio-tag ${groupPrio}`}
+                          data-tip={
+                            repoPrio
+                              ? REPO_PRIORITY_TOOLTIP[groupPrio]
+                              : `@${group.key} is ${REPO_PRIORITY_LABEL[groupPrio]} — applies to all their PRs`
+                          }
+                        >
+                          {REPO_PRIORITY_LABEL[groupPrio]}
                         </span>
                       )}
                       <span className="spacer" />
@@ -2467,7 +2506,37 @@ export function MainApp() {
                     ],
                   },
                 ]
-              : [
+              : menu.kind === "author"
+                ? [
+                    {
+                      title: `@${menu.author} priority (all their PRs)`,
+                      items: [
+                        {
+                          type: "custom",
+                          key: "author-priority",
+                          render: () => (
+                            <PrioritySelector
+                              levels={REPO_PRIORITY_DISPLAY_ORDER}
+                              value={authorPrioOf(menu.author)}
+                              onChange={(p) => void setAuthorPriority(menu.author, p)}
+                              getLabel={(p) => REPO_PRIORITY_LABEL[p]}
+                              getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
+                              groupLabel={`@${menu.author} priority`}
+                            />
+                          ),
+                        },
+                      ],
+                    },
+                    {
+                      items: [
+                        {
+                          label: "Open on GitHub",
+                          onClick: () => void openUrl(`${menu.host}/${menu.author}`),
+                        },
+                      ],
+                    },
+                  ]
+                : [
                   {
                     title: `${menu.repo} priority`,
                     items: [
