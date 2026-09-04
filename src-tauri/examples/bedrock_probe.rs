@@ -7,8 +7,10 @@ use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message};
 async fn main() {
     let profile = "claude-code-bedrock";
     let region = "us-east-2";
-    let model =
-        "us.anthropic.claude-opus-5";
+    // BEDROCK_MODEL overrides the id, so an account that only has
+    // application inference profiles can probe with its own ARN.
+    let model = std::env::var("BEDROCK_MODEL")
+        .unwrap_or_else(|_| "us.anthropic.claude-opus-5".to_string());
 
     let loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .profile_name(profile)

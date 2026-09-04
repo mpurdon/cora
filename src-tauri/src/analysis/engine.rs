@@ -327,7 +327,16 @@ const TRANSIENT_BACKOFF_SECS: [u64; 4] = [2, 6, 15, 30];
 fn transient_reason<E>(e: &aws_sdk_bedrockruntime::error::SdkError<E>) -> Option<&'static str> {
     use aws_sdk_bedrockruntime::error::SdkError;
     match e {
-        SdkError::DispatchFailure(_) => Some("upstream unreachable"),
+        // A dispatch failure is anything that stopped the request leaving the
+        // process — including a credential provider that couldn't mint
+        // credentials (an expired SSO session). Only the network kinds are
+        // worth resending; a credentials failure repeats identically and,
+        // retried, buries the "run aws sso login" hint under a false outage.
+        SdkError::DispatchFailure(d) => match d.as_connector_error() {
+            Some(c) if c.is_io() => Some("upstream unreachable"),
+            Some(c) if c.is_timeout() => Some("request timed out"),
+            _ => None,
+        },
         SdkError::TimeoutError(_) => Some("request timed out"),
         SdkError::ResponseError(_) => Some("malformed response"),
         SdkError::ServiceError(se) => match se.raw().status().as_u16() {
@@ -2042,6 +2051,21 @@ mod tests {
         for status in [400, 403, 404, 413] {
             assert!(transient_reason(&service_error(status)).is_none(), "should not retry {status}");
         }
+        // The observed case: an expired SSO session. The SDK reports the
+        // credential provider's failure as a dispatch failure of kind
+        // "other" — the same variant as a dead network, but not the same
+        // kind. Treating it as an outage held every call for a false 25s.
+        let expired = aws_sdk_bedrockruntime::error::SdkError::<String>::dispatch_failure(
+            aws_sdk_bedrockruntime::error::ConnectorError::other(
+                "an error occurred while loading credentials: UnauthorizedException: Session token not found or invalid".into(),
+                None,
+            ),
+        );
+        assert_eq!(transient_reason(&expired), None, "credentials are not a network blip");
+        let user = aws_sdk_bedrockruntime::error::SdkError::<String>::dispatch_failure(
+            aws_sdk_bedrockruntime::error::ConnectorError::user("bad request shape".into()),
+        );
+        assert_eq!(transient_reason(&user), None);
     }
 
     #[test]
