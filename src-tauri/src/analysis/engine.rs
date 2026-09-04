@@ -209,6 +209,48 @@ pub(crate) async fn bedrock_client(settings: &Settings) -> aws_sdk_bedrockruntim
     aws_sdk_bedrockruntime::Client::from_conf(conf.build())
 }
 
+/// The Bedrock client every caller shares, rebuilt when the AWS settings
+/// change — loading the config chain per call adds real latency. Dropped on
+/// an expired-token failure: credentials rotate underneath a long-lived
+/// client (a session token rewritten by an external tool, a multi-turn run
+/// that crosses an SSO refresh), and the SDK keeps serving the stale ones
+/// until the client is built again.
+#[derive(Default)]
+pub struct BedrockClients(
+    tokio::sync::Mutex<Option<(String, aws_sdk_bedrockruntime::Client)>>,
+);
+
+pub(crate) async fn client_for(app: &AppHandle, settings: &Settings) -> aws_sdk_bedrockruntime::Client {
+    let key = format!(
+        "{}|{}|{}",
+        settings.aws_profile, settings.aws_region, settings.aws_endpoint_url
+    );
+    let clients = app.state::<BedrockClients>();
+    let mut cached = clients.0.lock().await;
+    if let Some((k, client)) = cached.as_ref() {
+        if *k == key {
+            return client.clone();
+        }
+    }
+    let client = bedrock_client(settings).await;
+    *cached = Some((key, client.clone()));
+    client
+}
+
+/// Forget the cached client so the next call reloads credentials.
+pub(crate) async fn drop_client(app: &AppHandle) {
+    *app.state::<BedrockClients>().0.lock().await = None;
+}
+
+/// A signed request refused because the credentials behind it have rotated
+/// or lapsed since the client loaded them — worth one retry on a fresh
+/// client before it is reported. Distinct from a missing or unresolvable
+/// credential, which a rebuild cannot fix.
+fn is_expired_token(code: Option<&str>, lower: &str) -> bool {
+    matches!(code, Some("ExpiredTokenException" | "ExpiredToken"))
+        || (lower.contains("security token") && lower.contains("expired"))
+}
+
 // -- serde_json::Value <-> aws_smithy_types::Document -------------------------
 
 pub(crate) fn value_to_document(v: &Value) -> Document {
@@ -352,15 +394,15 @@ fn transient_reason<E>(e: &aws_sdk_bedrockruntime::error::SdkError<E>) -> Option
 pub(crate) async fn converse_once(
     app: &AppHandle,
     log_scope: &str,
-    client: &aws_sdk_bedrockruntime::Client,
+    settings: &Settings,
     model_id: &str,
     system: &str,
     messages: &[Message],
     specs: &[(&'static str, &'static str, Value)],
     max_tokens: i32,
     use_cache: &mut bool,
-    sso_profile: &str,
 ) -> AppResult<aws_sdk_bedrockruntime::operation::converse::ConverseOutput> {
+    let sso_profile = settings.aws_profile.as_str();
     // Fail fast while the endpoint is known-down, so a queue of runs doesn't
     // each grind through the ladder to learn what the first one already found.
     let health = app.state::<crate::health::BedrockHealth>();
@@ -377,7 +419,10 @@ pub(crate) async fn converse_once(
     }
 
     let mut transient_attempts = 0usize;
+    let mut rebuilt_client = false;
     loop {
+        // Fetched per attempt, so a rebuild below is seen by the retry.
+        let client = client_for(app, settings).await;
         let config = build_tool_config(specs, *use_cache)?;
         let mut system_blocks = vec![SystemContentBlock::Text(system.to_string())];
         if *use_cache {
@@ -409,6 +454,26 @@ pub(crate) async fn converse_once(
                 if *use_cache && (lower.contains("cache") || lower.contains("cachepoint")) {
                     devlog::warn(app, log_scope, "model rejected prompt caching — disabling");
                     *use_cache = false;
+                    continue;
+                }
+                // Credentials rotated under the client — a session token
+                // rewritten by an external tool, an SSO refresh crossed by a
+                // long multi-turn run. The history is intact; only the
+                // signature is stale. Reload once, then let it surface.
+                let code = match &e {
+                    aws_sdk_bedrockruntime::error::SdkError::ServiceError(se) => {
+                        aws_sdk_bedrockruntime::error::ProvideErrorMetadata::code(se.err())
+                    }
+                    _ => None,
+                };
+                if !rebuilt_client && is_expired_token(code, &lower) {
+                    rebuilt_client = true;
+                    drop_client(app).await;
+                    devlog::warn(
+                        app,
+                        log_scope,
+                        "credentials expired mid-call — rebuilding the Bedrock client and retrying once",
+                    );
                     continue;
                 }
                 // A blip between us and the model — the turn's accumulated
@@ -674,8 +739,6 @@ pub async fn run(
     };
     system_prompt.push_str(&conventions_section(settings, &pr.info.repo));
 
-    let client = bedrock_client(settings).await;
-
     let tools = RepoTools::new(
         &settings.github_graphql_url,
         &pr.info.repo,
@@ -753,7 +816,7 @@ pub async fn run(
     {
         note(app, &mut trace, &pr_id, level, &focus_key, "status", "diff is oversized — scouting it first");
         match tools.pr_diff_full().await {
-            Ok(full) => match crate::analysis::scout::report(app, settings, &client, pr, &full).await {
+            Ok(full) => match crate::analysis::scout::report(app, settings, pr, &full).await {
                 Ok(report) => {
                     note(app, &mut trace, &pr_id, level, &focus_key, "status", "scout report ready");
                     report
@@ -863,14 +926,13 @@ pub async fn run(
         let resp = converse_once(
             app,
             "bedrock",
-            &client,
+            settings,
             &model_id,
             &system_prompt,
             &messages,
             specs,
             settings.arch_max_output_tokens as i32,
             &mut use_cache,
-            &settings.aws_profile,
         )
         .await?;
 
@@ -1261,7 +1323,6 @@ pub async fn code_findings(
         .collect();
 
     let model_id = settings.drill_model().to_string();
-    let client = bedrock_client(settings).await;
     let tools = RepoTools::new(
         &settings.github_graphql_url,
         &pr.info.repo,
@@ -1314,14 +1375,13 @@ pub async fn code_findings(
         let resp = converse_once(
             app,
             "code-pass",
-            &client,
+            settings,
             &model_id,
             &system,
             &messages,
             if exploring { &specs } else { &submit_specs },
             settings.code_max_output_tokens as i32,
             &mut use_cache,
-            &settings.aws_profile,
         )
         .await?;
 
@@ -2066,6 +2126,20 @@ mod tests {
             aws_sdk_bedrockruntime::error::ConnectorError::user("bad request shape".into()),
         );
         assert_eq!(transient_reason(&user), None);
+    }
+
+    #[test]
+    fn an_expired_token_is_a_rebuild_not_an_outage_or_a_login_hint() {
+        // Bedrock's code for a rotated session token, and the STS phrasing
+        // that reaches us when the SDK signs with lapsed credentials.
+        assert!(is_expired_token(Some("ExpiredTokenException"), ""));
+        assert!(is_expired_token(Some("ExpiredToken"), ""));
+        assert!(is_expired_token(None, "the security token included in the request is expired"));
+        // Not a rotation: a token that was never valid, or a plain 403.
+        assert!(!is_expired_token(Some("UnrecognizedClientException"), "the security token included in the request is invalid"));
+        assert!(!is_expired_token(Some("AccessDeniedException"), "access denied"));
+        // A run's own expiry setting mentions neither token nor security.
+        assert!(!is_expired_token(None, "max_tokens exceeds the model limit"));
     }
 
     #[test]

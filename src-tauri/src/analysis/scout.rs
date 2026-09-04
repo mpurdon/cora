@@ -139,7 +139,6 @@ fn chunks(full: &str) -> (Vec<(Vec<String>, String)>, Vec<String>) {
 async fn scout_chunk(
     app: &AppHandle,
     settings: &Settings,
-    client: &aws_sdk_bedrockruntime::Client,
     pr: &TrackedPr,
     n: usize,
     total: usize,
@@ -166,14 +165,13 @@ async fn scout_chunk(
     let resp = converse_once(
         app,
         "scout",
-        client,
+        settings,
         &settings.bedrock_scout_model_id,
         SCOUT_PROMPT,
         &messages,
         &specs(),
         MAX_OUTPUT_TOKENS,
         &mut use_cache,
-        &settings.aws_profile,
     )
     .await?;
     if let Some(usage) = resp.usage() {
@@ -212,7 +210,6 @@ async fn scout_chunk(
 pub async fn report(
     app: &AppHandle,
     settings: &Settings,
-    client: &aws_sdk_bedrockruntime::Client,
     pr: &TrackedPr,
     full_diff: &str,
 ) -> AppResult<String> {
@@ -232,7 +229,7 @@ pub async fn report(
     );
     let started = std::time::Instant::now();
     let results = futures::future::join_all(parts.iter().enumerate().map(|(n, (index, hunks))| {
-        scout_chunk(app, settings, client, pr, n, total, index, hunks)
+        scout_chunk(app, settings, pr, n, total, index, hunks)
     }))
     .await;
 

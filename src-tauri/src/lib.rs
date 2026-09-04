@@ -125,6 +125,7 @@ pub fn run() {
             app.manage(devlog::DevLog::new());
             app.manage(notify::PendingFocus::new());
             app.manage(analysis::chat::ChatSessions::default());
+            app.manage(analysis::engine::BedrockClients::default());
 
             // Respect the "open callout at launch" preference.
             let show_callout = app

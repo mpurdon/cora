@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::analysis::engine::{
-    bedrock_client, converse_once, describe_tool_call, document_to_value, strip_trailing_reasoning,
+    converse_once, describe_tool_call, document_to_value, strip_trailing_reasoning,
     tool_result,
 };
 use crate::analysis::tools::RepoTools;
@@ -99,27 +99,6 @@ struct PendingAction {
 #[derive(Default)]
 pub struct ChatSessions {
     map: Mutex<HashMap<String, ChatSession>>,
-    /// Bedrock client reused across messages; rebuilt when AWS settings change.
-    client: tokio::sync::Mutex<Option<(String, aws_sdk_bedrockruntime::Client)>>,
-}
-
-/// Loading the AWS config chain (profile files, credentials, region) per
-/// message adds real latency — cache the client until settings change.
-async fn client_for(app: &AppHandle, settings: &Settings) -> aws_sdk_bedrockruntime::Client {
-    let key = format!(
-        "{}|{}|{}",
-        settings.aws_profile, settings.aws_region, settings.aws_endpoint_url
-    );
-    let sessions = app.state::<ChatSessions>();
-    let mut cached = sessions.client.lock().await;
-    if let Some((k, client)) = cached.as_ref() {
-        if *k == key {
-            return client.clone();
-        }
-    }
-    let client = bedrock_client(settings).await;
-    *cached = Some((key, client.clone()));
-    client
 }
 
 fn now() -> String {
@@ -1214,7 +1193,6 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
     let pr = store
         .get_pr(pr_id)?
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
-    let client = client_for(app, &settings).await;
     let tools = RepoTools::new(
         &settings.github_graphql_url,
         &pr.info.repo,
@@ -1234,14 +1212,13 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
         let resp = converse_once(
             app,
             "chat",
-            &client,
+            &settings,
             settings.chat_model(),
             &system,
             &messages,
             &specs,
             MAX_OUTPUT_TOKENS,
             &mut use_cache,
-            &settings.aws_profile,
         )
         .await?;
 
