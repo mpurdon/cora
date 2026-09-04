@@ -16,7 +16,7 @@ import { ipc } from "../../lib/ipc";
 import { useDiffStore } from "../../state/diffStore";
 import { timeAgo } from "../../state/prStore";
 import { serverHasVerdict, useReviewStore } from "../../state/reviewStore";
-import { DiffJump, parseDiff, type DiffFile } from "./DiffView";
+import { withMarker, DiffJump, parseDiff, type DiffFile } from "./DiffView";
 
 /** Comment id → DOM anchor, so reply notifications can deep-link here. */
 export const commentAnchor = (commentId: string) => `comment-${commentId}`;
@@ -607,6 +607,7 @@ export function CommentsView({
   const [error, setError] = useState<string | null>(null);
   const [codeThread, setCodeThread] = useState<ReviewThread | null>(null);
   const [prefill, setPrefill] = useState("");
+  const [prefillMarker, setPrefillMarker] = useState("");
 
   // A "± comment" on a finding with no resolvable diff file lands here,
   // pre-filling the conversation composer instead.
@@ -614,6 +615,7 @@ export function CommentsView({
   useEffect(() => {
     if (composeRequest?.target !== "conversation") return;
     setPrefill(composeRequest.seed);
+    setPrefillMarker(composeRequest.marker ?? "");
     useDiffStore.getState().clearCompose();
     requestAnimationFrame(() => {
       document.getElementById("conversation-composer")?.scrollIntoView({ block: "center" });
@@ -736,8 +738,9 @@ export function CommentsView({
             placeholder="Comment on this pull request…"
             submitLabel="Comment"
             onSubmit={async (body) => {
-              await ipc.addPrComment(prId, body);
+              await ipc.addPrComment(prId, withMarker(body, prefillMarker));
               setPrefill("");
+              setPrefillMarker("");
               load();
             }}
           />

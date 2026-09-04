@@ -322,6 +322,12 @@ interface LineRange {
  *  release, so it doesn't flicker under the moving end. Posting goes through
  *  `addDiffComment` from either view, so the comment lands in the PR
  *  conversation the same way. */
+/** A finding's hidden tag goes on the end of the posted body, after the text
+ *  the reviewer saw and edited. Nothing to add for an ordinary comment. */
+export function withMarker(body: string, marker: string): string {
+  return marker ? `${body.trimEnd()}\n\n${marker}` : body;
+}
+
 function useLineComments({
   prId,
   path,
@@ -337,6 +343,8 @@ function useLineComments({
 }) {
   const [range, setRange] = useState<LineRange | null>(null);
   const [seedBody, setSeedBody] = useState("");
+  // The finding tag to post with a seeded comment — see ComposeRequest.marker.
+  const [seedMarker, setSeedMarker] = useState("");
   // While the pointer is held on a + button we're extending a selection.
   const [selecting, setSelecting] = useState(false);
   // `anchor` is the line pressed; `last` the line the cursor is currently over,
@@ -372,13 +380,15 @@ function useLineComments({
   };
 
   /** Open a one-line composer on `line`, pre-filled (assessment finding → comment). */
-  const seed = (line: number, body: string) => {
+  const seed = (line: number, body: string, marker = "") => {
     setSeedBody(body);
+    setSeedMarker(marker);
     setRange({ start: line, end: line });
   };
   const close = () => {
     setRange(null);
     setSeedBody("");
+    setSeedMarker("");
   };
 
   // Press to open a one-line composer; drag down to span a range (the
@@ -438,7 +448,7 @@ function useLineComments({
       prId,
       path,
       range.end,
-      body,
+      withMarker(body, seedMarker),
       range.start === range.end ? undefined : range.start,
     );
     close();
@@ -569,7 +579,7 @@ function FileDiff({
   /** File-rail navigation targeted this file — expand it. */
   focused?: boolean;
   /** Open a composer on this line, pre-filled (assessment finding → comment). */
-  compose?: { line: number; body: string } | null;
+  compose?: { line: number; body: string; marker?: string } | null;
   /** Pop the whole file open in the full-file drawer. */
   onExpand: () => void;
   /** Collapse import/housekeeping-only hunks behind a "show" row. */
@@ -606,7 +616,7 @@ function FileDiff({
   useEffect(() => {
     if (compose) {
       setOpen(true);
-      comments.seed(compose.line, compose.body);
+      comments.seed(compose.line, compose.body, compose.marker);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compose]);
@@ -782,6 +792,7 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     path: string;
     line: number;
     body: string;
+    marker?: string;
   } | null>(null);
   /** File taken over the panel in the full-file view. */
   const [expanded, setExpanded] = useState<DiffFile | null>(null);
@@ -971,7 +982,12 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
       file.lines.find((l) => l.newLine != null)?.newLine ??
       1;
     if (skipped.some((f) => f.path === file.path)) setShowSkipped(true);
-    setSeededCompose({ path: file.path, line, body: composeRequest.seed });
+    setSeededCompose({
+      path: file.path,
+      line,
+      body: composeRequest.seed,
+      marker: composeRequest.marker,
+    });
     useDiffStore.getState().clearCompose();
     requestAnimationFrame(() => {
       document

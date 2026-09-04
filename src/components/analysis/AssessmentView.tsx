@@ -2,8 +2,9 @@ import { useState } from "react";
 import type { Assessment } from "../../bindings/Assessment";
 import type { CodeFinding } from "../../bindings/CodeFinding";
 import type { Pillar } from "../../bindings/Pillar";
+import type { BoundaryImpact } from "../../bindings/BoundaryImpact";
 import type { WaFinding } from "../../bindings/WaFinding";
-import { IMPACT_LABEL, PILLAR_LABEL, type Explainable } from "../../lib/comments";
+import { findingMarker, IMPACT_LABEL, PILLAR_LABEL, type Explainable } from "../../lib/comments";
 
 const FIT_LABEL = {
   fits: "fits the architecture",
@@ -45,8 +46,8 @@ function CommentFindingButton({ onClick }: { onClick: () => void }) {
  *  comment. Shared by every finding row (code, Well-Architected, boundary
  *  impact) here and by the per-file insights panel, which shows the same code
  *  finding in a second place and must offer the same verbs for it.
- *  `commented` is only knowable for code findings, which have a line to match
- *  a review comment against; the other rows leave it out. */
+ *  `commented`: a code finding is matched by its line; a Well-Architected
+ *  finding or boundary impact by the marker its comment carries. */
 export function FindingActions({
   commented = false,
   onExplain,
@@ -90,13 +91,15 @@ export function FindingActions({
  *  reveals the full finding detail and the canvas link. */
 function WaFindingRow({
   finding,
+  commented,
   onFocusNodes,
   onCommentFinding,
   onExplain,
 }: {
   finding: WaFinding;
+  commented: boolean;
   onFocusNodes: (nodeIds: string[]) => void;
-  onCommentFinding: (seed: string, nodeIds: string[]) => void;
+  onCommentFinding: (seed: string, nodeIds: string[], marker: string) => void;
   onExplain: (finding: WaFinding) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -108,8 +111,9 @@ function WaFindingRow({
         <span className={`sev sev-${finding.severity}`}>{finding.severity}</span>
         <span className="wa-rec-line">→ {finding.recommendation}</span>
         <FindingActions
+          commented={commented}
           onExplain={() => onExplain(finding)}
-          onComment={() => onCommentFinding(seed, finding.nodeIds)}
+          onComment={() => onCommentFinding(seed, finding.nodeIds, findingMarker(finding))}
         />
       </button>
       {open && (
@@ -141,18 +145,21 @@ export function AssessmentView({
   onCommentCode,
   onExplainCode,
   isCommented,
+  isMarkedCommented,
 }: {
   assessment: Assessment;
   codeFindings: CodeFinding[];
   codePass: string | null;
   onFocusNodes: (nodeIds: string[]) => void;
-  onCommentFinding: (seed: string, nodeIds: string[]) => void;
+  onCommentFinding: (seed: string, nodeIds: string[], marker: string) => void;
   onCommentCode: (finding: CodeFinding) => void;
   /** Hand a finding — code, Well-Architected, or boundary impact — to the
    *  assistant chat for a plain-language, actionable read. */
   onExplainCode: (finding: Explainable) => void;
   /** Whether a finding already has a review comment from the viewer. */
   isCommented?: (finding: CodeFinding) => boolean;
+  /** Same, for the findings matched by marker rather than by line. */
+  isMarkedCommented?: (finding: WaFinding | BoundaryImpact) => boolean;
 }) {
   const codeByFile = new Map<string, CodeFinding[]>();
   for (const f of codeFindings) {
@@ -203,11 +210,13 @@ export function AssessmentView({
                   </span>
                   <span className="impact-desc">{impact.description}</span>
                   <FindingActions
+                    commented={isMarkedCommented?.(impact) ?? false}
                     onExplain={() => onExplainCode(impact)}
                     onComment={() =>
                       onCommentFinding(
                         `**${IMPACT_LABEL[impact.kind]} impact**: ${impact.description}`,
                         impact.nodeIds,
+                        findingMarker(impact),
                       )
                     }
                   />
@@ -276,6 +285,7 @@ export function AssessmentView({
               <div className="pillar-name">{PILLAR_LABEL[pillar]}</div>
               {findings.map((f, i) => (
                 <WaFindingRow
+                  commented={isMarkedCommented?.(f) ?? false}
                   key={i}
                   finding={f}
                   onFocusNodes={onFocusNodes}

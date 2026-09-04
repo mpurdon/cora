@@ -49,6 +49,7 @@ import { usePersisted, usePersistedFlag } from "../lib/persisted";
 import {
   findingSeed,
   isFindingCommented,
+  isMarkedCommented,
   requestChangesSeed,
   commentReviewSeed,
   resolveApproveMessage,
@@ -929,7 +930,7 @@ function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps)
   // "± comment" on a finding: anchor a pre-filled composer in the diff.
   // A PR-level conversation comment is the last resort, only when nothing
   // in the finding resolves to a changed file.
-  const commentFinding = async (seed: string, nodeIds: string[]) => {
+  const commentFinding = async (seed: string, nodeIds: string[], marker: string) => {
     const store = useDiffStore.getState();
     // The Assessment tab can be open before the diff was ever fetched —
     // resolve against the real file list, not an empty one.
@@ -940,10 +941,10 @@ function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps)
     const path = resolveFindingFile(seed, nodes, files);
     const { requestCompose } = useDiffStore.getState();
     if (path) {
-      requestCompose({ target: "diff", path, seed });
+      requestCompose({ target: "diff", path, seed, marker });
       window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "diff" }));
     } else {
-      requestCompose({ target: "conversation", path: null, seed });
+      requestCompose({ target: "conversation", path: null, seed, marker });
       window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "comments" }));
     }
   };
@@ -1146,6 +1147,7 @@ function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps)
           onCommentCode={commentCode}
           onExplainCode={explainCode}
           isCommented={(f) => isFindingCommented(f, mine)}
+          isMarkedCommented={(f) => isMarkedCommented(f, mine)}
         />
       ) : (
         <>

@@ -23,6 +23,10 @@ export interface ComposeRequest {
   /** Exact new-side line to anchor on; falls back to the first changed line. */
   line?: number | null;
   seed: string;
+  /** Appended to the body on submit, never shown in the draft: an HTML
+   *  comment GitHub renders as nothing, by which a finding with no file or
+   *  line of its own is later recognised as commented. */
+  marker?: string;
 }
 
 /** One-shot "explain this finding in the assistant chat" request, raised from a

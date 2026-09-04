@@ -119,11 +119,20 @@ export function eli5Prompt(f: Explainable): string {
 export function viewerComments(
   conversation: PrConversation | null,
   viewer: string,
-): { lines: Set<string>; files: Set<string> } {
+): { lines: Set<string>; files: Set<string>; markers: Set<string> } {
   const lines = new Set<string>();
   const files = new Set<string>();
-  if (!viewer) return { lines, files };
+  // `markers`: the finding tags in every comment of the viewer's, threads and
+  // conversation alike — the only key a finding without a location has.
+  const markers = new Set<string>();
+  if (!viewer) return { lines, files, markers };
+  const collect = (c: { author: string; body: string }) => {
+    if (c.author !== viewer) return;
+    for (const m of c.body.matchAll(MARKER_RE)) markers.add(`<!-- cora:finding ${m[1]} -->`);
+  };
+  for (const c of conversation?.comments ?? []) collect(c);
   for (const t of conversation?.threads ?? []) {
+    t.comments.forEach(collect);
     if (!t.path) continue;
     if (!t.comments.some((c) => c.author === viewer)) continue;
     files.add(t.path);
@@ -134,7 +143,40 @@ export function viewerComments(
       lines.add(`${t.path}:${ln}`);
     }
   }
-  return { lines, files };
+  return { lines, files, markers };
+}
+
+/** The hidden tag a comment posted from a Well-Architected finding or a
+ *  boundary impact carries. Those have no file or line to be matched by, so
+ *  the comment itself says which finding it came from — as an HTML comment,
+ *  which GitHub renders as nothing and which survives edits to the visible
+ *  text. Keyed on the finding's own words rather than its position in the
+ *  list, so a re-run that reorders findings keeps the match. */
+export function findingMarker(f: WaFinding | BoundaryImpact): string {
+  const key = "pillar" in f ? `${f.pillar}|${f.finding}` : `${f.kind}|${f.description}`;
+  return `<!-- cora:finding ${fnv(key)} -->`;
+}
+
+const MARKER_RE = /<!--\s*cora:finding\s+([0-9a-f]{8})\s*-->/g;
+
+/** FNV-1a, 32-bit, as hex — stable and short; collisions among one PR's
+ *  dozen findings are not a real concern. */
+function fnv(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+/** Whether a finding with no location has been addressed: a viewer comment
+ *  anywhere on the PR carries its marker. */
+export function isMarkedCommented(
+  f: WaFinding | BoundaryImpact,
+  mine: { markers: Set<string> },
+): boolean {
+  return mine.markers.has(findingMarker(f));
 }
 
 /** Whether a finding has been addressed by a viewer comment at its location. */
