@@ -1,11 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ipc } from "../../lib/ipc";
 
 type Phase = "idle" | "signing-in" | "failed";
 
+/** Coming back to the window is the signal that you went and fixed the
+ *  session; retry then, but not on every alt-tab while it is still broken. */
+const FOCUS_RETRY_GAP_MS = 20_000;
+
 /**
- * Recovery card for AWS credential failures: one click runs
- * `aws sso login`, waits for the browser round-trip, then retries.
+ * Recovery card for AWS credential failures. One click runs `aws sso login`
+ * and retries after the browser round-trip — but a profile whose credentials
+ * come from somewhere else (a credential process, an SSO helper that writes
+ * keys) is refreshed outside this window, so the card also retries on its
+ * own when the window regains focus, and offers a plain Retry.
  */
 export function AwsAuthCard({
   detail,
@@ -23,6 +30,22 @@ export function AwsAuthCard({
   useEffect(() => {
     void ipc.getSettings().then((s) => setProfile(s.awsProfile));
   }, []);
+
+  // Refocus after a sign-in elsewhere → retry, at most once per gap. The
+  // card unmounts while the retry runs and comes back fresh if it fails,
+  // so a still-broken session costs one cheap call per return, not a loop.
+  const lastAuto = useRef(0);
+  useEffect(() => {
+    const onFocus = () => {
+      if (phase === "signing-in") return;
+      const now = Date.now();
+      if (now - lastAuto.current < FOCUS_RETRY_GAP_MS) return;
+      lastAuto.current = now;
+      onSignedIn();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [phase, onSignedIn]);
 
   const command = `aws sso login --profile ${profile || "<profile>"}`;
 
@@ -52,8 +75,8 @@ export function AwsAuthCard({
       </div>
       <p className="auth-body">
         CORA couldn't get AWS credentials for the <span className="mono">{profile}</span>{" "}
-        profile — usually an expired SSO session. Sign in and the analysis will resume
-        automatically.
+        profile — usually an expired session. Sign in here, or refresh the profile's credentials
+        the way you normally do, and the analysis resumes when you come back to this window.
       </p>
 
       {phase === "signing-in" ? (
@@ -68,6 +91,9 @@ export function AwsAuthCard({
           </button>
           <button className="action-btn" onClick={() => void copy()}>
             {copied ? "Copied" : "Copy command"}
+          </button>
+          <button className="action-btn" onClick={onSignedIn} data-tip="Try the analysis again now">
+            Retry
           </button>
         </div>
       )}
