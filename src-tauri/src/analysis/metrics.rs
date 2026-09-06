@@ -69,14 +69,18 @@ pub fn diff_metrics(diff: &str) -> Vec<(String, FileMetrics)> {
             out.push((path, FileMetrics::default()));
             continue;
         }
-        let Some((_, m)) = out.last_mut() else { continue };
+        let Some((path, m)) = out.last_mut() else { continue };
         if line.starts_with("+++") || line.starts_with("---") {
             continue;
         }
         if let Some(added) = line.strip_prefix('+') {
             m.additions += 1;
             let code = added.trim_start();
-            if code.is_empty() || is_comment(code) {
+            // Prose is not logic: "if", "and", "or" in a spec paragraph are
+            // not branch points, and a design doc must not read as the
+            // riskiest file in the PR or hide a one-file change behind
+            // three "logic" files.
+            if code.is_empty() || is_comment(code) || is_prose(path) {
                 continue;
             }
             if is_import(code) {
@@ -104,6 +108,14 @@ fn finalize(m: &mut FileMetrics, imports_added: i64) {
     } else {
         0.0
     };
+}
+
+/// Documentation and prose formats, where keyword counting means nothing.
+fn is_prose(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    ["md", "mdx", "markdown", "txt", "rst", "adoc", "asciidoc"]
+        .iter()
+        .any(|ext| lower.ends_with(&format!(".{ext}")))
 }
 
 fn is_comment(code: &str) -> bool {
@@ -234,6 +246,17 @@ diff --git a/README.md b/README.md
         assert_eq!(m.additions, 1);
         assert_eq!(m.deletions, 1);
         assert!(m.is_logicless());
+    }
+
+    #[test]
+    fn prose_files_carry_no_logic() {
+        let diff = "diff --git a/specs/plan.md b/specs/plan.md\n+++ b/specs/plan.md\n+If the client has invoices and no oracle id, or the pair is ambiguous, then\n+the reviewer decides. function main() { if (x) {} }\n";
+        let m = diff_metrics(diff);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].1.additions, 2);
+        assert_eq!(m[0].1.added_branches, 0);
+        assert_eq!(m[0].1.new_defs, 0);
+        assert!(m[0].1.is_mechanical());
     }
 
     #[test]
