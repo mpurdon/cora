@@ -33,6 +33,9 @@ import {
 } from "../lib/theme";
 import { usePrStore } from "../state/prStore";
 import { DeveloperPane } from "./DeveloperPane";
+import { ExperimentsPane } from "./ExperimentsPane";
+import { PromptEditor } from "../components/PromptEditor";
+import { EffortSlider, StepSlider, TOKEN_STEPS, Toggle, fmtTokens, nearestIdx } from "../components/Controls";
 
 export type SettingsPane =
   | "general"
@@ -42,6 +45,8 @@ export type SettingsPane =
   | "repos"
   | "users"
   | "aws"
+  | "ai"
+  | "experiments"
   | "developer";
 type Pane = SettingsPane;
 
@@ -68,42 +73,14 @@ const PANES: { key: Pane; label: string; glyph: string; dev?: boolean }[] = [
   { key: "repos", label: "Repositories", glyph: "▤" },
   { key: "users", label: "Users", glyph: "◔" },
   { key: "aws", label: "AWS", glyph: "▲" },
+  { key: "ai", label: "AI", glyph: "✦" },
+  { key: "experiments", label: "Experiments", glyph: "⚖" },
   { key: "developer", label: "Developer", glyph: "⌬", dev: true },
 ];
 
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
 /** Switch-style on/off control — settings never use bare checkboxes. */
-function Toggle({
-  checked,
-  onChange,
-  label,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  label?: ReactNode;
-  disabled?: boolean;
-}) {
-  return (
-    <label className="toggle-row">
-      <input
-        type="checkbox"
-        disabled={disabled}
-        className="toggle-input"
-        role="switch"
-        aria-checked={checked}
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      <span className="toggle-track">
-        <span className="toggle-knob" />
-      </span>
-      {label}
-    </label>
-  );
-}
-
 /** Poll-interval ladder: fine steps at the fast end, coarser as it grows.
  *  5s→1m, 30s→5m, 1m→15m, 5m→1h, 30m→6h, 1h→12h. */
 const POLL_STEPS = (() => {
@@ -155,100 +132,10 @@ function sliderFill(idx: number, maxIdx: number): React.CSSProperties {
   return { "--fill": `${(idx / maxIdx) * 100}%` } as React.CSSProperties;
 }
 
-// Output-token ceiling steps, chosen to land on real Claude-on-Bedrock hard
-// output caps: 4k/8k (older Claude), 16k, and 24k–64k (newer models). The
-// model behind an inference-profile ARN is opaque, so we can't know which cap
-// applies — picking a real value keeps the choice meaningful, and the
-// over-cap Bedrock error (engine.rs) is the backstop if a step is too high.
-/** Effort levels the Bedrock request accepts, in order; "default" sends
- *  nothing and leaves the model at its own level (high on current tiers). */
-const EFFORT_LEVELS = ["default", "low", "medium", "high", "xhigh", "max"] as const;
-type EffortLevel = (typeof EFFORT_LEVELS)[number];
-const EFFORT_STEPS = EFFORT_LEVELS.map((_, i) => i);
-const effortIdx = (v: string) => Math.max(0, EFFORT_LEVELS.indexOf((v || "default") as EffortLevel));
-
-/** The effort scale as a step slider, so it reads like the ceilings below it. */
-function EffortSlider({ value, onChange }: { value: string; onChange: (v: EffortLevel) => void }) {
-  return (
-    <StepSlider
-      steps={EFFORT_STEPS}
-      value={effortIdx(value)}
-      onChange={(i) => onChange(EFFORT_LEVELS[i])}
-      fmt={(i) => EFFORT_LEVELS[i]}
-    />
-  );
-}
-
-const TOKEN_STEPS = [4096, 8192, 16384, 24576, 32768, 49152, 65536];
-
-function fmtTokens(n: number): string {
-  const k = n / 1024;
-  return Number.isInteger(k) ? `${k}k` : `${k.toFixed(1)}k`;
-}
-
 // How many rows the callout shows — a query cap only (get_activity). Older
 // rows stay in SQLite up to a high runaway guard, so shrinking this shortens
 // the feed without deleting history.
 const FEED_STEPS = [50, 100, 150, 200, 300, 500];
-
-function nearestIdx(steps: number[], value: number): number {
-  let best = 0;
-  steps.forEach((v, i) => {
-    if (Math.abs(v - value) < Math.abs(steps[best] - value)) best = i;
-  });
-  return best;
-}
-
-/** A slider over a small set of discrete `steps`, with a tick label under each
- *  value. WKWebView (Tauri's macOS engine) paints the native range thumb at a
- *  position that doesn't track the standard geometry, so external labels can't
- *  be aligned to it. We hide the native thumb and draw our own thumb and labels
- *  from one shared formula — thumb left edge at frac·(track − thumb), label
- *  centre at frac·(track − thumb) + thumb/2 — so they align by construction at
- *  any CSS zoom. The thumb width lives once in CSS as --thumb-w. */
-function StepSlider({
-  steps,
-  value,
-  onChange,
-  fmt,
-}: {
-  steps: number[];
-  value: number;
-  onChange: (v: number) => void;
-  fmt?: (v: number) => string;
-}) {
-  const fracOf = (i: number) => (steps.length > 1 ? i / (steps.length - 1) : 0);
-  const idx = nearestIdx(steps, value);
-  // --frac positions the custom thumb; --fill (same ratio, as a %) colours the
-  // native track gradient. Both derive from one computation here.
-  const style = {
-    "--frac": String(fracOf(idx)),
-    "--fill": `${fracOf(idx) * 100}%`,
-  } as React.CSSProperties;
-  return (
-    <div className="step-slider" style={style}>
-      <input
-        type="range"
-        className="interval-slider step-slider-input"
-        min={0}
-        max={steps.length - 1}
-        value={idx}
-        onChange={(e) => onChange(steps[Number(e.target.value)])}
-      />
-      <span className="step-slider-thumb" aria-hidden="true" />
-      <div className="slider-scale mono">
-        {steps.map((v, i) => (
-          <span
-            key={v}
-            style={{ left: `calc(${fracOf(i)} * (100% - var(--thumb-w)) + var(--thumb-w) / 2)` }}
-          >
-            {fmt ? fmt(v) : v}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 function Field({
   label,
@@ -378,6 +265,9 @@ export function SettingsView({
             <PaneNameCtx.Provider value="AWS">
               <AwsPane settings={settings} save={save} />
             </PaneNameCtx.Provider>
+            <PaneNameCtx.Provider value="AI">
+              <AiPane settings={settings} save={save} />
+            </PaneNameCtx.Provider>
           </SearchCtx.Provider>
         </div>
       ) : (
@@ -398,8 +288,12 @@ export function SettingsView({
             <UsersPane settings={settings} save={save} activeAuthors={prs.map((p) => p.author)} />
           )}
           {pane === "aws" && <AwsPane settings={settings} save={save} />}
+          {pane === "ai" && <AiPane settings={settings} save={save} />}
+          {pane === "experiments" && (
+            <ExperimentsPane settings={settings} prs={prs} refreshSettings={refreshSettings} />
+          )}
           {pane === "developer" && settings.developerMode && (
-            <DeveloperPane settings={settings} save={save} />
+            <DeveloperPane settings={settings} />
           )}
         </div>
       )}
@@ -408,6 +302,142 @@ export function SettingsView({
 }
 
 type PaneProps = { settings: Settings; save: (p: Partial<Settings>) => Promise<void> };
+
+// ---------------------------------------------------------------- ai
+
+/** Everything that shapes what an analysis produces — the levers an
+ *  experiment varies. Infrastructure stays in the AWS pane. */
+function AiPane({ settings, save }: PaneProps) {
+  const archLimit = settings.archMaxOutputTokens || 16384;
+  const codeLimit = settings.codeMaxOutputTokens || 16384;
+
+  return (
+    <section className="pane-section">
+      <h2>AI</h2>
+      <p className="pane-intro">
+        Which models run each pass, how hard they think, how much they may write, and the prompt
+        they work from. To measure a change before living with it, capture these settings as a
+        variant in Experiments.
+      </p>
+
+      <h3 className="pane-subhead">Models</h3>
+      <Field
+        label="Model id or inference-profile ARN"
+        hint="Used for the Context/Container analysis — the full-architecture pass."
+      >
+        <input
+          value={settings.bedrockModelId}
+          onChange={(e) => void save({ bedrockModelId: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Drill-down model"
+        hint="Faster model for Component/Code drill-downs (code-level, not system-wide). Empty = use the main model."
+      >
+        <input
+          value={settings.bedrockDrillModelId}
+          onChange={(e) => void save({ bedrockDrillModelId: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Assistant model"
+        hint="Model behind the chat assistant. Empty = follow the drill-down model (or the main model if that is empty too)."
+      >
+        <input
+          value={settings.bedrockChatModelId}
+          onChange={(e) => void save({ bedrockChatModelId: e.target.value })}
+        />
+      </Field>
+
+      <Field
+        label="Scout model"
+        hint="Cheap model that pre-reads diffs too large to show the analysis whole, so the architecture pass gets a map of what matters. Empty = off."
+      >
+        <input
+          value={settings.bedrockScoutModelId}
+          onChange={(e) => void save({ bedrockScoutModelId: e.target.value })}
+        />
+      </Field>
+
+
+      <h3 className="pane-subhead">Effort</h3>
+      <Field
+        label={`Architecture effort — ${settings.bedrockEffortArch || "default"}`}
+        hint="How hard the main model thinks on the architecture pass. Default leaves the model's own level (high). A third or more of the write-up turn is thinking; medium is the first step down to try, and lower levels also make fewer, larger tool calls."
+      >
+        <EffortSlider value={settings.bedrockEffortArch} onChange={(v) => void save({ bedrockEffortArch: v })} />
+      </Field>
+
+      <Field
+        label={`Drill effort — ${settings.bedrockEffortDrill || "default"}`}
+        hint="Effort for runs on the drill model: C4 drill-downs and routine PRs."
+      >
+        <EffortSlider value={settings.bedrockEffortDrill} onChange={(v) => void save({ bedrockEffortDrill: v })} />
+      </Field>
+
+      <Field
+        label={`Code pass effort — ${settings.bedrockEffortCode || "default"}`}
+        hint="Effort for the code-findings pass. It hunts defects, so step down with more care than the architecture pass."
+      >
+        <EffortSlider value={settings.bedrockEffortCode} onChange={(v) => void save({ bedrockEffortCode: v })} />
+      </Field>
+
+
+      <h3 className="pane-subhead">Output ceilings</h3>
+      <Field
+        label={`Architecture output ceiling — ${fmtTokens(archLimit)} tokens`}
+        hint="Max output for the architecture pass (graph + assessment + pillar findings — the large submission). A ceiling, not a reservation: no cost unless reached. Keep it at or below your model's hard output cap, or Bedrock rejects the request."
+      >
+        <StepSlider
+          steps={TOKEN_STEPS}
+          value={archLimit}
+          onChange={(v) => void save({ archMaxOutputTokens: v })}
+          fmt={fmtTokens}
+        />
+      </Field>
+
+      <Field
+        label={`Code-pass output ceiling — ${fmtTokens(codeLimit)} tokens`}
+        hint="Max output for the code-level findings pass. Its submission is short — this mostly bounds the model's reasoning before it submits. Same hard-cap caveat as above."
+      >
+        <StepSlider
+          steps={TOKEN_STEPS}
+          value={codeLimit}
+          onChange={(v) => void save({ codeMaxOutputTokens: v })}
+          fmt={fmtTokens}
+        />
+      </Field>
+
+      <h3 className="pane-subhead">Behavior</h3>
+      <Field
+        label="Code findings pass"
+        hint="After the architecture analysis, a second pass over the critical/important files hunts consequence-bearing defects and hand-rolled duplicates of existing code. Runs on the drill-down model."
+      >
+        <Toggle
+          checked={settings.codeFindingsPass}
+          onChange={(v) => void save({ codeFindingsPass: v })}
+          label="Run the code-level pass after each analysis"
+        />
+      </Field>
+
+      <Field
+        label="Routine PRs on the drill-down model"
+        hint="When every changed file is mechanical, or only a handful carry almost no new logic, the architecture pass runs on the cheaper drill-down model instead of the main one."
+      >
+        <Toggle
+          checked={settings.routeRoutinePrsToDrillModel}
+          onChange={(v) => void save({ routeRoutinePrsToDrillModel: v })}
+          label="Route routine PRs to the drill-down model"
+        />
+      </Field>
+
+      <h3 className="pane-subhead">System prompt</h3>
+      <PromptEditor settings={settings} save={save} />
+    </section>
+  );
+}
 
 // ---------------------------------------------------------------- general
 
@@ -523,27 +553,6 @@ function GeneralPane({ settings, save }: PaneProps) {
         />
       </Field>
 
-      <Field
-        label="Code findings pass"
-        hint="After the architecture analysis, a second pass over the critical/important files hunts consequence-bearing defects and hand-rolled duplicates of existing code. Runs on the drill-down model."
-      >
-        <Toggle
-          checked={settings.codeFindingsPass}
-          onChange={(v) => void save({ codeFindingsPass: v })}
-          label="Run the code-level pass after each analysis"
-        />
-      </Field>
-
-      <Field
-        label="Routine PRs on the drill-down model"
-        hint="When every changed file is mechanical, or only a handful carry almost no new logic, the architecture pass runs on the cheaper drill-down model instead of the main one."
-      >
-        <Toggle
-          checked={settings.routeRoutinePrsToDrillModel}
-          onChange={(v) => void save({ routeRoutinePrsToDrillModel: v })}
-          label="Route routine PRs to the drill-down model"
-        />
-      </Field>
 
       <Field
         label="Notifications"
@@ -1328,15 +1337,12 @@ function AwsPane({ settings, save }: PaneProps) {
     }
   };
 
-  const archLimit = settings.archMaxOutputTokens || 16384;
-  const codeLimit = settings.codeMaxOutputTokens || 16384;
-
   return (
     <section className="pane-section">
       <h2>AWS</h2>
       <p className="pane-intro">
-        Bedrock powers the architecture analysis. Credentials come from your local AWS config —
-        CORA never stores them.
+        Where Bedrock is reached and as whom. Credentials come from your local AWS config — CORA
+        never stores them. Models, effort, and prompts live in the AI pane.
       </p>
 
       <Field label="Connection">
@@ -1398,90 +1404,6 @@ function AwsPane({ settings, save }: PaneProps) {
         />
       </Field>
 
-      <Field
-        label="Model id or inference-profile ARN"
-        hint="Used for the Context/Container analysis — the full-architecture pass."
-      >
-        <input
-          value={settings.bedrockModelId}
-          onChange={(e) => void save({ bedrockModelId: e.target.value })}
-        />
-      </Field>
-
-      <Field
-        label="Drill-down model"
-        hint="Faster model for Component/Code drill-downs (code-level, not system-wide). Empty = use the main model."
-      >
-        <input
-          value={settings.bedrockDrillModelId}
-          onChange={(e) => void save({ bedrockDrillModelId: e.target.value })}
-        />
-      </Field>
-
-      <Field
-        label="Assistant model"
-        hint="Model behind the chat assistant. Empty = follow the drill-down model (or the main model if that is empty too)."
-      >
-        <input
-          value={settings.bedrockChatModelId}
-          onChange={(e) => void save({ bedrockChatModelId: e.target.value })}
-        />
-      </Field>
-
-      <Field
-        label="Scout model"
-        hint="Cheap model that pre-reads diffs too large to show the analysis whole, so the architecture pass gets a map of what matters. Empty = off."
-      >
-        <input
-          value={settings.bedrockScoutModelId}
-          onChange={(e) => void save({ bedrockScoutModelId: e.target.value })}
-        />
-      </Field>
-
-      <Field
-        label={`Architecture effort — ${settings.bedrockEffortArch || "default"}`}
-        hint="How hard the main model thinks on the architecture pass. Default leaves the model's own level (high). A third or more of the write-up turn is thinking; medium is the first step down to try, and lower levels also make fewer, larger tool calls."
-      >
-        <EffortSlider value={settings.bedrockEffortArch} onChange={(v) => void save({ bedrockEffortArch: v })} />
-      </Field>
-
-      <Field
-        label={`Drill effort — ${settings.bedrockEffortDrill || "default"}`}
-        hint="Effort for runs on the drill model: C4 drill-downs and routine PRs."
-      >
-        <EffortSlider value={settings.bedrockEffortDrill} onChange={(v) => void save({ bedrockEffortDrill: v })} />
-      </Field>
-
-      <Field
-        label={`Code pass effort — ${settings.bedrockEffortCode || "default"}`}
-        hint="Effort for the code-findings pass. It hunts defects, so step down with more care than the architecture pass."
-      >
-        <EffortSlider value={settings.bedrockEffortCode} onChange={(v) => void save({ bedrockEffortCode: v })} />
-      </Field>
-
-      <Field
-        label={`Architecture output ceiling — ${fmtTokens(archLimit)} tokens`}
-        hint="Max output for the architecture pass (graph + assessment + pillar findings — the large submission). A ceiling, not a reservation: no cost unless reached. Keep it at or below your model's hard output cap, or Bedrock rejects the request."
-      >
-        <StepSlider
-          steps={TOKEN_STEPS}
-          value={archLimit}
-          onChange={(v) => void save({ archMaxOutputTokens: v })}
-          fmt={fmtTokens}
-        />
-      </Field>
-
-      <Field
-        label={`Code-pass output ceiling — ${fmtTokens(codeLimit)} tokens`}
-        hint="Max output for the code-level findings pass. Its submission is short — this mostly bounds the model's reasoning before it submits. Same hard-cap caveat as above."
-      >
-        <StepSlider
-          steps={TOKEN_STEPS}
-          value={codeLimit}
-          onChange={(v) => void save({ codeMaxOutputTokens: v })}
-          fmt={fmtTokens}
-        />
-      </Field>
     </section>
   );
 }

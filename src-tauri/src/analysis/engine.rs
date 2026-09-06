@@ -850,6 +850,17 @@ pub(crate) fn strip_trailing_reasoning(message: Message) -> Message {
         .unwrap_or(message)
 }
 
+tokio::task_local! {
+    /// Set around a run made by the lab. Its progress goes to the lab's own
+    /// channel and its draft is not shown, so the review screen never
+    /// mistakes an experiment for an analysis of its own.
+    pub(crate) static EXPERIMENT_SCOPE: bool;
+}
+
+fn in_experiment() -> bool {
+    EXPERIMENT_SCOPE.try_with(|v| *v).unwrap_or(false)
+}
+
 fn progress(
     app: &AppHandle,
     pr_id: &str,
@@ -858,7 +869,11 @@ fn progress(
     message: impl Into<String>,
 ) {
     let _ = app.emit(
-        events::ANALYSIS_PROGRESS,
+        if in_experiment() {
+            crate::experiments::events::PROGRESS
+        } else {
+            events::ANALYSIS_PROGRESS
+        },
         AnalysisProgress {
             pr_id: pr_id.to_string(),
             level,
@@ -1332,7 +1347,7 @@ pub async fn run(
         }
         *last = Some(std::time::Instant::now());
         let summary = json_string_field(partial, "summary");
-        if summary.is_none() {
+        if summary.is_none() || in_experiment() {
             return;
         }
         let _ = app.emit(

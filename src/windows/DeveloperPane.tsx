@@ -8,15 +8,9 @@ import { UsageView } from "../components/UsageView";
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
-type DevTab = "logs" | "usage" | "prompt" | "internals";
+type DevTab = "logs" | "usage" | "internals";
 
-export function DeveloperPane({
-  settings,
-  save,
-}: {
-  settings: Settings;
-  save: (p: Partial<Settings>) => Promise<void>;
-}) {
+export function DeveloperPane({ settings }: { settings: Settings }) {
   const [tab, setTab] = useState<DevTab>("logs");
   return (
     <section className="pane-section pane-wide dev-pane">
@@ -26,7 +20,6 @@ export function DeveloperPane({
           [
             ["logs", "Logs"],
             ["usage", "Usage"],
-            ["prompt", "System prompt"],
             ["internals", "Internals"],
           ] as [DevTab, string][]
         ).map(([key, label]) => (
@@ -41,7 +34,6 @@ export function DeveloperPane({
       </div>
       {tab === "logs" && <LogsView />}
       {tab === "usage" && <UsageView />}
-      {tab === "prompt" && <PromptEditor settings={settings} save={save} />}
       {tab === "internals" && <InternalsView settings={settings} />}
     </section>
   );
@@ -128,68 +120,6 @@ function LogsView() {
             <span className="dev-log-msg">{e.message}</span>
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------- prompt
-
-function PromptEditor({
-  settings,
-  save,
-}: {
-  settings: Settings;
-  save: (p: Partial<Settings>) => Promise<void>;
-}) {
-  const [defaultPrompt, setDefaultPrompt] = useState("");
-  const [draft, setDraft] = useState<string | null>(null);
-
-  useEffect(() => {
-    void ipc.getDefaultSystemPrompt().then(setDefaultPrompt);
-  }, []);
-
-  const usingCustom = settings.customSystemPrompt.trim().length > 0;
-  const value = draft ?? (usingCustom ? settings.customSystemPrompt : defaultPrompt);
-  const dirty = draft !== null && draft !== (usingCustom ? settings.customSystemPrompt : "");
-
-  return (
-    <div>
-      <p className="pane-intro">
-        The system prompt sent to Bedrock for every analysis. Edits apply to the next run —
-        cached analyses aren't re-run. {usingCustom ? (
-          <strong>Currently using a custom prompt.</strong>
-        ) : (
-          "Currently using the built-in prompt."
-        )}
-      </p>
-      <textarea
-        className="prompt-editor"
-        spellCheck={false}
-        value={value}
-        onChange={(e) => setDraft(e.target.value)}
-      />
-      <div className="row" style={{ marginTop: 10 }}>
-        <button
-          className="action-btn"
-          disabled={!dirty}
-          onClick={() => {
-            void save({ customSystemPrompt: draft ?? "" });
-            setDraft(null);
-          }}
-        >
-          Save as custom prompt
-        </button>
-        <button
-          className="action-btn"
-          disabled={!usingCustom && draft === null}
-          onClick={() => {
-            void save({ customSystemPrompt: "" });
-            setDraft(null);
-          }}
-        >
-          Reset to built-in
-        </button>
       </div>
     </div>
   );

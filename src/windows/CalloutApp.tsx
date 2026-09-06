@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ActivityItem } from "../bindings/ActivityItem";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import { ACTION_META, ACTION_ORDER, inBucket, type ActionKind } from "../lib/actions";
@@ -456,7 +455,7 @@ export function CalloutApp() {
         <button
           className="icon-btn"
           {...tip("Hide callout")}
-          onClick={() => void getCurrentWindow().hide()}
+          onClick={() => void ipc.hideCallout()}
         >
           ✕
         </button>

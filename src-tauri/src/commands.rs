@@ -527,7 +527,7 @@ pub async fn track_pr_url(
 /// Keys of currently-running analyses, to prevent duplicate runs.
 pub struct AnalysisRuns(pub std::sync::Mutex<std::collections::HashSet<String>>);
 
-fn analysis_key(pr_id: &str, level: AnalysisLevel, focus: &Option<String>) -> String {
+pub(crate) fn analysis_key(pr_id: &str, level: AnalysisLevel, focus: &Option<String>) -> String {
     format!("{pr_id}:{}:{}", level.as_str(), focus.as_deref().unwrap_or(""))
 }
 
@@ -714,8 +714,6 @@ async fn execute_analysis(
     }
 
     let settings = store.settings()?;
-    let token = secrets::github_pat()?
-        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
 
     // Ground drilled runs in the context-level result (graph + assessment
     // only — the trace would just be noise) so they don't re-explore.
@@ -755,6 +753,35 @@ async fn execute_analysis(
     } else {
         None
     };
+    let result = analyze_pr(app, &pr, &settings, level, focus, parent_context, prior).await?;
+
+    store.put_analysis(
+        &result.pr_id,
+        result.level.as_str(),
+        result.focus_node_id.as_deref().unwrap_or(""),
+        &result.head_sha,
+        &serde_json::to_string(&result).map_err(|e| AppError::Other(e.to_string()))?,
+        &result.created_at,
+    )?;
+    Ok(result)
+}
+
+/// One analysis of one PR under the given settings — the architecture pass
+/// and, at context level, the code pass beside it. Owns nothing about
+/// caching: the review screen persists the result, the lab keeps its own
+/// copy, and both hand in the seed material (parent context, prior head).
+pub(crate) async fn analyze_pr(
+    app: &AppHandle,
+    pr: &crate::models::TrackedPr,
+    settings: &Settings,
+    level: AnalysisLevel,
+    focus: Option<String>,
+    parent_context: Option<String>,
+    prior: Option<crate::analysis::engine::PriorAnalysis>,
+) -> AppResult<AnalysisResult> {
+    use crate::analysis::engine;
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let result = if level == AnalysisLevel::Context && settings.code_findings_pass {
         // The code pass used to wait for the architecture pass's review plan
         // to know which files to read — a minute or more of idle time. The
@@ -762,20 +789,20 @@ async fn execute_analysis(
         // side by side on their separate model tiers, and the plan is only
         // checked afterwards for significant files the metrics missed. The
         // code pass stays best-effort: its failure never sinks the result.
-        let metrics = engine::file_metrics(app, &settings, &token, &pr).await;
+        let metrics = engine::file_metrics(app, &settings, &token, pr).await;
         let code_focus = engine::code_focus_paths(&metrics);
         let (arch, code) = futures::future::join(
             engine::run(
                 app,
                 &settings,
                 &token,
-                &pr,
+                pr,
                 level,
                 focus,
                 parent_context,
                 engine::RunExtras { metrics: Some(metrics), prior },
             ),
-            engine::code_findings(app, &settings, &token, &pr, &code_focus),
+            engine::code_findings(app, &settings, &token, pr, &code_focus),
         )
         .await;
         let mut result = arch?;
@@ -818,7 +845,7 @@ async fn execute_analysis(
             app,
             &settings,
             &token,
-            &pr,
+            pr,
             level,
             focus,
             parent_context,
@@ -830,15 +857,6 @@ async fn execute_analysis(
         }
         result
     };
-
-    store.put_analysis(
-        &result.pr_id,
-        result.level.as_str(),
-        result.focus_node_id.as_deref().unwrap_or(""),
-        &result.head_sha,
-        &serde_json::to_string(&result).map_err(|e| AppError::Other(e.to_string()))?,
-        &result.created_at,
-    )?;
     Ok(result)
 }
 
@@ -2133,6 +2151,74 @@ pub fn show_main_filtered(app: AppHandle, bucket: String) -> AppResult<()> {
         let _ = app.emit_to("main", "focus:bucket", bucket);
     }
     Ok(())
+}
+
+/// When the main window last held focus. Hiding the callout consults it:
+/// a click on the always-on-top callout activates the whole app and brings
+/// the main window forward with it, and the point of the ✕ was to recover
+/// desktop space, not to surface the main window.
+#[derive(Default)]
+pub struct MainFocus(std::sync::Mutex<MainFocusState>);
+
+#[derive(Default)]
+struct MainFocusState {
+    focused: bool,
+    lost_at: Option<std::time::Instant>,
+}
+
+impl MainFocus {
+    pub fn record(&self, focused: bool) {
+        let mut s = self.0.lock().unwrap();
+        if s.focused && !focused {
+            s.lost_at = Some(std::time::Instant::now());
+        }
+        s.focused = focused;
+    }
+
+    /// True when the user was working in the main window just before the
+    /// click that is now hiding the callout — that click took the focus.
+    fn was_working_in_main(&self) -> bool {
+        let s = self.0.lock().unwrap();
+        s.focused || s.lost_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1500))
+    }
+}
+
+/// The callout's ✕. Hides it, and on macOS undoes the app activation the
+/// click caused unless the main window was already where the user was
+/// working: hide-then-unhide-without-activation hands focus back to the
+/// previous app and leaves the main window where it was in the stack.
+#[tauri::command]
+pub fn hide_callout(app: AppHandle) -> AppResult<()> {
+    let Some(callout) = app.get_webview_window("callout") else {
+        return Ok(());
+    };
+    let was_working_in_main = app.state::<MainFocus>().was_working_in_main();
+    crate::flush_window_state(&app);
+    let _ = callout.hide();
+    #[cfg(target_os = "macos")]
+    if !was_working_in_main {
+        let _ = app.run_on_main_thread(send_app_to_back);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = was_working_in_main;
+    Ok(())
+}
+
+/// Deactivate without disturbing the window stack: hiding the app makes
+/// macOS activate the previous one, and unhiding *without* activation puts
+/// our windows back where they were, behind it. (Tauri's `AppHandle::show`
+/// unhides with activation, which would undo the point.)
+#[cfg(target_os = "macos")]
+fn send_app_to_back() {
+    use objc2_app_kit::NSApplication;
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return;
+    };
+    let ns_app = NSApplication::sharedApplication(mtm);
+    unsafe {
+        ns_app.hide(None);
+        ns_app.unhideWithoutActivation();
+    }
 }
 
 #[tauri::command]

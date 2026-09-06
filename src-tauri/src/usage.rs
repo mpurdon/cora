@@ -209,7 +209,7 @@ fn rate_for(
 }
 
 /// Dollars for one row, and whether we could price it at all.
-fn cost_of(row: &UsageRow, prices: &[ModelPrice], aliases: &[ModelAlias]) -> Option<f64> {
+pub(crate) fn cost_of(row: &UsageRow, prices: &[ModelPrice], aliases: &[ModelAlias]) -> Option<f64> {
     let (input, output) = rate_for(&row.model, prices, aliases).0?;
     let per_token = |tokens: i64, rate: f64| tokens as f64 * rate / 1_000_000.0;
     Some(

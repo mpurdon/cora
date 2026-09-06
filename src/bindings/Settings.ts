@@ -43,17 +43,22 @@ bedrockChatModelId: string,
 bedrockScoutModelId: string, 
 /**
  * Effort for the architecture pass on the main model. "default" sends
- * nothing and the model uses its own (high). Lower levels think less
- * and make fewer, larger tool calls; the write-up turn is where the
- * time goes, and a third or more of its tokens are thinking.
+ * nothing and the model uses its own (high). Ships at medium: on four
+ * PRs run at both levels (2026-09-06) the findings held while the run
+ * took 30-50% less time and output, since a third or more of the
+ * write-up turn's tokens are thinking.
  */
 bedrockEffortArch: string, 
 /**
- * Effort for runs on the drill model: drills, routine PRs.
+ * Effort for runs on the drill model: drills, routine PRs. Same bet as
+ * the architecture pass on the cheaper tier.
  */
 bedrockEffortDrill: string, 
 /**
- * Effort for the code-findings pass.
+ * Effort for the code-findings pass. Stays at the model's default: at
+ * medium the pass gave up after a few turns and missed real defects
+ * the default level found, and it runs beside the architecture pass
+ * so its depth costs no wall time.
  */
 bedrockEffortCode: string, 
 /**

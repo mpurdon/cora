@@ -116,6 +116,11 @@ CREATE TABLE IF NOT EXISTS activity (
 -- Every per-PR feed sweep (supersede/retire) filters on pr_id; without this
 -- each one scans the whole activity table.
 CREATE INDEX IF NOT EXISTS activity_pr_id ON activity(pr_id);
+CREATE TABLE IF NOT EXISTS experiments (
+  id         TEXT PRIMARY KEY,
+  data       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 ";
 
 impl Store {
@@ -625,6 +630,78 @@ impl Store {
                 row.cache_write,
             ],
         )?;
+        Ok(())
+    }
+
+    /// One PR's requests inside a window — what an experiment run cost.
+    pub fn usage_rows_between(
+        &self,
+        pr_id: &str,
+        from: &str,
+        to: &str,
+    ) -> AppResult<Vec<crate::usage::UsageRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT at, pr_id, repo, number, pr_title, kind, model,
+                    input_tokens, output_tokens, cache_read, cache_write
+             FROM usage WHERE pr_id = ?1 AND at >= ?2 AND at <= ?3 ORDER BY at",
+        )?;
+        let rows = stmt
+            .query_map(params![pr_id, from, to], |r| {
+                Ok(crate::usage::UsageRow {
+                    at: r.get(0)?,
+                    pr_id: r.get(1)?,
+                    repo: r.get(2)?,
+                    number: r.get(3)?,
+                    pr_title: r.get(4)?,
+                    kind: r.get(5)?,
+                    model: r.get(6)?,
+                    input_tokens: r.get(7)?,
+                    output_tokens: r.get(8)?,
+                    cache_read: r.get(9)?,
+                    cache_write: r.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    // -- experiments ----------------------------------------------------------
+
+    pub fn list_experiments(&self) -> AppResult<Vec<crate::experiments::Experiment>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT data FROM experiments ORDER BY created_at DESC")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .iter()
+            .filter_map(|json| serde_json::from_str(json).ok())
+            .collect())
+    }
+
+    pub fn get_experiment(&self, id: &str) -> AppResult<Option<crate::experiments::Experiment>> {
+        let conn = self.conn.lock().unwrap();
+        let json: Option<String> = conn
+            .query_row("SELECT data FROM experiments WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    pub fn put_experiment(&self, exp: &crate::experiments::Experiment) -> AppResult<()> {
+        let data = serde_json::to_string(exp).map_err(|e| AppError::Other(e.to_string()))?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO experiments (id, data, created_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET data = ?2",
+            params![exp.id, data, exp.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_experiment(&self, id: &str) -> AppResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM experiments WHERE id = ?1", params![id])?;
         Ok(())
     }
 

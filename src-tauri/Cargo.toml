@@ -28,6 +28,12 @@ ts-rs = { version = "12.0.1", features = ["chrono-impl", "no-serde-warnings"] }
 thiserror = "2.0.18"
 chrono = "0.4.45"
 tauri-plugin-window-state = "2.4.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Hiding the callout must hand focus back to the previous app without
+# re-activating ours; tauri's own show() unhides *with* activation.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "gzip", "http2"] }
 keyring = "4.1.4"
 aws-config = "1.8.18"

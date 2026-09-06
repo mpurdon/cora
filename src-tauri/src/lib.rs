@@ -3,6 +3,7 @@ mod analysis;
 mod commands;
 mod devlog;
 mod error;
+mod experiments;
 mod github;
 mod health;
 mod models;
@@ -121,6 +122,7 @@ pub fn run() {
                 std::collections::HashSet::new(),
             )));
             app.manage(health::BedrockHealth::default());
+            app.manage(commands::MainFocus::default());
             app.manage(health::GitHubHealth::default());
             app.manage(devlog::DevLog::new());
             app.manage(notify::PendingFocus::new());
@@ -144,13 +146,21 @@ pub fn run() {
             github::poller::spawn_all(app.handle().clone());
 
             // Closing the main window hides it (tray app); callout stays up.
+            // Its focus changes are remembered so hiding the callout can tell
+            // "the user was working in the main window" from "the click on
+            // the callout is what activated the app".
             if let Some(main) = app.get_webview_window("main") {
                 let main_clone = main.clone();
-                main.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let handle = app.handle().clone();
+                main.on_window_event(move |event| match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
                         let _ = main_clone.hide();
                     }
+                    tauri::WindowEvent::Focused(focused) => {
+                        handle.state::<commands::MainFocus>().record(*focused);
+                    }
+                    _ => {}
                 });
             }
 
@@ -250,6 +260,20 @@ pub fn run() {
             commands::show_main_window,
             commands::show_main_filtered,
             commands::toggle_callout,
+            commands::hide_callout,
+            experiments::list_experiments,
+            experiments::current_ai_config,
+            experiments::create_experiment,
+            experiments::rename_experiment,
+            experiments::delete_experiment,
+            experiments::set_experiment_prs,
+            experiments::add_variant,
+            experiments::update_variant,
+            experiments::rename_variant,
+            experiments::remove_variant,
+            experiments::apply_variant,
+            experiments::run_variant,
+            experiments::run_experiment,
             commands::reset_callout_position,
         ])
         .build(tauri::generate_context!())

@@ -27,6 +27,8 @@ import type { UsageStats } from "../bindings/UsageStats";
 import type { TrackedPr } from "../bindings/TrackedPr";
 import type { GithubOrg } from "../bindings/GithubOrg";
 import type { OrgState } from "../bindings/OrgState";
+import type { AiConfig } from "../bindings/AiConfig";
+import type { Experiment } from "../bindings/Experiment";
 
 export const events = {
   prsSnapshot: "prs:snapshot",
@@ -41,6 +43,8 @@ export const events = {
   orgChanged: "org:changed",
   reviewSubmitted: "review:submitted",
   activityChanged: "activity:changed",
+  experimentChanged: "experiment:changed",
+  experimentProgress: "experiment:progress",
 } as const;
 
 export const ipc = {
@@ -135,8 +139,38 @@ export const ipc = {
     invoke<{ dataDir: string; dbPath: string; version: string }>("get_app_internals"),
   showMainWindow: (prId?: string) => invoke<void>("show_main_window", { prId: prId ?? null }),
   toggleCallout: () => invoke<void>("toggle_callout"),
+  hideCallout: () => invoke<void>("hide_callout"),
   acknowledgeCriticalPr: (prId: string) => invoke<void>("acknowledge_critical_pr", { prId }),
+  listExperiments: () => invoke<Experiment[]>("list_experiments"),
+  currentAiConfig: () => invoke<AiConfig>("current_ai_config"),
+  createExperiment: (name: string) => invoke<Experiment>("create_experiment", { name }),
+  renameExperiment: (id: string, name: string) =>
+    invoke<Experiment>("rename_experiment", { id, name }),
+  deleteExperiment: (id: string) => invoke<void>("delete_experiment", { id }),
+  setExperimentPrs: (id: string, prIds: string[]) =>
+    invoke<Experiment>("set_experiment_prs", { id, prIds }),
+  addVariant: (id: string, name: string, config: AiConfig | null) =>
+    invoke<Experiment>("add_variant", { id, name, config }),
+  updateVariant: (id: string, variantId: string, name: string, config: AiConfig) =>
+    invoke<Experiment>("update_variant", { id, variantId, name, config }),
+  renameVariant: (id: string, variantId: string, name: string) =>
+    invoke<Experiment>("rename_variant", { id, variantId, name }),
+  removeVariant: (id: string, variantId: string) =>
+    invoke<Experiment>("remove_variant", { id, variantId }),
+  applyVariant: (id: string, variantId: string) =>
+    invoke<Settings>("apply_variant", { id, variantId }),
+  runVariant: (id: string, variantId: string, rerun: boolean) =>
+    invoke<void>("run_variant", { id, variantId, rerun }),
+  runExperiment: (id: string, rerun: boolean) => invoke<void>("run_experiment", { id, rerun }),
 };
+
+export function onExperimentChanged(cb: (e: Experiment) => void): Promise<UnlistenFn> {
+  return listen<Experiment>(events.experimentChanged, (e) => cb(e.payload));
+}
+
+export function onExperimentProgress(cb: (p: AnalysisProgress) => void): Promise<UnlistenFn> {
+  return listen<AnalysisProgress>(events.experimentProgress, (e) => cb(e.payload));
+}
 
 export function onPrsSnapshot(cb: (prs: TrackedPr[]) => void): Promise<UnlistenFn> {
   return listen<TrackedPr[]>(events.prsSnapshot, (e) => cb(e.payload));
