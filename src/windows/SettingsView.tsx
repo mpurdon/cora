@@ -160,8 +160,24 @@ function sliderFill(idx: number, maxIdx: number): React.CSSProperties {
 // model behind an inference-profile ARN is opaque, so we can't know which cap
 // applies — picking a real value keeps the choice meaningful, and the
 // over-cap Bedrock error (engine.rs) is the backstop if a step is too high.
-/** Effort levels the Bedrock request accepts; "default" sends nothing. */
+/** Effort levels the Bedrock request accepts, in order; "default" sends
+ *  nothing and leaves the model at its own level (high on current tiers). */
 const EFFORT_LEVELS = ["default", "low", "medium", "high", "xhigh", "max"] as const;
+type EffortLevel = (typeof EFFORT_LEVELS)[number];
+const EFFORT_STEPS = EFFORT_LEVELS.map((_, i) => i);
+const effortIdx = (v: string) => Math.max(0, EFFORT_LEVELS.indexOf((v || "default") as EffortLevel));
+
+/** The effort scale as a step slider, so it reads like the ceilings below it. */
+function EffortSlider({ value, onChange }: { value: string; onChange: (v: EffortLevel) => void }) {
+  return (
+    <StepSlider
+      steps={EFFORT_STEPS}
+      value={effortIdx(value)}
+      onChange={(i) => onChange(EFFORT_LEVELS[i])}
+      fmt={(i) => EFFORT_LEVELS[i]}
+    />
+  );
+}
 
 const TOKEN_STEPS = [4096, 8192, 16384, 24576, 32768, 49152, 65536];
 
@@ -1423,51 +1439,24 @@ function AwsPane({ settings, save }: PaneProps) {
       </Field>
 
       <Field
-        label="Architecture effort"
+        label={`Architecture effort — ${settings.bedrockEffortArch || "default"}`}
         hint="How hard the main model thinks on the architecture pass. Default leaves the model's own level (high). A third or more of the write-up turn is thinking; medium is the first step down to try, and lower levels also make fewer, larger tool calls."
       >
-        <select
-          value={settings.bedrockEffortArch || "default"}
-          onChange={(e) => void save({ bedrockEffortArch: e.target.value })}
-        >
-          {EFFORT_LEVELS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
+        <EffortSlider value={settings.bedrockEffortArch} onChange={(v) => void save({ bedrockEffortArch: v })} />
       </Field>
 
       <Field
-        label="Drill effort"
+        label={`Drill effort — ${settings.bedrockEffortDrill || "default"}`}
         hint="Effort for runs on the drill model: C4 drill-downs and routine PRs."
       >
-        <select
-          value={settings.bedrockEffortDrill || "default"}
-          onChange={(e) => void save({ bedrockEffortDrill: e.target.value })}
-        >
-          {EFFORT_LEVELS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
+        <EffortSlider value={settings.bedrockEffortDrill} onChange={(v) => void save({ bedrockEffortDrill: v })} />
       </Field>
 
       <Field
-        label="Code pass effort"
+        label={`Code pass effort — ${settings.bedrockEffortCode || "default"}`}
         hint="Effort for the code-findings pass. It hunts defects, so step down with more care than the architecture pass."
       >
-        <select
-          value={settings.bedrockEffortCode || "default"}
-          onChange={(e) => void save({ bedrockEffortCode: e.target.value })}
-        >
-          {EFFORT_LEVELS.map((l) => (
-            <option key={l} value={l}>
-              {l}
-            </option>
-          ))}
-        </select>
+        <EffortSlider value={settings.bedrockEffortCode} onChange={(v) => void save({ bedrockEffortCode: v })} />
       </Field>
 
       <Field
