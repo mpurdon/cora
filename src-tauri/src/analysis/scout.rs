@@ -172,6 +172,7 @@ async fn scout_chunk(
         &specs(),
         MAX_OUTPUT_TOKENS,
         &mut use_cache,
+        &mut None,
         None,
     )
     .await?;

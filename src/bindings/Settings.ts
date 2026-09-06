@@ -42,6 +42,21 @@ bedrockChatModelId: string,
  */
 bedrockScoutModelId: string, 
 /**
+ * Effort for the architecture pass on the main model. "default" sends
+ * nothing and the model uses its own (high). Lower levels think less
+ * and make fewer, larger tool calls; the write-up turn is where the
+ * time goes, and a third or more of its tokens are thinking.
+ */
+bedrockEffortArch: string, 
+/**
+ * Effort for runs on the drill model: drills, routine PRs.
+ */
+bedrockEffortDrill: string, 
+/**
+ * Effort for the code-findings pass.
+ */
+bedrockEffortCode: string, 
+/**
  * Dollars per million tokens, per model id, for the usage dashboard.
  * Inference-profile ARNs name no model, so their rate can only be told
  * to us; recognizable Claude ids fall back to published rates.

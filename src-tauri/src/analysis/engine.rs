@@ -590,6 +590,7 @@ pub(crate) async fn converse_once(
     specs: &[(&'static str, &'static str, Value)],
     max_tokens: i32,
     use_cache: &mut bool,
+    effort: &mut Option<String>,
     observer: StreamObserver<'_>,
 ) -> AppResult<Turn> {
     let sso_profile = settings.aws_profile.as_str();
@@ -623,6 +624,12 @@ pub(crate) async fn converse_once(
         } else {
             messages.to_vec()
         };
+        // Anthropic-specific request fields ride in the Converse escape
+        // hatch. Effort is the only one sent; thinking stays at the model's
+        // default (adaptive on the current tiers).
+        let extra_fields = effort
+            .as_deref()
+            .map(|level| value_to_document(&json!({ "output_config": { "effort": level } })));
         let attempt = client
             .converse_stream()
             .model_id(model_id)
@@ -630,6 +637,7 @@ pub(crate) async fn converse_once(
             .set_messages(Some(request_messages))
             .tool_config(config)
             .inference_config(InferenceConfiguration::builder().max_tokens(max_tokens).build())
+            .set_additional_model_request_fields(extra_fields)
             .send()
             .await;
         match attempt {
@@ -665,6 +673,18 @@ pub(crate) async fn converse_once(
                 if *use_cache && (lower.contains("cache") || lower.contains("cachepoint")) {
                     devlog::warn(app, log_scope, "model rejected prompt caching — disabling");
                     *use_cache = false;
+                    continue;
+                }
+                // A model without the effort parameter (an older tier behind
+                // a profile) rejects the request outright; run at its default
+                // rather than fail, and say so once.
+                if effort.is_some() && (lower.contains("effort") || lower.contains("output_config")) {
+                    devlog::warn(
+                        app,
+                        log_scope,
+                        format!("model rejected effort={} — running at its default", effort.as_deref().unwrap_or("")),
+                    );
+                    *effort = None;
                     continue;
                 }
                 // Credentials rotated under the client — a session token
@@ -1094,6 +1114,17 @@ pub async fn run(
         );
     }
     devlog::debug(app, "bedrock", format!("model for {} level: {model_id}", level.as_str()));
+    let run_started = std::time::Instant::now();
+    let on_drill_tier = model_id == settings.drill_model() && model_id != settings.bedrock_model_id;
+    let mut effort: Option<String> = crate::models::effort_level(if on_drill_tier {
+        &settings.bedrock_effort_drill
+    } else {
+        &settings.bedrock_effort_arch
+    })
+    .map(str::to_string);
+    if let Some(level_name) = &effort {
+        note(app, &mut trace, &pr_id, level, &focus_key, "status", format!("effort: {level_name}"));
+    }
 
     // A push moves the head; it does not change the system. When an earlier
     // context result exists, the run gets it plus the diff between the two
@@ -1339,6 +1370,7 @@ pub async fn run(
             specs,
             settings.arch_max_output_tokens as i32,
             &mut use_cache,
+            &mut effort,
             Some(&observer),
         )
         .await?;
@@ -1477,6 +1509,8 @@ pub async fn run(
                         input_tokens: total_in as i64,
                         output_tokens: total_out as i64,
                         turns: (turn + 1) as i64,
+                        elapsed_ms: run_started.elapsed().as_millis() as i64,
+                        effort: effort.clone(),
                     };
                     return Ok(build_result(pr, level, focus_node_id, graph, assessment, trace, usage));
                 }
@@ -1563,6 +1597,8 @@ pub async fn run(
                             input_tokens: total_in as i64,
                             output_tokens: total_out as i64,
                             turns: (turn + 1) as i64,
+                            elapsed_ms: run_started.elapsed().as_millis() as i64,
+                            effort: effort.clone(),
                         };
                         return Ok(build_result(
                             pr,
@@ -1786,6 +1822,8 @@ pub async fn code_findings(
         .map_err(|e| AppError::Other(e.to_string()))?];
 
     let mut use_cache = true;
+    let mut effort: Option<String> =
+        crate::models::effort_level(&settings.bedrock_effort_code).map(str::to_string);
     let mut resubmits = 0u32;
     const MAX_CODE_TURNS: usize = 16;
     const CODE_EXPLORE_TURNS: usize = 12;
@@ -1807,6 +1845,7 @@ pub async fn code_findings(
             if exploring { &specs } else { &submit_specs },
             settings.code_max_output_tokens as i32,
             &mut use_cache,
+            &mut effort,
             None,
         )
         .await?;
@@ -2198,18 +2237,60 @@ fn unwrap_stringified(payload: &mut Value, field: &str, notes: &mut Vec<String>)
 /// order, strictest first, so a clean string is never altered.
 pub(crate) fn parse_lenient(s: &str) -> Option<Value> {
     let body = strip_fence(s);
-    let escaped = escape_raw_controls(body);
-    let uncommaed = drop_trailing_commas(&escaped);
-    let candidates = [
-        body.to_string(),
-        escaped.clone(),
-        uncommaed.clone(),
-        drop_spurious_closers(&uncommaed),
-        close_open(&uncommaed),
-    ];
-    candidates
-        .iter()
-        .find_map(|c| serde_json::from_str::<Value>(c).ok())
+    // Two starting points: the text as written, and the text with quotes
+    // inside string values escaped — a shell snippet quoted into a
+    // description ends the string early and nothing after it parses.
+    let starts = [body.to_string(), escape_inner_quotes(body)];
+    starts.iter().find_map(|start| {
+        let escaped = escape_raw_controls(start);
+        let uncommaed = drop_trailing_commas(&escaped);
+        let candidates = [
+            start.clone(),
+            escaped.clone(),
+            uncommaed.clone(),
+            drop_spurious_closers(&uncommaed),
+            close_open(&uncommaed),
+        ];
+        candidates
+            .iter()
+            .find_map(|c| serde_json::from_str::<Value>(c).ok())
+    })
+}
+
+/// A `"` inside a string value that is not followed by a structural
+/// character (`,` `}` `]` `:`, or the end of what arrived) cannot be the
+/// closing quote — it is content, and gets escaped.
+fn escape_inner_quotes(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 16);
+    let (mut in_str, mut escaped) = (false, false);
+    for (i, &c) in chars.iter().enumerate() {
+        if !in_str {
+            if c == '"' {
+                in_str = true;
+            }
+            out.push(c);
+            continue;
+        }
+        if escaped {
+            escaped = false;
+            out.push(c);
+        } else if c == '\\' {
+            escaped = true;
+            out.push(c);
+        } else if c == '"' {
+            let next = chars[i + 1..].iter().find(|ch| !ch.is_whitespace());
+            if matches!(next, None | Some(',') | Some('}') | Some(']') | Some(':')) {
+                in_str = false;
+                out.push(c);
+            } else {
+                out.push_str("\\\"");
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The value of a top-level-ish string field out of JSON that is still
@@ -2906,6 +2987,17 @@ mod tests {
         let v = parse_lenient("{\"summary\": \"partial\", \"contextNotes\": [\"one\", \"tw").expect("closed");
         assert_eq!(v["summary"], "partial");
         assert_eq!(v["contextNotes"][0], "one");
+
+        // Raw quotes inside a value — a shell snippet quoted into a
+        // description, the shape that slipped past the first repair.
+        let raw = "{\"summary\": \"Adds a job.\", \"detail\": \"finds the newest `\"'\"'\"<app>/vX.Y.Z\"'\"'\"` tag, increments\"}";
+        let v = parse_lenient(raw).expect("inner quotes escaped");
+        assert_eq!(v["summary"], "Adds a job.");
+        assert_eq!(v["detail"], "finds the newest `\"'\"'\"<app>/vX.Y.Z\"'\"'\"` tag, increments");
+        // Already-escaped quotes and structural quotes are left alone.
+        let v = parse_lenient("{\"a\": \"say \\\"hi\\\"\", \"b\": {\"c\": \"d\"}}").expect("escaped quotes kept");
+        assert_eq!(v["a"], "say \"hi\"");
+        assert_eq!(v["b"]["c"], "d");
 
         // A clean string is never altered.
         let v = parse_lenient("{\"s\": \"a,}\\n]\"}").expect("clean");

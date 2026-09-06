@@ -1136,6 +1136,8 @@ function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps)
               {" "}
               · {result.usage.turns} turns · {formatTokens(result.usage.inputTokens)} in /{" "}
               {formatTokens(result.usage.outputTokens)} out
+              {result.usage.elapsedMs > 0 && <> · {Math.round(result.usage.elapsedMs / 1000)}s</>}
+              {result.usage.effort && <> · effort {result.usage.effort}</>}
             </>
           )}
         </span>
@@ -1714,14 +1716,24 @@ export function MainApp() {
 
   const { grouped, hiddenByReady } = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const textMatched = prs.filter(
-      (pr) =>
-        !q ||
+    // "#59" is that number exactly; "59" alone also matches 1959 and every
+    // #59 across repos. "repo#59" pins the repo too.
+    const exact = q.match(/^(.*?)#(\d+)$/);
+    const textMatched = prs.filter((pr) => {
+      if (!q) return true;
+      if (exact) {
+        return (
+          String(pr.number) === exact[2] &&
+          (!exact[1] || pr.repo.toLowerCase().includes(exact[1]))
+        );
+      }
+      return (
         pr.repo.toLowerCase().includes(q) ||
         pr.title.toLowerCase().includes(q) ||
         pr.author.toLowerCase().includes(q) ||
-        String(pr.number).includes(q),
-    );
+        String(pr.number).includes(q)
+      );
+    });
     const unignored = textMatched.filter(
       (pr) =>
         prioOf(pr.repo) !== "ignored" &&

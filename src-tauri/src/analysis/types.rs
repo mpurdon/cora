@@ -278,6 +278,14 @@ pub struct AnalysisUsage {
     pub output_tokens: i64,
     #[ts(type = "number")]
     pub turns: i64,
+    /// Wall-clock time of the architecture pass, kickoff to submission.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub elapsed_ms: i64,
+    /// The effort level the run was sent with; None when the model's own
+    /// default applied. Kept so runs at different levels can be compared.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

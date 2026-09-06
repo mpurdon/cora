@@ -361,6 +361,23 @@ pub struct Settings {
     /// reads the few that matter. Empty disables the scout.
     #[serde(default = "default_scout_model")]
     pub bedrock_scout_model_id: String,
+    /// Effort for the architecture pass on the main model. "default" sends
+    /// nothing and the model uses its own (high). Ships at medium: on four
+    /// PRs run at both levels (2026-09-06) the findings held while the run
+    /// took 30-50% less time and output, since a third or more of the
+    /// write-up turn's tokens are thinking.
+    #[serde(default = "default_effort_medium")]
+    pub bedrock_effort_arch: String,
+    /// Effort for runs on the drill model: drills, routine PRs. Same bet as
+    /// the architecture pass on the cheaper tier.
+    #[serde(default = "default_effort_medium")]
+    pub bedrock_effort_drill: String,
+    /// Effort for the code-findings pass. Stays at the model's default: at
+    /// medium the pass gave up after a few turns and missed real defects
+    /// the default level found, and it runs beside the architecture pass
+    /// so its depth costs no wall time.
+    #[serde(default = "default_effort")]
+    pub bedrock_effort_code: String,
     /// Dollars per million tokens, per model id, for the usage dashboard.
     /// Inference-profile ARNs name no model, so their rate can only be told
     /// to us; recognizable Claude ids fall back to published rates.
@@ -526,6 +543,22 @@ fn default_drill_model() -> String {
     "us.anthropic.claude-sonnet-5".into()
 }
 
+fn default_effort() -> String {
+    "default".into()
+}
+
+fn default_effort_medium() -> String {
+    "medium".into()
+}
+
+/// A configured effort level, or None when the model's own default applies.
+pub fn effort_level(setting: &str) -> Option<&str> {
+    match setting.trim() {
+        "" | "default" => None,
+        level => Some(level),
+    }
+}
+
 fn default_scout_model() -> String {
     // Haiku 4.5's cross-region inference profile. Accounts that route every
     // model through an application inference profile paste that ARN here.
@@ -558,6 +591,9 @@ impl Default for Settings {
             bedrock_drill_model_id: default_drill_model(),
             bedrock_chat_model_id: String::new(),
             bedrock_scout_model_id: default_scout_model(),
+            bedrock_effort_arch: default_effort_medium(),
+            bedrock_effort_drill: default_effort_medium(),
+            bedrock_effort_code: default_effort(),
             model_prices: Vec::new(),
             developer_mode: false,
             custom_system_prompt: String::new(),

@@ -1219,6 +1219,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
             &specs,
             MAX_OUTPUT_TOKENS,
             &mut use_cache,
+            &mut None,
             None,
         )
         .await?;

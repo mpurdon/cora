@@ -3,4 +3,13 @@
 /**
  * Token cost of one analysis run.
  */
-export type AnalysisUsage = { inputTokens: number, outputTokens: number, turns: number, };
+export type AnalysisUsage = { inputTokens: number, outputTokens: number, turns: number, 
+/**
+ * Wall-clock time of the architecture pass, kickoff to submission.
+ */
+elapsedMs: number, 
+/**
+ * The effort level the run was sent with; None when the model's own
+ * default applied. Kept so runs at different levels can be compared.
+ */
+effort: string | null, };

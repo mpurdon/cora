@@ -160,6 +160,9 @@ function sliderFill(idx: number, maxIdx: number): React.CSSProperties {
 // model behind an inference-profile ARN is opaque, so we can't know which cap
 // applies — picking a real value keeps the choice meaningful, and the
 // over-cap Bedrock error (engine.rs) is the backstop if a step is too high.
+/** Effort levels the Bedrock request accepts; "default" sends nothing. */
+const EFFORT_LEVELS = ["default", "low", "medium", "high", "xhigh", "max"] as const;
+
 const TOKEN_STEPS = [4096, 8192, 16384, 24576, 32768, 49152, 65536];
 
 function fmtTokens(n: number): string {
@@ -1417,6 +1420,54 @@ function AwsPane({ settings, save }: PaneProps) {
           value={settings.bedrockScoutModelId}
           onChange={(e) => void save({ bedrockScoutModelId: e.target.value })}
         />
+      </Field>
+
+      <Field
+        label="Architecture effort"
+        hint="How hard the main model thinks on the architecture pass. Default leaves the model's own level (high). A third or more of the write-up turn is thinking; medium is the first step down to try, and lower levels also make fewer, larger tool calls."
+      >
+        <select
+          value={settings.bedrockEffortArch || "default"}
+          onChange={(e) => void save({ bedrockEffortArch: e.target.value })}
+        >
+          {EFFORT_LEVELS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <Field
+        label="Drill effort"
+        hint="Effort for runs on the drill model: C4 drill-downs and routine PRs."
+      >
+        <select
+          value={settings.bedrockEffortDrill || "default"}
+          onChange={(e) => void save({ bedrockEffortDrill: e.target.value })}
+        >
+          {EFFORT_LEVELS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <Field
+        label="Code pass effort"
+        hint="Effort for the code-findings pass. It hunts defects, so step down with more care than the architecture pass."
+      >
+        <select
+          value={settings.bedrockEffortCode || "default"}
+          onChange={(e) => void save({ bedrockEffortCode: e.target.value })}
+        >
+          {EFFORT_LEVELS.map((l) => (
+            <option key={l} value={l}>
+              {l}
+            </option>
+          ))}
+        </select>
       </Field>
 
       <Field
