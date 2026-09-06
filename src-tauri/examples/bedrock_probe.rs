@@ -5,7 +5,9 @@ use aws_sdk_bedrockruntime::types::{ContentBlock, ConversationRole, Message};
 
 #[tokio::main]
 async fn main() {
-    let profile = "claude-code-bedrock";
+    // BEDROCK_PROFILE picks the AWS profile; the default is the app's.
+    let profile =
+        std::env::var("BEDROCK_PROFILE").unwrap_or_else(|_| "claude-code-bedrock".to_string());
     let region = "us-east-2";
     // BEDROCK_MODEL overrides the id, so an account that only has
     // application inference profiles can probe with its own ARN.
@@ -13,7 +15,7 @@ async fn main() {
         .unwrap_or_else(|_| "us.anthropic.claude-opus-5".to_string());
 
     let loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .profile_name(profile)
+        .profile_name(profile.as_str())
         .region(aws_config::Region::new(region));
     let sdk_config = loader.load().await;
     println!("resolved region: {:?}", sdk_config.region());
