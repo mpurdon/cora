@@ -172,15 +172,13 @@ async fn scout_chunk(
         &specs(),
         MAX_OUTPUT_TOKENS,
         &mut use_cache,
+        None,
     )
     .await?;
     if let Some(usage) = resp.usage() {
         crate::usage::record(app, pr, "scout", &settings.bedrock_scout_model_id, usage);
     }
-    let message = resp
-        .output()
-        .and_then(|o| o.as_message().ok().cloned())
-        .ok_or_else(|| AppError::Other("scout returned no message".into()))?;
+    let message = resp.message;
     for block in message.content() {
         if let ContentBlock::ToolUse(tu) = block {
             if tu.name() == "submit_scout" {

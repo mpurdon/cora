@@ -735,6 +735,26 @@ async fn execute_analysis(
     };
 
     use crate::analysis::engine;
+    // A push does not restart the review: the stored result for the previous
+    // head seeds the run, which then verifies only what moved. A forced
+    // re-run of the same head is a fresh read by definition.
+    let prior = if level == AnalysisLevel::Context {
+        store
+            .get_prior_analysis(pr_id, AnalysisLevel::Context.as_str(), "")?
+            .filter(|(head, _)| *head != pr.info.head_sha)
+            .and_then(|(head, json)| {
+                serde_json::from_str::<AnalysisResult>(&json).ok().map(|prev| engine::PriorAnalysis {
+                    head_sha: head,
+                    context: serde_json::json!({
+                        "graph": prev.graph,
+                        "assessment": prev.assessment,
+                    })
+                    .to_string(),
+                })
+            })
+    } else {
+        None
+    };
     let result = if level == AnalysisLevel::Context && settings.code_findings_pass {
         // The code pass used to wait for the architecture pass's review plan
         // to know which files to read — a minute or more of idle time. The
@@ -745,7 +765,16 @@ async fn execute_analysis(
         let metrics = engine::file_metrics(app, &settings, &token, &pr).await;
         let code_focus = engine::code_focus_paths(&metrics);
         let (arch, code) = futures::future::join(
-            engine::run(app, &settings, &token, &pr, level, focus, parent_context, Some(metrics)),
+            engine::run(
+                app,
+                &settings,
+                &token,
+                &pr,
+                level,
+                focus,
+                parent_context,
+                engine::RunExtras { metrics: Some(metrics), prior },
+            ),
             engine::code_findings(app, &settings, &token, &pr, &code_focus),
         )
         .await;
@@ -785,8 +814,17 @@ async fn execute_analysis(
         }
         result
     } else {
-        let mut result =
-            engine::run(app, &settings, &token, &pr, level, focus, parent_context, None).await?;
+        let mut result = engine::run(
+            app,
+            &settings,
+            &token,
+            &pr,
+            level,
+            focus,
+            parent_context,
+            engine::RunExtras { metrics: None, prior },
+        )
+        .await?;
         if level == AnalysisLevel::Context {
             result.code_pass = Some("off".into());
         }

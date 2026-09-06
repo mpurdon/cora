@@ -2371,6 +2371,34 @@ body.col-resizing * {
   color: var(--text);
 }
 
+/* The assessment as it streams in — the verdict lands before the graph. */
+.draft-assessment {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-bottom: 10px;
+  text-align: left;
+}
+
+.draft-assessment .eyebrow {
+  margin-bottom: 6px;
+}
+
+.draft-summary {
+  margin: 0 0 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.draft-detail {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--idle);
+  white-space: pre-wrap;
+}
+
 .analysis-error {
   color: var(--bad);
   font-family: var(--mono);

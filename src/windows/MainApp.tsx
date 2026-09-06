@@ -1028,6 +1028,13 @@ function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps)
           {crumbs}
           <span className="spacer" />
         </div>
+        {run.draft?.summary && (
+          <div className="draft-assessment">
+            <div className="eyebrow">assessment · writing</div>
+            <p className="draft-summary">{run.draft.summary}</p>
+            {run.draft.detail && <p className="draft-detail">{run.draft.detail}</p>}
+          </div>
+        )}
         <ProgressLog steps={run.progress} />
       </>
     );

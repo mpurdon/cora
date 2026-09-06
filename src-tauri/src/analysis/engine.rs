@@ -1,7 +1,8 @@
 use aws_sdk_bedrockruntime::types::{
     CachePointBlock, CachePointType, ContentBlock, ConversationRole, InferenceConfiguration,
-    Message, StopReason, SystemContentBlock, Tool, ToolConfiguration, ToolInputSchema,
-    ToolResultBlock, ToolResultContentBlock, ToolSpecification,
+    Message, ReasoningContentBlock, ReasoningTextBlock, StopReason, SystemContentBlock,
+    TokenUsage, Tool, ToolConfiguration, ToolInputSchema, ToolResultBlock,
+    ToolResultContentBlock, ToolSpecification, ToolUseBlock,
 };
 use aws_smithy_types::Document;
 use chrono::Utc;
@@ -130,7 +131,7 @@ fn submit_schema() -> Value {
         "properties": {
             "graph": {
                 "type": "object",
-                "description": "A JSON object with nodes and edges. Pass it as an object in the tool input — never as a JSON-encoded string.",
+                "description": "A JSON object with nodes and edges. Pass it as an object in the tool input — never as a JSON-encoded string. Keep it lean: omit any optional field you would fill with null, an empty string, or its default — technology and boundary when unknown, description when the name says it all, protocol when unremarkable, crossesBoundary when false, and change when unchanged.",
                 "properties": {
                     "nodes": {"type": "array", "items": {"type": "object", "properties": {
                         "id": {"type": "string"},
@@ -140,7 +141,7 @@ fn submit_schema() -> Value {
                         "description": {"type": "string"},
                         "boundary": {"type": "string"},
                         "change": {"type": "string", "enum": ["added", "modified", "removed", "affected", "unchanged"]}
-                    }, "required": ["id", "name", "kind", "change"]}},
+                    }, "required": ["id", "name", "kind"]}},
                     "edges": {"type": "array", "items": {"type": "object", "properties": {
                         "id": {"type": "string"},
                         "source": {"type": "string"},
@@ -149,7 +150,7 @@ fn submit_schema() -> Value {
                         "protocol": {"type": "string"},
                         "crossesBoundary": {"type": "boolean"},
                         "change": {"type": "string", "enum": ["added", "modified", "removed", "affected", "unchanged"]}
-                    }, "required": ["id", "source", "target", "label", "crossesBoundary", "change"]}}
+                    }, "required": ["id", "source", "target", "label"]}}
                 },
                 "required": ["nodes", "edges"]
             },
@@ -393,6 +394,192 @@ fn transient_reason<E>(e: &aws_sdk_bedrockruntime::error::SdkError<E>) -> Option
     }
 }
 
+/// One model turn, assembled from the response stream.
+pub(crate) struct Turn {
+    pub message: Message,
+    pub stop_reason: StopReason,
+    pub usage: Option<TokenUsage>,
+}
+
+impl Turn {
+    pub fn usage(&self) -> Option<&TokenUsage> {
+        self.usage.as_ref()
+    }
+
+    pub fn stop_reason(&self) -> &StopReason {
+        &self.stop_reason
+    }
+}
+
+/// Called with (tool name, the tool input streamed so far) on every tool-use
+/// delta — how the write-up reaches the reader while it is still being
+/// generated.
+pub(crate) type StreamObserver<'a> = Option<&'a (dyn Fn(&str, &str) + Send + Sync)>;
+
+/// What the stream is being reassembled into, per content block index.
+enum Partial {
+    Text(String),
+    Reasoning {
+        text: String,
+        signature: Option<String>,
+        redacted: Option<aws_smithy_types::Blob>,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: String,
+    },
+}
+
+fn partial_slot(
+    blocks: &mut Vec<(i32, Partial)>,
+    idx: i32,
+    make: impl FnOnce() -> Partial,
+) -> &mut Partial {
+    let pos = match blocks.iter().position(|(i, _)| *i == idx) {
+        Some(pos) => pos,
+        None => {
+            blocks.push((idx, make()));
+            blocks.len() - 1
+        }
+    };
+    &mut blocks[pos].1
+}
+
+/// Drain a ConverseStream into one message. The stream is the only way to
+/// see the write-up as it is written; everything else about the turn —
+/// reasoning blocks passed back intact, tool input parsed once complete —
+/// comes out the same as the unary call did.
+async fn collect_stream(
+    out: aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput,
+    observer: StreamObserver<'_>,
+) -> Result<Turn, String> {
+    use aws_sdk_bedrockruntime::types::{
+        ContentBlockDelta, ContentBlockStart, ConverseStreamOutput as Ev,
+        ReasoningContentBlockDelta,
+    };
+    let mut stream = out.stream;
+    let mut blocks: Vec<(i32, Partial)> = Vec::new();
+    let mut stop_reason = StopReason::EndTurn;
+    let mut usage = None;
+    loop {
+        let ev = stream
+            .recv()
+            .await
+            .map_err(|e| format!("{}", aws_smithy_types::error::display::DisplayErrorContext(&e)))?;
+        let Some(ev) = ev else { break };
+        match ev {
+            Ev::ContentBlockStart(s) => {
+                if let Some(ContentBlockStart::ToolUse(t)) = s.start {
+                    let slot = partial_slot(&mut blocks, s.content_block_index, || {
+                        Partial::Text(String::new())
+                    });
+                    *slot = Partial::ToolUse {
+                        id: t.tool_use_id,
+                        name: t.name,
+                        input: String::new(),
+                    };
+                }
+            }
+            Ev::ContentBlockDelta(d) => {
+                let idx = d.content_block_index;
+                match d.delta {
+                    Some(ContentBlockDelta::Text(t)) => {
+                        if let Partial::Text(s) =
+                            partial_slot(&mut blocks, idx, || Partial::Text(String::new()))
+                        {
+                            s.push_str(&t);
+                        }
+                    }
+                    Some(ContentBlockDelta::ReasoningContent(r)) => {
+                        if let Partial::Reasoning {
+                            text,
+                            signature,
+                            redacted,
+                        } = partial_slot(&mut blocks, idx, || Partial::Reasoning {
+                            text: String::new(),
+                            signature: None,
+                            redacted: None,
+                        }) {
+                            match r {
+                                ReasoningContentBlockDelta::Text(t) => text.push_str(&t),
+                                ReasoningContentBlockDelta::Signature(s) => *signature = Some(s),
+                                ReasoningContentBlockDelta::RedactedContent(b) => {
+                                    *redacted = Some(b)
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Some(ContentBlockDelta::ToolUse(t)) => {
+                        if let Partial::ToolUse { name, input, .. } =
+                            partial_slot(&mut blocks, idx, || Partial::ToolUse {
+                                id: String::new(),
+                                name: String::new(),
+                                input: String::new(),
+                            })
+                        {
+                            input.push_str(&t.input);
+                            if let Some(observe) = observer {
+                                observe(name, input);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ev::MessageStop(m) => stop_reason = m.stop_reason,
+            Ev::Metadata(m) => usage = m.usage,
+            _ => {}
+        }
+    }
+    blocks.sort_by_key(|(i, _)| *i);
+    let mut content = Vec::with_capacity(blocks.len());
+    for (_, p) in blocks {
+        content.push(match p {
+            Partial::Text(t) => ContentBlock::Text(t),
+            Partial::Reasoning {
+                redacted: Some(b), ..
+            } => ContentBlock::ReasoningContent(ReasoningContentBlock::RedactedContent(b)),
+            Partial::Reasoning {
+                text, signature, ..
+            } => ContentBlock::ReasoningContent(ReasoningContentBlock::ReasoningText(
+                ReasoningTextBlock::builder()
+                    .text(text)
+                    .set_signature(signature)
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            )),
+            Partial::ToolUse { id, name, input } => {
+                let value = if input.trim().is_empty() {
+                    json!({})
+                } else {
+                    parse_lenient(&input).unwrap_or(Value::String(input))
+                };
+                ContentBlock::ToolUse(
+                    ToolUseBlock::builder()
+                        .tool_use_id(id)
+                        .name(name)
+                        .input(value_to_document(&value))
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                )
+            }
+        });
+    }
+    let message = Message::builder()
+        .role(ConversationRole::Assistant)
+        .set_content(Some(content))
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(Turn {
+        message,
+        stop_reason,
+        usage,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn converse_once(
     app: &AppHandle,
     log_scope: &str,
@@ -403,7 +590,8 @@ pub(crate) async fn converse_once(
     specs: &[(&'static str, &'static str, Value)],
     max_tokens: i32,
     use_cache: &mut bool,
-) -> AppResult<aws_sdk_bedrockruntime::operation::converse::ConverseOutput> {
+    observer: StreamObserver<'_>,
+) -> AppResult<Turn> {
     let sso_profile = settings.aws_profile.as_str();
     // Fail fast while the endpoint is known-down, so a queue of runs doesn't
     // each grind through the ladder to learn what the first one already found.
@@ -436,7 +624,7 @@ pub(crate) async fn converse_once(
             messages.to_vec()
         };
         let attempt = client
-            .converse()
+            .converse_stream()
             .model_id(model_id)
             .set_system(Some(system_blocks))
             .set_messages(Some(request_messages))
@@ -445,10 +633,31 @@ pub(crate) async fn converse_once(
             .send()
             .await;
         match attempt {
-            Ok(resp) => {
-                health.record_success();
-                return Ok(resp);
-            }
+            Ok(out) => match collect_stream(out, observer).await {
+                Ok(turn) => {
+                    health.record_success();
+                    return Ok(turn);
+                }
+                // The connection opened and then broke. Nothing the model
+                // wrote reached history, so a retry is as clean as a first
+                // attempt — while the ladder has rungs.
+                Err(e) => {
+                    if let Some(&wait) = TRANSIENT_BACKOFF_SECS.get(transient_attempts) {
+                        transient_attempts += 1;
+                        devlog::warn(
+                            app,
+                            log_scope,
+                            format!(
+                                "response stream broke ({e}) — retrying in {wait}s ({transient_attempts}/{})",
+                                TRANSIENT_BACKOFF_SECS.len()
+                            ),
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        continue;
+                    }
+                    return Err(AppError::Other(format!("Bedrock response stream failed: {e}")));
+                }
+            },
             Err(e) => {
                 let detail =
                     format!("{}", aws_smithy_types::error::display::DisplayErrorContext(&e));
@@ -766,10 +975,30 @@ fn scope_hint(level: AnalysisLevel, metrics: &[(String, FileMetrics)]) -> String
         return String::new();
     }
     format!(
-        "\n\nScope: only {logic} of the {} changed files carry logic. Size the write-up to the change: the graph shows the containers this change touches plus their immediate periphery, not the whole system; pillar findings are one sentence each and only where there is something real to say; detail is one paragraph.",
+        "\n\nScope: only {logic} of the {} changed files carry logic. Size the write-up to the change: the graph keeps every container that calls or is called by the changed code and the external systems that feel the effect, and leaves out the rest of the system; pillar findings are one sentence each and only where there is something real to say; detail is one paragraph.",
         metrics.len()
     )
 }
+
+/// An earlier context-level result for a previous head of the same PR. A
+/// push does not start the review over: the run updates this instead.
+pub struct PriorAnalysis {
+    pub head_sha: String,
+    /// `{graph, assessment}` of the earlier result, as JSON.
+    pub context: String,
+}
+
+/// What the caller already knows before the run starts.
+#[derive(Default)]
+pub struct RunExtras {
+    pub metrics: Option<Vec<(String, FileMetrics)>>,
+    pub prior: Option<PriorAnalysis>,
+}
+
+/// Files with the most added logic ride in the kickoff — every trace opened
+/// by reading them anyway.
+const PRELOAD_FILES: usize = 3;
+const PRELOAD_CHARS: usize = 80_000;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -780,7 +1009,7 @@ pub async fn run(
     level: AnalysisLevel,
     focus_node_id: Option<String>,
     parent_context: Option<String>,
-    precomputed_metrics: Option<Vec<(String, FileMetrics)>>,
+    extras: RunExtras,
 ) -> AppResult<AnalysisResult> {
     let pr_id = pr.info.id.clone();
     let focus_key = focus_node_id.clone().unwrap_or_default();
@@ -816,7 +1045,7 @@ pub async fn run(
     // Objective per-file signals: ground the model's review-plan calls in
     // measured complexity, and backstop them after submission. Context level
     // only — drills don't own the review plan.
-    let file_metrics = match precomputed_metrics {
+    let file_metrics = match extras.metrics {
         Some(m) => m,
         None if level == AnalysisLevel::Context => metrics_via(app, &tools).await,
         None => Vec::new(),
@@ -866,11 +1095,45 @@ pub async fn run(
     }
     devlog::debug(app, "bedrock", format!("model for {} level: {model_id}", level.as_str()));
 
+    // A push moves the head; it does not change the system. When an earlier
+    // context result exists, the run gets it plus the diff between the two
+    // heads and verifies only what moved. If the old head is gone (a
+    // rebase), the compare fails and the run falls back to a full read.
+    let prior_section = match &extras.prior {
+        Some(p) if level == AnalysisLevel::Context => match tools.compare_diff(&p.head_sha).await {
+            Ok(delta) => {
+                let old = &p.head_sha[..8.min(p.head_sha.len())];
+                let new = &pr.info.head_sha[..8.min(pr.info.head_sha.len())];
+                note(
+                    app,
+                    &mut trace,
+                    &pr_id,
+                    level,
+                    &focus_key,
+                    "status",
+                    format!("updating the previous analysis (head {old} → {new})"),
+                );
+                format!(
+                    "\n\n## Previous analysis of this PR (head {old}) — UPDATE it, do not rebuild\nA context-level analysis of this PR already exists for an earlier head. Since then the branch moved to {new}; the diff between the two heads follows. Treat the previous result as your system map: keep node ids and names stable, re-verify only what the interim changes touch, and revise the assessment where they change the picture. Your submit_analysis call must still include the COMPLETE graph and assessment.\n<previous_analysis>\n{}\n</previous_analysis>\n\n## Changes since the previous analysis ({old}..{new})\n{}",
+                    p.context,
+                    crate::analysis::tools::diff_view(&delta)
+                )
+            }
+            Err(e) => {
+                devlog::warn(app, "analysis", format!("compare against previous head unavailable ({e}) — full run"));
+                String::new()
+            }
+        },
+        _ => String::new(),
+    };
+    let incremental = !prior_section.is_empty();
+
     // A diff too big to show whole gets a scout pre-read on the cheap tier:
     // a map of feature slices and boundary flags, so the main model reads
     // the five files that matter instead of thirty. Best-effort — without it
-    // the run still has the index.
+    // the run still has the index. An incremental run has a map already.
     let scout_section = if level == AnalysisLevel::Context
+        && !incremental
         && !settings.bedrock_scout_model_id.is_empty()
         && tools.diff_oversized().await.unwrap_or(false)
     {
@@ -925,6 +1188,38 @@ pub async fn run(
         }
         None => String::new(),
     };
+    // The files with the most added logic, at head. A file the PR removes
+    // 404s and is simply left out.
+    let preload_section = if level == AnalysisLevel::Context && !incremental {
+        let paths: Vec<String> = code_focus_paths(&file_metrics)
+            .into_iter()
+            .take(PRELOAD_FILES)
+            .collect();
+        let fetched = futures::future::join_all(paths.iter().map(|p| tools.file(p, None))).await;
+        let mut section = String::new();
+        let mut used = 0usize;
+        for (path, result) in paths.iter().zip(fetched) {
+            match result {
+                Ok(text) => {
+                    if used + text.len() > PRELOAD_CHARS {
+                        break;
+                    }
+                    used += text.len();
+                    section.push_str(&format!("\n\n### {path}\n{text}"));
+                }
+                Err(e) => devlog::debug(app, "analysis", format!("preload of {path} skipped: {e}")),
+            }
+        }
+        if section.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\n## Current contents of the files with the most added logic (at head, already fetched — do NOT call get_file or get_files for these){section}"
+            )
+        }
+    } else {
+        String::new()
+    };
 
     // The parent's assessment doubles as a salvage value: a drill whose
     // submission has a good graph but a broken/missing assessment ships with
@@ -946,6 +1241,8 @@ pub async fn run(
 
     let closing = if kickoff_diff.is_empty() {
         "Start by getting the diff and whatever repository context you need."
+    } else if incremental {
+        "The previous analysis, the changes since it, the full diff, and the README are included below — verify only what changed, then submit."
     } else if kickoff_docs.is_empty() {
         "The diff is included below — read only the extra repository context you still need, then submit."
     } else {
@@ -953,10 +1250,10 @@ pub async fn run(
     };
     let scope_section = scope_hint(level, &file_metrics);
     let budget = format!(
-        "Budget: {EXPLORE_TURNS} exploration turns, each of which may carry many tool calls in parallel. After that the research tools are withdrawn and only submit_analysis remains, so plan to submit before then."
+        "Budget: {EXPLORE_TURNS} exploration turns, each of which may carry many tool calls in parallel. After that the research tools are withdrawn and only submit_analysis remains, so plan to submit before then. When you submit, write the assessment before the graph, summary first — the reader sees it as it streams."
     );
     let kickoff = format!(
-        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}\n\n{}{}{}{}\n\n{budget}{scope_section}\n\n{closing}{kickoff_diff}{kickoff_docs}",
+        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}\n\n{}{}{}{}{prior_section}\n\n{budget}{scope_section}\n\n{closing}{kickoff_diff}{kickoff_docs}{preload_section}",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -986,6 +1283,39 @@ pub async fn run(
     let (mut total_in, mut total_out) = (0i32, 0i32);
     note(app, &mut trace, &pr_id, level, &focus_key, "status", "starting exploration");
 
+    // The write-up is the run's longest turn. As submit_analysis streams in,
+    // the summary and detail written so far go to the reader, so the verdict
+    // lands while the graph is still being generated.
+    let draft_gate = std::sync::Mutex::new(None::<std::time::Instant>);
+    let draft_started = std::sync::atomic::AtomicBool::new(false);
+    let observer = |name: &str, partial: &str| {
+        if name != "submit_analysis" {
+            return;
+        }
+        if !draft_started.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            progress(app, &pr_id, level, &focus_key, "writing the assessment");
+        }
+        let mut last = draft_gate.lock().unwrap();
+        if last.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(600)) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+        let summary = json_string_field(partial, "summary");
+        if summary.is_none() {
+            return;
+        }
+        let _ = app.emit(
+            events::ANALYSIS_DRAFT,
+            crate::analysis::types::AnalysisDraft {
+                pr_id: pr_id.clone(),
+                level,
+                focus: focus_key.clone(),
+                summary,
+                detail: json_string_field(partial, "detail"),
+            },
+        );
+    };
+
     let explore_specs = analysis_specs();
     // Once the budget is spent the model sees one tool. Withdrawing the rest
     // is what makes "submit now" stick — a reminder alone competes with the
@@ -1009,6 +1339,7 @@ pub async fn run(
             specs,
             settings.arch_max_output_tokens as i32,
             &mut use_cache,
+            Some(&observer),
         )
         .await?;
 
@@ -1030,9 +1361,7 @@ pub async fn run(
             );
         }
 
-        let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {
-            return Err(AppError::Other("Bedrock returned no message".into()));
-        };
+        let message = resp.message.clone();
 
         let mut tool_calls: Vec<(String, String, Value)> = Vec::new();
         let mut submitted: Option<(String, Value)> = None;
@@ -1478,6 +1807,7 @@ pub async fn code_findings(
             if exploring { &specs } else { &submit_specs },
             settings.code_max_output_tokens as i32,
             &mut use_cache,
+            None,
         )
         .await?;
 
@@ -1485,9 +1815,7 @@ pub async fn code_findings(
             crate::usage::record(app, &pr, "code-pass", &model_id, usage);
         }
 
-        let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {
-            return Err(AppError::Other("Bedrock returned no message".into()));
-        };
+        let message = resp.message.clone();
 
         let mut tool_calls: Vec<(String, String, Value)> = Vec::new();
         let mut submitted: Option<(String, Value)> = None;
@@ -1882,6 +2210,45 @@ pub(crate) fn parse_lenient(s: &str) -> Option<Value> {
     candidates
         .iter()
         .find_map(|c| serde_json::from_str::<Value>(c).ok())
+}
+
+/// The value of a top-level-ish string field out of JSON that is still
+/// being written: everything after `"key": "` up to the closing quote, or
+/// to the end of what has arrived. Basic escapes are decoded; the rest is
+/// left alone — this is for showing, not parsing.
+pub(crate) fn json_string_field(partial: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let start = partial.find(&needle)? + needle.len();
+    let rest = partial[start..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => {}
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(ch);
+                    }
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    let out = out.trim().to_string();
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 /// Trim a ```json fence and any prose around the outermost value.
@@ -2544,6 +2911,28 @@ mod tests {
         let v = parse_lenient("{\"s\": \"a,}\\n]\"}").expect("clean");
         assert_eq!(v["s"], "a,}\n]");
         assert!(parse_lenient("not json at all").is_none());
+    }
+
+    #[test]
+    fn draft_fields_read_out_of_half_written_json() {
+        let partial = "{\"assessment\": {\"summary\": \"Reorders the pick.\\nSecond line.\", \"detail\": \"It starts by mov";
+        assert_eq!(json_string_field(partial, "summary").as_deref(), Some("Reorders the pick.\nSecond line."));
+        assert_eq!(json_string_field(partial, "detail").as_deref(), Some("It starts by mov"));
+        assert_eq!(json_string_field(partial, "fit"), None);
+        assert_eq!(json_string_field("{\"summary\": \"", "summary"), None);
+        assert_eq!(json_string_field("{\"summary\": [", "summary"), None);
+    }
+
+    #[test]
+    fn graph_parses_without_the_change_fields() {
+        let g: C4Graph = serde_json::from_value(json!({
+            "nodes": [{"id": "a", "name": "A", "kind": "container"}],
+            "edges": [{"id": "e", "source": "a", "target": "a", "label": "calls"}]
+        }))
+        .expect("lean graph");
+        assert_eq!(g.nodes[0].change, ChangeStatus::Unchanged);
+        assert_eq!(g.edges[0].change, ChangeStatus::Unchanged);
+        assert!(!g.edges[0].crosses_boundary);
     }
 
     #[test]

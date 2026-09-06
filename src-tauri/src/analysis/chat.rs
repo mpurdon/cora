@@ -1219,6 +1219,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
             &specs,
             MAX_OUTPUT_TOKENS,
             &mut use_cache,
+            None,
         )
         .await?;
 
@@ -1247,9 +1248,7 @@ async fn drive_inner(app: &AppHandle, pr_id: &str) -> AppResult<()> {
             crate::usage::record(app, &pr, "chat", settings.chat_model(), u);
         }
 
-        let Some(message) = resp.output().and_then(|o| o.as_message().ok().cloned()) else {
-            return Err(AppError::Other("Bedrock returned no message".into()));
-        };
+        let message = resp.message.clone();
 
         let mut research: Vec<(String, String, Value)> = Vec::new();
         let mut action: Option<(String, String, Value)> = None;

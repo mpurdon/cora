@@ -14,6 +14,7 @@ import type { PrConversation } from "../bindings/PrConversation";
 import type { PrReviews } from "../bindings/PrReviews";
 import type { PrPriority } from "../bindings/PrPriority";
 import type { AnalysisLevel } from "../bindings/AnalysisLevel";
+import type { AnalysisDraft } from "../bindings/AnalysisDraft";
 import type { AnalysisProgress } from "../bindings/AnalysisProgress";
 import type { AnalysisResult } from "../bindings/AnalysisResult";
 import type { PollStatus } from "../bindings/PollStatus";
@@ -33,6 +34,7 @@ export const events = {
   pollStatus: "poll:status",
   focusPr: "focus:pr",
   analysisProgress: "analysis:progress",
+  analysisDraft: "analysis:draft",
   analysisComplete: "analysis:complete",
   analysisError: "analysis:error",
   chatEvent: "chat:event",
@@ -154,6 +156,10 @@ export function onFocusPr(cb: (id: string) => void): Promise<UnlistenFn> {
 
 export function onAnalysisProgress(cb: (p: AnalysisProgress) => void): Promise<UnlistenFn> {
   return listen<AnalysisProgress>(events.analysisProgress, (e) => cb(e.payload));
+}
+
+export function onAnalysisDraft(cb: (d: AnalysisDraft) => void): Promise<UnlistenFn> {
+  return listen<AnalysisDraft>(events.analysisDraft, (e) => cb(e.payload));
 }
 
 export function onAnalysisComplete(cb: (r: AnalysisResult) => void): Promise<UnlistenFn> {

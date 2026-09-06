@@ -394,7 +394,7 @@ impl RepoTools {
         Ok(out)
     }
 
-    async fn file(&self, path: &str, r#ref: Option<&str>) -> AppResult<String> {
+    pub(crate) async fn file(&self, path: &str, r#ref: Option<&str>) -> AppResult<String> {
         let r = r#ref.unwrap_or(&self.head_ref);
         let resp = self
             .get(

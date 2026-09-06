@@ -1,10 +1,12 @@
 import { create } from "zustand";
+import type { AnalysisDraft } from "../bindings/AnalysisDraft";
 import type { AnalysisErrorKind } from "../bindings/AnalysisErrorKind";
 import type { AnalysisLevel } from "../bindings/AnalysisLevel";
 import type { AnalysisResult } from "../bindings/AnalysisResult";
 import {
   ipc,
   onAnalysisComplete,
+  onAnalysisDraft,
   onAnalysisError,
   onAnalysisProgress,
 } from "../lib/ipc";
@@ -20,6 +22,8 @@ export interface ProgressStep {
 interface Run {
   status: "idle" | "running" | "done" | "error";
   progress: ProgressStep[];
+  /** The assessment as the write-up streams — summary and detail so far. */
+  draft?: AnalysisDraft;
   result?: AnalysisResult;
   error?: string;
   errorKind?: AnalysisErrorKind;
@@ -55,6 +59,14 @@ export const useAnalysisStore = create<AnalysisState>((set, get) => ({
             ? { ...run, progress: [...run.progress.slice(-400), step] }
             : { status: "running" as const, progress: [step] };
         return { runs: { ...s.runs, [key]: next } };
+      });
+    });
+    await onAnalysisDraft((d) => {
+      const key = analysisKey(d.prId, d.level, d.focus || undefined);
+      set((s) => {
+        const run = s.runs[key];
+        if (!run || run.status !== "running") return {};
+        return { runs: { ...s.runs, [key]: { ...run, draft: d } } };
       });
     });
     await onAnalysisComplete((r) => {

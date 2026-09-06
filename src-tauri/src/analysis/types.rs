@@ -47,6 +47,14 @@ pub enum ChangeStatus {
     Unchanged,
 }
 
+/// The model may leave `change` out for periphery nodes; absent means
+/// unchanged, so the write-up carries only what moved.
+impl Default for ChangeStatus {
+    fn default() -> Self {
+        ChangeStatus::Unchanged
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +71,7 @@ pub struct C4Node {
     /// Parent boundary node id (system a container belongs to, etc.).
     #[serde(default)]
     pub boundary: Option<String>,
+    #[serde(default)]
     pub change: ChangeStatus,
 }
 
@@ -79,6 +88,7 @@ pub struct C4Edge {
     pub protocol: Option<String>,
     #[serde(default)]
     pub crosses_boundary: bool,
+    #[serde(default)]
     pub change: ChangeStatus,
 }
 
@@ -340,6 +350,20 @@ pub fn classify_error(message: &str) -> AnalysisErrorKind {
     AnalysisErrorKind::Other
 }
 
+/// The assessment as it streams out of the write-up turn — the summary and
+/// detail written so far, so the reader gets the verdict while the graph is
+/// still being generated.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisDraft {
+    pub pr_id: String,
+    pub level: AnalysisLevel,
+    pub focus: String,
+    pub summary: Option<String>,
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -499,6 +523,7 @@ pub struct ChatEvent {
 
 pub mod events {
     pub const ANALYSIS_PROGRESS: &str = "analysis:progress";
+    pub const ANALYSIS_DRAFT: &str = "analysis:draft";
     pub const ANALYSIS_COMPLETE: &str = "analysis:complete";
     pub const ANALYSIS_ERROR: &str = "analysis:error";
     pub const CHAT_EVENT: &str = "chat:event";

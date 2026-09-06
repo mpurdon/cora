@@ -398,6 +398,25 @@ impl Store {
             .is_some())
     }
 
+    /// The stored result for this run regardless of head — the seed for an
+    /// incremental re-analysis after a push. The caller compares heads.
+    pub fn get_prior_analysis(
+        &self,
+        pr_id: &str,
+        level: &str,
+        focus: &str,
+    ) -> AppResult<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn
+            .query_row(
+                "SELECT head_sha, data FROM analyses
+                 WHERE pr_id = ?1 AND level = ?2 AND focus = ?3",
+                params![pr_id, level, focus],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
     pub fn put_analysis(
         &self,
         pr_id: &str,
