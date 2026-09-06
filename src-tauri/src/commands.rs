@@ -734,39 +734,64 @@ async fn execute_analysis(
         None
     };
 
-    let mut result =
-        crate::analysis::engine::run(app, &settings, &token, &pr, level, focus, parent_context)
-            .await?;
-
-    // Second stage: line-anchored defect/reuse findings over the review
-    // plan's significant files. Best-effort — its failure never sinks the
-    // architecture result.
-    if level == AnalysisLevel::Context {
-        if settings.code_findings_pass {
-            match crate::analysis::engine::code_findings(
-                app,
-                &settings,
-                &token,
-                &pr,
-                &result.assessment.review_plan,
-            )
-            .await
-            {
-                Ok(findings) => {
-                    result.code_findings = findings;
-                    result.code_pass = Some("ok".into());
-                }
-                Err(e) => {
-                    crate::devlog::warn(app, "code-pass", format!("code findings pass failed: {e}"));
-                    // Failure stays visible on the result — an empty findings
-                    // list must be distinguishable from a crashed pass.
-                    result.code_pass = Some(format!("failed: {e}"));
-                }
+    use crate::analysis::engine;
+    let result = if level == AnalysisLevel::Context && settings.code_findings_pass {
+        // The code pass used to wait for the architecture pass's review plan
+        // to know which files to read — a minute or more of idle time. The
+        // diff metrics name the same files up front, so the two passes run
+        // side by side on their separate model tiers, and the plan is only
+        // checked afterwards for significant files the metrics missed. The
+        // code pass stays best-effort: its failure never sinks the result.
+        let metrics = engine::file_metrics(app, &settings, &token, &pr).await;
+        let code_focus = engine::code_focus_paths(&metrics);
+        let (arch, code) = futures::future::join(
+            engine::run(app, &settings, &token, &pr, level, focus, parent_context, Some(metrics)),
+            engine::code_findings(app, &settings, &token, &pr, &code_focus),
+        )
+        .await;
+        let mut result = arch?;
+        match code {
+            Ok(findings) => {
+                result.code_findings = findings;
+                result.code_pass = Some("ok".into());
             }
-        } else {
+            Err(e) => {
+                crate::devlog::warn(app, "code-pass", format!("code findings pass failed: {e}"));
+                // Failure stays visible on the result — an empty findings
+                // list must be distinguishable from a crashed pass.
+                result.code_pass = Some(format!("failed: {e}"));
+            }
+        }
+        let missed: Vec<&str> = result
+            .assessment
+            .review_plan
+            .iter()
+            .filter(|e| {
+                e.significance != crate::analysis::types::Significance::Mechanical
+                    && !code_focus.iter().any(|p| p == &e.path)
+            })
+            .map(|e| e.path.as_str())
+            .collect();
+        if !missed.is_empty() {
+            crate::devlog::info(
+                app,
+                "code-pass",
+                format!(
+                    "review plan names {} significant file(s) the metrics did not target: {}",
+                    missed.len(),
+                    missed.join(", ")
+                ),
+            );
+        }
+        result
+    } else {
+        let mut result =
+            engine::run(app, &settings, &token, &pr, level, focus, parent_context, None).await?;
+        if level == AnalysisLevel::Context {
             result.code_pass = Some("off".into());
         }
-    }
+        result
+    };
 
     store.put_analysis(
         &result.pr_id,

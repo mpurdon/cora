@@ -130,6 +130,7 @@ fn submit_schema() -> Value {
         "properties": {
             "graph": {
                 "type": "object",
+                "description": "A JSON object with nodes and edges. Pass it as an object in the tool input — never as a JSON-encoded string.",
                 "properties": {
                     "nodes": {"type": "array", "items": {"type": "object", "properties": {
                         "id": {"type": "string"},
@@ -154,6 +155,7 @@ fn submit_schema() -> Value {
             },
             "assessment": {
                 "type": "object",
+                "description": "A JSON object with the fields below. Pass it as an object in the tool input — never as a JSON-encoded string.",
                 "properties": {
                     "summary": {"type": "string", "description": "TLDR: at most TWO short sentences (under 40 words total). What the change is and the single most important thing about it. No mechanism detail here."},
                     "detail": {"type": "string", "description": "The fuller explanation: mechanism, how it flows through the system, why it's safe or risky. 1-2 paragraphs."},
@@ -707,6 +709,69 @@ pub(crate) fn describe_tool_call(name: &str, input: &Value) -> String {
     }
 }
 
+/// The per-file diff metrics, computed ahead of a run so the code pass can
+/// be targeted from them while the architecture pass is still exploring.
+pub async fn file_metrics(
+    app: &AppHandle,
+    settings: &Settings,
+    token: &str,
+    pr: &TrackedPr,
+) -> Vec<(String, FileMetrics)> {
+    match RepoTools::new(
+        &settings.github_graphql_url,
+        &pr.info.repo,
+        pr.info.number,
+        &pr.info.head_sha,
+        token,
+    ) {
+        Ok(tools) => metrics_via(app, &tools).await,
+        Err(e) => {
+            devlog::warn(app, "analysis", format!("diff metrics unavailable: {e}"));
+            Vec::new()
+        }
+    }
+}
+
+async fn metrics_via(app: &AppHandle, tools: &RepoTools) -> Vec<(String, FileMetrics)> {
+    match tools.pr_diff_full().await {
+        Ok(d) => diff_metrics(&d),
+        Err(e) => {
+            devlog::warn(app, "analysis", format!("diff metrics unavailable: {e}"));
+            Vec::new()
+        }
+    }
+}
+
+/// The files the code pass should read: every non-mechanical file, the
+/// most logic first. This stands in for the review plan, which the
+/// architecture pass only produces at the end of its run.
+pub fn code_focus_paths(metrics: &[(String, FileMetrics)]) -> Vec<String> {
+    let mut logic: Vec<&(String, FileMetrics)> =
+        metrics.iter().filter(|(_, m)| !m.is_mechanical()).collect();
+    logic.sort_by_key(|(_, m)| {
+        std::cmp::Reverse(m.added_branches * 2 + m.new_defs * 3 + m.max_nesting)
+    });
+    logic.into_iter().take(20).map(|(p, _)| p.clone()).collect()
+}
+
+/// A change with one or two files of real logic does not need a
+/// forty-node graph and six pillar essays. The write-up is the slowest turn
+/// of the run — the top model emitting JSON — so size it to the change.
+fn scope_hint(level: AnalysisLevel, metrics: &[(String, FileMetrics)]) -> String {
+    if level != AnalysisLevel::Context || metrics.is_empty() {
+        return String::new();
+    }
+    let logic = metrics.iter().filter(|(_, m)| !m.is_mechanical()).count();
+    if logic > 2 {
+        return String::new();
+    }
+    format!(
+        "\n\nScope: only {logic} of the {} changed files carry logic. Size the write-up to the change: the graph shows the containers this change touches plus their immediate periphery, not the whole system; pillar findings are one sentence each and only where there is something real to say; detail is one paragraph.",
+        metrics.len()
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     app: &AppHandle,
     settings: &Settings,
@@ -715,6 +780,7 @@ pub async fn run(
     level: AnalysisLevel,
     focus_node_id: Option<String>,
     parent_context: Option<String>,
+    precomputed_metrics: Option<Vec<(String, FileMetrics)>>,
 ) -> AppResult<AnalysisResult> {
     let pr_id = pr.info.id.clone();
     let focus_key = focus_node_id.clone().unwrap_or_default();
@@ -750,16 +816,10 @@ pub async fn run(
     // Objective per-file signals: ground the model's review-plan calls in
     // measured complexity, and backstop them after submission. Context level
     // only — drills don't own the review plan.
-    let file_metrics = if level == AnalysisLevel::Context {
-        match tools.pr_diff_full().await {
-            Ok(d) => diff_metrics(&d),
-            Err(e) => {
-                devlog::warn(app, "analysis", format!("diff metrics unavailable: {e}"));
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
+    let file_metrics = match precomputed_metrics {
+        Some(m) => m,
+        None if level == AnalysisLevel::Context => metrics_via(app, &tools).await,
+        None => Vec::new(),
     };
     // Every file, not a prefix: a cut-off list is exactly the signal a big PR
     // needs most, and 400 lines of it is still under the cost of one file read.
@@ -835,22 +895,35 @@ pub async fn run(
 
     let body_section = body_section(&pr.info.body);
 
-    // Drills anchor on the diff — hand it over in the kickoff so the run
-    // opens with the changed code in hand instead of spending turns
-    // re-fetching what the context pass already read. (The context run keeps
-    // fetching it as a tool call: its system prompt narrates that flow.)
-    let kickoff_diff = if level == AnalysisLevel::Context {
-        String::new()
-    } else {
-        match tools.pr_diff().await {
-            Ok(d) => {
-                format!("\n\n## Full PR diff (already fetched — do NOT call get_pr_diff)\n{d}")
-            }
-            Err(e) => {
-                devlog::warn(app, "analysis", format!("kickoff diff unavailable: {e}"));
-                String::new()
-            }
+    // Every run opened with the same fetches — the diff, and for the
+    // context pass the README — so they ride in the kickoff instead of
+    // costing the first turn or two of the top model. The diff is the
+    // model's view (indexed when oversized) and was cached by the metrics
+    // pass; the two requests here are cheap and run together.
+    let (diff_res, readme_res) = futures::future::join(tools.pr_diff(), async {
+        if level == AnalysisLevel::Context {
+            Some(tools.readme_and_docs().await)
+        } else {
+            None
         }
+    })
+    .await;
+    let kickoff_diff = match diff_res {
+        Ok(d) => format!("\n\n## PR diff (already fetched — do NOT call get_pr_diff)\n{d}"),
+        Err(e) => {
+            devlog::warn(app, "analysis", format!("kickoff diff unavailable: {e}"));
+            String::new()
+        }
+    };
+    let kickoff_docs = match readme_res {
+        Some(Ok(r)) => {
+            format!("\n\n## README and docs (already fetched — do NOT call get_readme_and_docs)\n{r}")
+        }
+        Some(Err(e)) => {
+            devlog::warn(app, "analysis", format!("kickoff README unavailable: {e}"));
+            String::new()
+        }
+        None => String::new(),
     };
 
     // The parent's assessment doubles as a salvage value: a drill whose
@@ -873,14 +946,17 @@ pub async fn run(
 
     let closing = if kickoff_diff.is_empty() {
         "Start by getting the diff and whatever repository context you need."
-    } else {
+    } else if kickoff_docs.is_empty() {
         "The diff is included below — read only the extra repository context you still need, then submit."
+    } else {
+        "The diff and the README are included below — read only the extra repository context you still need (tree, targeted files, searches), then submit."
     };
+    let scope_section = scope_hint(level, &file_metrics);
     let budget = format!(
         "Budget: {EXPLORE_TURNS} exploration turns, each of which may carry many tool calls in parallel. After that the research tools are withdrawn and only submit_analysis remains, so plan to submit before then."
     );
     let kickoff = format!(
-        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}\n\n{}{}{}{}\n\n{budget}\n\n{closing}{kickoff_diff}",
+        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}\n\n{}{}{}{}\n\n{budget}{scope_section}\n\n{closing}{kickoff_diff}{kickoff_docs}",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -1084,6 +1160,18 @@ pub async fn run(
                         .as_object()
                         .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
                         .unwrap_or_else(|| "(non-object)".into());
+                    // A stringified sub-struct even the lenient parser could
+                    // not rescue: keep its head in the log so the next repair
+                    // is informed, and tell the model exactly what to change.
+                    let stringified: Vec<&str> = ["graph", "assessment"]
+                        .into_iter()
+                        .filter(|k| payload.get(k).is_some_and(Value::is_string))
+                        .collect();
+                    for k in &stringified {
+                        let head: String =
+                            payload[k].as_str().unwrap_or_default().chars().take(300).collect();
+                        devlog::warn(app, "analysis", format!("{k} arrived as an unparseable string: {head}"));
+                    }
                     devlog::warn(
                         app,
                         "analysis",
@@ -1104,6 +1192,11 @@ pub async fn run(
                     let feedback = if truncated {
                         format!(
                             "Submission rejected: {e}. Your submission was CUT OFF by the output-token limit. Resubmit the complete payload but much tighter: descriptions and reasons in a few words each, no prose, and only the nodes/files that matter. Every required field must still be present."
+                        )
+                    } else if !stringified.is_empty() {
+                        format!(
+                            "Submission rejected: {e}. The field(s) {} arrived as JSON-encoded STRINGS. Call submit_analysis again passing them as real JSON objects in the tool input — never serialize a field to text.",
+                            stringified.join(", ")
                         )
                     } else {
                         format!(
@@ -1231,7 +1324,7 @@ fn is_routine(metrics: &[(String, FileMetrics)]) -> bool {
 
 // -- second stage: line-anchored code findings --------------------------------
 
-const CODE_PASS_PROMPT: &str = r#"You are doing the code-level pass of a pull request review. An architecture review already ran — do not repeat it. Hunt for exactly two classes of finding:
+const CODE_PASS_PROMPT: &str = r#"You are doing the code-level pass of a pull request review. An architecture review runs separately — do not repeat it. Hunt for exactly two classes of finding:
 
 1. DEFECTS — code-level problems with real consequences: wrong or referentially-unstable hook/memo/effect dependencies, unhandled error or empty states, loosened or weakened tests, race conditions, resource leaks, incorrect boundary conditions, state machines that can skip states.
 2. REUSE — new code that re-implements something that already exists in this repository or its shared packages/design system. Use search_code and list_tree to check before accepting new utilities or UI primitives; report the existing equivalent by name/path. The most common real-world miss: a component defines a local formatting/derivation helper (formatX, getY, toZ) that a shared utility module (lib/utils, format.ts, *-utils.ts, helpers) or the design system already provides — when the diff ADDS such a helper or inlines that logic, spend a search on the helper's concept (e.g. "formatRating") before accepting it.
@@ -1309,18 +1402,25 @@ pub async fn code_findings(
     settings: &Settings,
     token: &str,
     pr: &TrackedPr,
-    review_plan: &[ReviewPlanEntry],
+    focus_paths: &[String],
 ) -> AppResult<Vec<crate::analysis::types::CodeFinding>> {
     let pr_id = pr.info.id.clone();
     let level = AnalysisLevel::Context;
     progress(app, &pr_id, level, "", "code pass: starting");
 
-    let focus_paths: Vec<&str> = review_plan
-        .iter()
-        .filter(|e| e.significance != Significance::Mechanical)
-        .map(|e| e.path.as_str())
-        .take(20)
-        .collect();
+    let focus_section = if focus_paths.is_empty() {
+        "Focus on the changed files that carry logic; skip renames, config echoes, and import-only changes.".to_string()
+    } else {
+        format!(
+            "Focus on these files — the ones whose diff metrics show added logic:\n{}",
+            focus_paths
+                .iter()
+                .take(20)
+                .map(|p| format!("- {p}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
 
     let model_id = settings.drill_model().to_string();
     let tools = RepoTools::new(
@@ -1342,17 +1442,13 @@ pub async fn code_findings(
     ));
 
     let kickoff = format!(
-        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}{}\n\nFocus on these files from the review plan (critical/important):\n{}\n\nBudget: 12 exploration turns, then only submit_code_findings remains. Start with get_pr_diff (indexed when the diff is large — get_file_diff returns the hunks for the files above), and read surrounding context with get_files in one call rather than one file per turn.",
+        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}{}\n\n{}\n\nBudget: 12 exploration turns, then only submit_code_findings remains. Start with get_pr_diff (indexed when the diff is large — get_file_diff returns the hunks for the files above), and read surrounding context with get_files in one call rather than one file per turn.",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
         pr.info.head_sha,
         body_section(&pr.info.body),
-        focus_paths
-            .iter()
-            .map(|p| format!("- {p}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
+        focus_section,
     );
     let mut messages = vec![Message::builder()
         .role(ConversationRole::User)
@@ -1523,10 +1619,7 @@ fn sanitize_payload(payload: &mut Value) -> Vec<String> {
     let mut notes = Vec::new();
     // The entire payload occasionally arrives as one JSON-encoded string.
     if let Some(s) = payload.as_str() {
-        let parsed = serde_json::from_str::<Value>(s)
-            .ok()
-            .or_else(|| serde_json::from_str::<Value>(&drop_spurious_closers(s)).ok());
-        if let Some(v) = parsed.filter(Value::is_object) {
+        if let Some(v) = parse_lenient(s).filter(Value::is_object) {
             notes.push("whole payload arrived as a JSON string; unwrapped".into());
             *payload = v;
         }
@@ -1761,15 +1854,153 @@ fn unwrap_stringified(payload: &mut Value, field: &str, notes: &mut Vec<String>)
     let Some(s) = payload.get(field).and_then(Value::as_str) else {
         return;
     };
-    let parsed = serde_json::from_str::<Value>(s)
-        .ok()
-        .or_else(|| serde_json::from_str::<Value>(&drop_spurious_closers(s)).ok());
-    if let Some(v) = parsed {
+    if let Some(v) = parse_lenient(s) {
         if v.is_object() || v.is_array() {
             notes.push(format!("{field} arrived as a JSON string; unwrapped"));
             payload[field] = v;
         }
     }
+}
+
+/// Parse JSON the model hand-assembled into a string. A model that
+/// stringifies a sub-struct also tends to leave raw newlines inside string
+/// literals, trailing commas, a code fence, or one closer too many — each
+/// of which serde rejects outright, and each of which used to cost a
+/// resubmit turn at the top model's output speed. Try the cheap repairs in
+/// order, strictest first, so a clean string is never altered.
+pub(crate) fn parse_lenient(s: &str) -> Option<Value> {
+    let body = strip_fence(s);
+    let escaped = escape_raw_controls(body);
+    let uncommaed = drop_trailing_commas(&escaped);
+    let candidates = [
+        body.to_string(),
+        escaped.clone(),
+        uncommaed.clone(),
+        drop_spurious_closers(&uncommaed),
+        close_open(&uncommaed),
+    ];
+    candidates
+        .iter()
+        .find_map(|c| serde_json::from_str::<Value>(c).ok())
+}
+
+/// Trim a ```json fence and any prose around the outermost value.
+fn strip_fence(s: &str) -> &str {
+    let t = s.trim();
+    let start = t.find(['{', '[']).unwrap_or(0);
+    let end = t.rfind(['}', ']']).map(|i| i + 1).unwrap_or(t.len());
+    if start < end {
+        &t[start..end]
+    } else {
+        t
+    }
+}
+
+/// Walk `s` as JSON text, calling `f` with each char and whether it sits
+/// inside a string literal (the opening/closing quotes count as outside).
+fn walk_json(s: &str, mut f: impl FnMut(char, bool)) {
+    let (mut in_str, mut escaped) = (false, false);
+    for c in s.chars() {
+        if in_str {
+            if escaped {
+                escaped = false;
+                f(c, true);
+            } else if c == '\\' {
+                escaped = true;
+                f(c, true);
+            } else if c == '"' {
+                in_str = false;
+                f(c, false);
+            } else {
+                f(c, true);
+            }
+        } else {
+            if c == '"' {
+                in_str = true;
+            }
+            f(c, false);
+        }
+    }
+}
+
+/// Raw control characters inside string literals — a newline typed into a
+/// description instead of `\n` — are the commonest reason a stringified
+/// payload fails to parse.
+fn escape_raw_controls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    walk_json(s, |c, in_str| match (in_str, c) {
+        (true, '\n') => out.push_str("\\n"),
+        (true, '\r') => out.push_str("\\r"),
+        (true, '\t') => out.push_str("\\t"),
+        (true, c) if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+        (_, c) => out.push(c),
+    });
+    out
+}
+
+/// `,}` and `,]` outside strings.
+fn drop_trailing_commas(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut pending_comma = false;
+    walk_json(s, |c, in_str| {
+        if !in_str && pending_comma {
+            if c.is_whitespace() {
+                return;
+            }
+            pending_comma = false;
+            if c != '}' && c != ']' {
+                out.push(',');
+            }
+        }
+        if !in_str && c == ',' {
+            pending_comma = true;
+        } else {
+            out.push(c);
+        }
+    });
+    if pending_comma {
+        out.push(',');
+    }
+    out
+}
+
+/// A payload cut off mid-value: close the open string and every open
+/// container so what was written survives.
+fn close_open(s: &str) -> String {
+    let mut stack: Vec<char> = Vec::new();
+    walk_json(s, |c, inside| {
+        if !inside {
+            match c {
+                '{' => stack.push('}'),
+                '[' => stack.push(']'),
+                '}' | ']' => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+    });
+    let mut out = s.trim_end().to_string();
+    // The walk reports the closing quote as outside; an unterminated string
+    // ends the walk inside.
+    let unterminated = {
+        let mut inside = false;
+        walk_json(s, |_, i| inside = i);
+        inside
+    };
+    if unterminated {
+        out.push('"');
+    }
+    if out.ends_with(',') {
+        out.pop();
+    }
+    if out.ends_with(':') {
+        out.push_str(" null");
+    }
+    while let Some(closer) = stack.pop() {
+        out.push(closer);
+    }
+    out
 }
 
 /// Remove `}`/`]` characters that would close the top-level value while
@@ -2285,6 +2516,65 @@ mod tests {
         assert_eq!(assessment.summary, "Frontend-only change.");
         assert_eq!(assessment.fit, crate::analysis::types::FitVerdict::Fits);
         assert_eq!(assessment.review_plan.len(), 1);
+    }
+
+    #[test]
+    fn lenient_parse_rescues_the_ways_a_stringified_assessment_breaks() {
+        // Raw newlines inside string literals — the hand-assembled shape.
+        let raw = "{\"summary\": \"line one\nline two\", \"fit\": \"fits\"}";
+        assert!(serde_json::from_str::<Value>(raw).is_err(), "serde rejects raw control chars");
+        let v = parse_lenient(raw).expect("escaped");
+        assert_eq!(v["summary"], "line one\nline two");
+
+        // Trailing commas, in an object and an array.
+        let v = parse_lenient("{\"a\": [1, 2,], \"b\": {\"c\": 1,},}").expect("commas");
+        assert_eq!(v["a"], json!([1, 2]));
+        assert_eq!(v["b"]["c"], 1);
+
+        // A code fence with prose around it.
+        let v = parse_lenient("Here it is:\n```json\n{\"fit\": \"tension\"}\n```\n").expect("fence");
+        assert_eq!(v["fit"], "tension");
+
+        // Cut off mid-string: what was written survives.
+        let v = parse_lenient("{\"summary\": \"partial\", \"contextNotes\": [\"one\", \"tw").expect("closed");
+        assert_eq!(v["summary"], "partial");
+        assert_eq!(v["contextNotes"][0], "one");
+
+        // A clean string is never altered.
+        let v = parse_lenient("{\"s\": \"a,}\\n]\"}").expect("clean");
+        assert_eq!(v["s"], "a,}\n]");
+        assert!(parse_lenient("not json at all").is_none());
+    }
+
+    #[test]
+    fn sanitize_unwraps_a_stringified_assessment_with_raw_newlines() {
+        let mut payload = json!({
+            "graph": {"nodes": [], "edges": []},
+            "assessment": "{\"summary\": \"Reorders x\nso y\", \"detail\": \"d\", \"fit\": \"fits\", \"fitRationale\": \"r\", \"boundaryImpacts\": [], \"wellArchitected\": [], \"contextNotes\": [], \"reviewPlan\": [],}"
+        });
+        let notes = sanitize_payload(&mut payload);
+        assert!(notes.iter().any(|n| n.contains("assessment arrived as a JSON string")), "{notes:?}");
+        assert!(parse_payload(&payload).is_ok(), "{payload}");
+    }
+
+    #[test]
+    fn code_focus_is_the_logic_files_most_logic_first() {
+        let m = |b, d, imp: f32| FileMetrics {
+            additions: 10,
+            deletions: 0,
+            added_branches: b,
+            new_defs: d,
+            import_share: imp,
+            max_nesting: 1,
+        };
+        let metrics = vec![
+            ("wiring.ts".to_string(), m(0, 0, 0.0)),
+            ("small.ts".to_string(), m(1, 0, 0.0)),
+            ("imports.ts".to_string(), m(3, 1, 0.9)),
+            ("core.ts".to_string(), m(6, 2, 0.1)),
+        ];
+        assert_eq!(code_focus_paths(&metrics), vec!["core.ts", "small.ts"]);
+        assert!(code_focus_paths(&[]).is_empty());
     }
 
     #[test]

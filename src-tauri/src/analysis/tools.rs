@@ -15,10 +15,14 @@ pub struct RepoTools {
     /// The full diff is wanted by both the metrics pass and the model's
     /// get_pr_diff tool in the same run — fetch it once per instance.
     diff_cache: tokio::sync::OnceCell<String>,
-    /// GitHub code search allows ~10 requests/min; concurrent tool calls
-    /// serialize through this gate with spacing instead of bursting into 429s.
-    search_gate: tokio::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// GitHub code search allows ~10 requests/min per token. Every RepoTools in
+/// the process shares this gate — the architecture pass, the code pass
+/// running beside it, the assistant — so concurrent runs queue with spacing
+/// instead of bursting into 429s.
+static SEARCH_GATE: tokio::sync::Mutex<Option<std::time::Instant>> =
+    tokio::sync::Mutex::const_new(None);
 
 const MAX_FILE_CHARS: usize = 40_000;
 const MAX_DIFF_CHARS: usize = 60_000;
@@ -46,7 +50,6 @@ impl RepoTools {
             number,
             token: token.to_string(),
             diff_cache: tokio::sync::OnceCell::new(),
-            search_gate: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -442,7 +445,7 @@ impl RepoTools {
     async fn search(&self, query: &str) -> AppResult<String> {
         // Serialize concurrent searches with spacing (~9/min) — the gate is
         // held across the request so a burst of tool calls forms a queue.
-        let mut last = self.search_gate.lock().await;
+        let mut last = SEARCH_GATE.lock().await;
         if let Some(prev) = *last {
             let min_gap = std::time::Duration::from_millis(6500);
             if prev.elapsed() < min_gap {
@@ -485,7 +488,7 @@ impl RepoTools {
         Ok(lines.join("\n\n"))
     }
 
-    async fn readme_and_docs(&self) -> AppResult<String> {
+    pub(crate) async fn readme_and_docs(&self) -> AppResult<String> {
         let readme = match self
             .get(
                 &format!("repos/{}/readme", self.repo),
