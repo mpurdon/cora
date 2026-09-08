@@ -201,7 +201,9 @@ pub struct PrComment {
     pub url: String,
     #[serde(default)]
     pub reactions: Vec<ReactionGroup>,
-    /// Whether the PAT owner wrote this — the UI only offers Edit on your own.
+    /// Whether the PAT owner wrote this and may still edit it — the UI only
+    /// offers Edit on your own comments, never on a maintainer's power over
+    /// someone else's.
     #[serde(default)]
     pub viewer_can_edit: bool,
     /// A review-thread comment edits through a different GitHub mutation than

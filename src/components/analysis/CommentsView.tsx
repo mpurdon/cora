@@ -393,6 +393,17 @@ function ReviewVerdictCard({ review }: { review: ReviewVerdict }) {
   );
 }
 
+/** The first lines of a comment as a quote, with its author addressed —
+ *  what a reply from a specific comment opens with. */
+function quoteOf(comment: PrComment): string {
+  const quoted = comment.body
+    .split("\n")
+    .slice(0, 6)
+    .map((l) => `> ${l}`)
+    .join("\n");
+  return `${quoted}\n\n@${comment.author} `;
+}
+
 function Thread({
   thread,
   onShowCode,
@@ -403,6 +414,12 @@ function Thread({
   onReplied: () => void;
 }) {
   const [replying, setReplying] = useState(false);
+  // A reply started from one comment quotes it; the header Reply starts blank.
+  const [prefill, setPrefill] = useState("");
+  const replyTo = (c: PrComment) => {
+    setPrefill(quoteOf(c));
+    setReplying(true);
+  };
   const [root, ...replies] = thread.comments;
   if (!root) return null;
   return (
@@ -443,24 +460,37 @@ function Thread({
               {thread.resolved ? "Unresolve" : "Resolve"}
             </button>
             {!thread.resolved && (
-              <button className="thread-reply-btn" onClick={() => setReplying(true)}>
+              <button
+                className="thread-reply-btn"
+                onClick={() => {
+                  setPrefill("");
+                  setReplying(true);
+                }}
+              >
                 Reply
               </button>
             )}
           </>
         )}
       </div>
-      <Comment comment={root} isReply={false} onChanged={onReplied} />
+      <Comment comment={root} isReply={false} onChanged={onReplied} onQuoteReply={replyTo} />
       {replies.map((c) => (
-        <Comment key={c.id} comment={c} isReply onChanged={onReplied} />
+        <Comment key={c.id} comment={c} isReply onChanged={onReplied} onQuoteReply={replyTo} />
       ))}
       {replying && (
         <Composer
+          key={prefill} // remount to adopt a new quote
+          initialBody={prefill}
+          autoFocus
           placeholder="Reply to this thread…"
           submitLabel="Reply"
-          onCancel={() => setReplying(false)}
+          onCancel={() => {
+            setReplying(false);
+            setPrefill("");
+          }}
           onSubmit={async (body) => {
             await ipc.replyToThread(thread.id, body);
+            setPrefill("");
             onReplied();
           }}
         />
@@ -623,12 +653,7 @@ export function CommentsView({
   }, [composeRequest]);
 
   const quoteReply = (comment: PrComment) => {
-    const quoted = comment.body
-      .split("\n")
-      .slice(0, 6)
-      .map((l) => `> ${l}`)
-      .join("\n");
-    setPrefill(`${quoted}\n\n@${comment.author} `);
+    setPrefill(quoteOf(comment));
     document.getElementById("conversation-composer")?.scrollIntoView({ block: "center" });
   };
 

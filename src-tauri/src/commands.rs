@@ -1665,7 +1665,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
         pullRequest(number: $number) {
           comments(first: 100) {
             nodes {
-              id author { login __typename } body createdAt url viewerCanUpdate
+              id author { login __typename } body createdAt url viewerCanUpdate viewerDidAuthor
               reactionGroups { content viewerHasReacted reactors { totalCount } }
             }
           }
@@ -1674,7 +1674,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
               id isResolved isOutdated path line startLine
               comments(first: 100) {
                 nodes {
-                  id author { login __typename } body createdAt url viewerCanUpdate
+                  id author { login __typename } body createdAt url viewerCanUpdate viewerDidAuthor
                   reactionGroups { content viewerHasReacted reactors { totalCount } }
                 }
               }
@@ -1730,10 +1730,16 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
             created_at: v.get("createdAt")?.as_str()?.to_string(),
             url: v.get("url")?.as_str()?.to_string(),
             reactions,
+            // viewerCanUpdate is true for a maintainer on anyone's comment;
+            // Edit is offered only on your own words.
             viewer_can_edit: v
                 .get("viewerCanUpdate")
                 .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+                .unwrap_or(false)
+                && v
+                    .get("viewerDidAuthor")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
             is_review_comment,
         })
     };
