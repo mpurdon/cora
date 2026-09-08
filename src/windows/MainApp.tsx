@@ -1509,6 +1509,9 @@ export function MainApp() {
   const [showReviewed, toggleReviewed] = usePersistedFlag("cora.showReviewed");
 
   const [showFinished, toggleFinished] = usePersistedFlag("cora.showFinished");
+  // Drafts show by default: they're someone's work in progress you may be
+  // asked to look at early. The chip hides them; your own stay regardless.
+  const [showDrafts, toggleDrafts] = usePersistedFlag("cora.showDrafts", true);
 
   const [priorities, setPriorities] = useState<Record<string, RepoPriority>>({});
   const [authorPriorities, setAuthorPriorities] = useState<Record<string, RepoPriority>>({});
@@ -1746,7 +1749,8 @@ export function MainApp() {
         authorPrioOf(pr.author) !== "ignored" &&
         (showMuted || !pr.muted) &&
         (showReviewed || !reviewedAndIdle(pr)) &&
-        (showFinished || !isFinished(pr)),
+        (showFinished || !isFinished(pr)) &&
+        (showDrafts || !pr.isDraft || pr.sources.includes("authored")),
     );
     const bucketMatched = bucketFilter
       ? unignored.filter((pr) => inBucket(pr, bucketFilter))
@@ -1831,7 +1835,7 @@ export function MainApp() {
     }
     if (mineSorted.length > 0) entries.unshift({ key: MINE_GROUP, label: "Yours", prs: mineSorted });
     return { grouped: entries, hiddenByReady };
-  }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed, showFinished]);
+  }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed, showFinished, showDrafts]);
 
   const selected = prs.find((p) => p.id === selectedId) ?? null;
 
@@ -2176,6 +2180,13 @@ export function MainApp() {
                 onClick={toggleFinished}
               >
                 <span className="lamp" /> finished
+              </button>
+              <button
+                className={`chip${showDrafts ? " on" : ""}`}
+                data-tip="Draft PRs show by default — toggle to hide them. Your own drafts always show."
+                onClick={toggleDrafts}
+              >
+                <span className="lamp" /> drafts
               </button>
               {hiddenByReady > 0 && <span className="hidden-note">−{hiddenByReady}</span>}
             </div>
