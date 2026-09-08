@@ -2105,6 +2105,11 @@ export function MainApp() {
     </>
   );
 
+  // The menu was opened on a snapshot of the PR; a priority change lands in
+  // `prs` via the snapshot event, so the menu renders against the live row.
+  const liveMenu =
+    menu?.kind === "pr" ? { ...menu, pr: prs.find((p) => p.id === menu.pr.id) ?? menu.pr } : menu;
+
   return (
     <div className="main-shell">
       <nav className="rail" style={{ width: rail.width }}>
@@ -2466,16 +2471,48 @@ export function MainApp() {
         </>
       )}
 
-      {menu && (
+      {liveMenu && (
         <ContextMenu
-          x={menu.x}
-          y={menu.y}
+          x={liveMenu.x}
+          y={liveMenu.y}
           onClose={() => setMenu(null)}
           sections={
-            menu.kind === "pr"
+            liveMenu.kind === "pr"
               ? [
                   {
-                    title: `PR #${menu.pr.number} priority`,
+                    items: [
+                      ...(liveMenu.analyzed === false
+                        ? [
+                            {
+                              label: "Analyze architecture",
+                              onClick: () => {
+                                const s = useAnalysisStore.getState();
+                                void s.init().then(() => s.ensure(liveMenu.pr.id, "context", undefined, true));
+                              },
+                            },
+                          ]
+                        : []),
+                      {
+                        label: liveMenu.pr.muted ? "Unmute" : "Mute",
+                        onClick: () => void ipc.setPrMuted(liveMenu.pr.id, !liveMenu.pr.muted),
+                      },
+                      {
+                        label: "Mark read",
+                        onClick: () => void ipc.markPrRead(liveMenu.pr.id),
+                      },
+                      {
+                        label: "Open on GitHub",
+                        onClick: () => openPr(liveMenu.pr),
+                      },
+                      {
+                        label: "Untrack",
+                        danger: true,
+                        onClick: () => void ipc.untrackPr(liveMenu.pr.id),
+                      },
+                    ],
+                  },
+                  {
+                    title: `PR #${liveMenu.pr.number} priority`,
                     items: [
                       {
                         type: "custom",
@@ -2483,50 +2520,18 @@ export function MainApp() {
                         render: () => (
                           <PrioritySelector
                             levels={PR_PRIORITY_DISPLAY_ORDER}
-                            value={menu.pr.priority}
-                            onChange={(p) => void ipc.setPrPriority(menu.pr.id, p)}
+                            value={liveMenu.pr.priority}
+                            onChange={(p) => void ipc.setPrPriority(liveMenu.pr.id, p)}
                             getLabel={(p) => PR_PRIORITY_LABEL[p]}
                             getIcon={(p) => PR_PRIORITY_ICON[p].icon}
-                            groupLabel={`PR #${menu.pr.number} priority`}
+                            groupLabel={`PR #${liveMenu.pr.number} priority`}
                           />
                         ),
                       },
                     ],
                   },
                   {
-                    items: [
-                      ...(menu.analyzed === false
-                        ? [
-                            {
-                              label: "Analyze architecture",
-                              onClick: () => {
-                                const s = useAnalysisStore.getState();
-                                void s.init().then(() => s.ensure(menu.pr.id, "context", undefined, true));
-                              },
-                            },
-                          ]
-                        : []),
-                      {
-                        label: menu.pr.muted ? "Unmute" : "Mute",
-                        onClick: () => void ipc.setPrMuted(menu.pr.id, !menu.pr.muted),
-                      },
-                      {
-                        label: "Mark read",
-                        onClick: () => void ipc.markPrRead(menu.pr.id),
-                      },
-                      {
-                        label: "Open on GitHub",
-                        onClick: () => openPr(menu.pr),
-                      },
-                      {
-                        label: "Untrack",
-                        danger: true,
-                        onClick: () => void ipc.untrackPr(menu.pr.id),
-                      },
-                    ],
-                  },
-                  {
-                    title: `@${menu.pr.author} priority (all their PRs)`,
+                    title: `@${liveMenu.pr.author} priority (all their PRs)`,
                     items: [
                       {
                         type: "custom",
@@ -2534,18 +2539,18 @@ export function MainApp() {
                         render: () => (
                           <PrioritySelector
                             levels={REPO_PRIORITY_DISPLAY_ORDER}
-                            value={authorPrioOf(menu.pr.author)}
-                            onChange={(p) => void setAuthorPriority(menu.pr.author, p)}
+                            value={authorPrioOf(liveMenu.pr.author)}
+                            onChange={(p) => void setAuthorPriority(liveMenu.pr.author, p)}
                             getLabel={(p) => REPO_PRIORITY_LABEL[p]}
                             getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
-                            groupLabel={`@${menu.pr.author} priority`}
+                            groupLabel={`@${liveMenu.pr.author} priority`}
                           />
                         ),
                       },
                     ],
                   },
                   {
-                    title: `${menu.pr.repo} priority`,
+                    title: `${liveMenu.pr.repo} priority`,
                     items: [
                       {
                         type: "custom",
@@ -2553,11 +2558,11 @@ export function MainApp() {
                         render: () => (
                           <PrioritySelector
                             levels={REPO_PRIORITY_DISPLAY_ORDER}
-                            value={prioOf(menu.pr.repo)}
-                            onChange={(p) => void setRepoPriority(menu.pr.repo, p)}
+                            value={prioOf(liveMenu.pr.repo)}
+                            onChange={(p) => void setRepoPriority(liveMenu.pr.repo, p)}
                             getLabel={(p) => REPO_PRIORITY_LABEL[p]}
                             getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
-                            groupLabel={`${menu.pr.repo} priority`}
+                            groupLabel={`${liveMenu.pr.repo} priority`}
                           />
                         ),
                       },
@@ -2567,16 +2572,16 @@ export function MainApp() {
                     items: [
                       {
                         label: "Watch all PRs in this repo",
-                        checked: watchedRepos.includes(menu.pr.repo),
-                        onClick: () => void toggleWatchRepo(menu.pr.repo),
+                        checked: watchedRepos.includes(liveMenu.pr.repo),
+                        onClick: () => void toggleWatchRepo(liveMenu.pr.repo),
                       },
                     ],
                   },
                 ]
-              : menu.kind === "author"
+              : liveMenu.kind === "author"
                 ? [
                     {
-                      title: `@${menu.author} priority (all their PRs)`,
+                      title: `@${liveMenu.author} priority (all their PRs)`,
                       items: [
                         {
                           type: "custom",
@@ -2584,11 +2589,11 @@ export function MainApp() {
                           render: () => (
                             <PrioritySelector
                               levels={REPO_PRIORITY_DISPLAY_ORDER}
-                              value={authorPrioOf(menu.author)}
-                              onChange={(p) => void setAuthorPriority(menu.author, p)}
+                              value={authorPrioOf(liveMenu.author)}
+                              onChange={(p) => void setAuthorPriority(liveMenu.author, p)}
                               getLabel={(p) => REPO_PRIORITY_LABEL[p]}
                               getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
-                              groupLabel={`@${menu.author} priority`}
+                              groupLabel={`@${liveMenu.author} priority`}
                             />
                           ),
                         },
@@ -2598,14 +2603,14 @@ export function MainApp() {
                       items: [
                         {
                           label: "Open on GitHub",
-                          onClick: () => void openUrl(`${menu.host}/${menu.author}`),
+                          onClick: () => void openUrl(`${liveMenu.host}/${liveMenu.author}`),
                         },
                       ],
                     },
                   ]
                 : [
                   {
-                    title: `${menu.repo} priority`,
+                    title: `${liveMenu.repo} priority`,
                     items: [
                       {
                         type: "custom",
@@ -2613,11 +2618,11 @@ export function MainApp() {
                         render: () => (
                           <PrioritySelector
                             levels={REPO_PRIORITY_DISPLAY_ORDER}
-                            value={prioOf(menu.repo)}
-                            onChange={(p) => void setRepoPriority(menu.repo, p)}
+                            value={prioOf(liveMenu.repo)}
+                            onChange={(p) => void setRepoPriority(liveMenu.repo, p)}
                             getLabel={(p) => REPO_PRIORITY_LABEL[p]}
                             getIcon={(p) => REPO_PRIORITY_ICON[p].icon}
-                            groupLabel={`${menu.repo} priority`}
+                            groupLabel={`${liveMenu.repo} priority`}
                           />
                         ),
                       },
@@ -2627,16 +2632,16 @@ export function MainApp() {
                     items: [
                       {
                         label: "Watch all PRs in this repo",
-                        checked: watchedRepos.includes(menu.repo),
-                        onClick: () => void toggleWatchRepo(menu.repo),
+                        checked: watchedRepos.includes(liveMenu.repo),
+                        onClick: () => void toggleWatchRepo(liveMenu.repo),
                       },
                       {
                         label: "Open on GitHub",
-                        onClick: () => void openUrl(`https://github.com/${menu.repo}`),
+                        onClick: () => void openUrl(`https://github.com/${liveMenu.repo}`),
                       },
                       {
                         label: "Repo settings…",
-                        onClick: () => setRepoSettingsRepo(menu.repo),
+                        onClick: () => setRepoSettingsRepo(liveMenu.repo),
                       },
                     ],
                   },

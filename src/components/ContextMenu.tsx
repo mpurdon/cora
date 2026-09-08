@@ -53,9 +53,12 @@ export function ContextMenu({
     };
     window.addEventListener("keydown", onKey);
     window.addEventListener("mousedown", onDown);
+    // Switching to another window: the menu belongs to a moment that's over.
+    window.addEventListener("blur", onClose);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("blur", onClose);
     };
   }, [onClose]);
 
