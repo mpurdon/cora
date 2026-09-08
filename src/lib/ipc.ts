@@ -97,6 +97,9 @@ export const ipc = {
   getFlagged: () => invoke<ActivityItem[]>("get_flagged"),
   clearActivityFlags: (prId: string) => invoke<void>("clear_activity_flags", { prId }),
   getPrComments: (prId: string) => invoke<PrConversation>("get_pr_comments", { prId }),
+  /** A private GitHub attachment (a pasted screenshot) as a data URL. */
+  githubAttachment: (repo: string, url: string) =>
+    invoke<string>("github_attachment", { repo, url }),
   getPrCommits: (prId: string) => invoke<PrCommit[]>("get_pr_commits", { prId }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),
   getPrReviews: (prId: string) => invoke<PrReviews>("get_pr_reviews", { prId }),

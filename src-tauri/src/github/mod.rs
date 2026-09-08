@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod poller;
 pub mod query;
 

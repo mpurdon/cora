@@ -6539,3 +6539,155 @@ button.diff-file-header:hover {
 .dash-severity {
   margin-top: 22px;
 }
+
+/* A private attachment while the backend signs and fetches it. */
+.md-img-pending {
+  display: inline-block;
+  padding: 6px 10px;
+  border: 1px dashed var(--border, #3a3f47);
+  border-radius: 6px;
+  color: var(--fg-muted, #8b949e);
+  font-size: 12px;
+}
+.md-img-pending.failed {
+  border-style: solid;
+}
+
+/* ---- Image gallery: thumbnails in the body, a lightbox to page them ---- */
+.md-thumb {
+  display: inline-block;
+  padding: 0;
+  margin: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink-0);
+  cursor: zoom-in;
+  overflow: hidden;
+  vertical-align: middle;
+  line-height: 0;
+}
+.md-thumb:hover {
+  border-color: var(--muted);
+}
+.md-thumb .md-img {
+  display: block;
+  max-height: 140px;
+  object-fit: contain;
+}
+/* The template's screenshot table: cells become a tidy strip of thumbnails. */
+.markdown td:has(> .md-thumb:only-child),
+.markdown p:has(> .md-thumb:only-child) {
+  text-align: center;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px 28px 16px;
+  background: rgba(8, 10, 14, 0.92);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.lightbox-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-frame {
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-img {
+  max-width: calc(100vw - 140px);
+  max-height: calc(100vh - 160px);
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+}
+.lightbox-nav,
+.lightbox-close {
+  border: 1px solid var(--line);
+  background: var(--ink-1);
+  color: var(--text);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-nav:hover,
+.lightbox-close:hover {
+  border-color: var(--muted);
+}
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.lightbox-nav.prev {
+  left: 8px;
+}
+.lightbox-nav.next {
+  right: 8px;
+}
+.lightbox-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  font-size: 14px;
+  width: 32px;
+  height: 32px;
+}
+.lightbox-strip {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 4px;
+}
+.lightbox-thumb {
+  flex: 0 0 auto;
+  width: 88px;
+  height: 58px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background: var(--ink-1);
+  overflow: hidden;
+  cursor: pointer;
+  opacity: 0.55;
+}
+.lightbox-thumb:hover {
+  opacity: 0.85;
+}
+.lightbox-thumb.current {
+  opacity: 1;
+  border-color: var(--chat);
+}
+.lightbox-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.lightbox-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

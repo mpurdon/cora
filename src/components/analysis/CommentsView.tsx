@@ -17,6 +17,7 @@ import { useDiffStore } from "../../state/diffStore";
 import { timeAgo } from "../../state/prStore";
 import { serverHasVerdict, useReviewStore } from "../../state/reviewStore";
 import { withMarker, DiffJump, parseDiff, type DiffFile } from "./DiffView";
+import { AttachedImage, ImageGallery } from "./AttachedImage";
 
 /** Comment id → DOM anchor, so reply notifications can deep-link here. */
 export const commentAnchor = (commentId: string) => `comment-${commentId}`;
@@ -110,6 +111,7 @@ export const CommentBody = memo(function CommentBody({
 }) {
   return (
     <div className="comment-body markdown">
+      <ImageGallery body={body}>
       <Markdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
@@ -151,12 +153,13 @@ export const CommentBody = memo(function CommentBody({
           ),
           img: ({ src, alt }) => (
             // Badges and screenshots — keep them small and never broken-huge.
-            <img src={src ?? ""} alt={alt ?? ""} className="md-img" loading="lazy" />
+            <AttachedImage src={src ?? ""} alt={alt ?? ""} className="md-img" />
           ),
         }}
       >
         {body}
       </Markdown>
+      </ImageGallery>
     </div>
   );
 });

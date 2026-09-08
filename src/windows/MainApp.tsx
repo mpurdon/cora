@@ -60,6 +60,7 @@ import { setThemeOrg } from "../lib/theme";
 import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
+import { AttachmentRepo } from "../components/analysis/AttachedImage";
 import { ciTone, isAuthored, isFinished, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
 import {
   initReviewStore,
@@ -1323,7 +1324,9 @@ function Detail({
   }, []);
 
   return (
-    <div className="detail">
+    // Pasted screenshots on a private repo are signed in this repo's context.
+    <AttachmentRepo.Provider value={pr.repo}>
+      <div className="detail">
       {/* A draft is stamped, not prefixed: the mark reads from across the
           room and leaves the title itself alone. */}
       {pr.isDraft && (
@@ -1445,7 +1448,8 @@ function Detail({
           onFocusHandled={onPendingCommentHandled}
         />
       )}
-    </div>
+      </div>
+    </AttachmentRepo.Provider>
   );
 }
 

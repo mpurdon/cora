@@ -216,6 +216,7 @@ pub fn run() {
             commands::get_flagged,
             commands::undo_audit,
             commands::get_pr_comments,
+            github::attachments::github_attachment,
             commands::get_pr_commits,
             commands::get_file_at_head,
             commands::refresh_pr,
