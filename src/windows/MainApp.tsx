@@ -310,10 +310,18 @@ function ReviewActions({
   // The live conversation drives the auto-seeded request-changes summary.
   const [conversation, setConversation] = useState<PrConversation | null>(null);
 
+  // The last text the app wrote into the box. Cancel keeps the box, so a
+  // seed from one verdict would otherwise ride into the next as if you had
+  // typed it: a cancelled Comment's "See my 2 comments…" showing up as the
+  // approval. Text is yours only if it differs from what we seeded.
+  const seeded = useRef("");
+  const isTyped = (text: string) => text.trim() !== "" && text !== seeded.current;
+
   // A half-written review for one PR must not follow you to the next.
   useEffect(() => {
     setMode(null);
     setBody("");
+    seeded.current = "";
     setError(null);
   }, [pr.id]);
 
@@ -333,27 +341,29 @@ function ReviewActions({
     setMode(m);
     // Every mode opens with a one-sentence summary written from the live
     // conversation — a pointer to your comments when requesting changes or
-    // commenting, what your review settled when approving. Only when the box
-    // is still empty: never clobber text you've typed.
-    if (body.trim()) return;
+    // commenting, what your review settled when approving. Never clobber
+    // text you've typed; a stale seed is replaced, or cleared.
+    if (isTyped(body)) return;
+    const seed = (text: string) => {
+      seeded.current = text;
+      setBody((current) => (isTyped(current) ? current : text));
+    };
     const viewer = reviews?.viewerLogin ?? "";
     if (m === "request-changes" || m === "comment") {
-      const seed =
+      seed(
         m === "comment"
           ? commentReviewSeed(conversation, viewer)
-          : requestChangesSeed(conversation, viewer);
-      if (seed) setBody(seed);
+          : requestChangesSeed(conversation, viewer),
+      );
       return;
     }
     // Approve's seed can be a repo/global override, so it's resolved against
     // freshly-fetched settings rather than a value threaded through props —
     // that way an edit made in the repo settings drawer takes effect on the
-    // very next Approve click, no refetch wiring needed.
+    // very next Approve click, no refetch wiring needed. `seed` re-checks at
+    // resolve time: the user may have started typing while this was in flight.
     void ipc.getSettings().then((settings) => {
-      const seed = resolveApproveMessage(pr.repo, settings, conversation, viewer);
-      // Re-check at resolve time: the user may have started typing while
-      // this was in flight.
-      if (seed) setBody((current) => (current.trim() ? current : seed));
+      seed(resolveApproveMessage(pr.repo, settings, conversation, viewer));
     });
   };
 
