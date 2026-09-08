@@ -1790,18 +1790,16 @@ export function MainApp() {
     );
     const visible = others.filter((pr) => passesReady(pr, ready));
     const hiddenByReady = others.length - visible.length;
-    // A PR carries both pulls, the repo's and the author's, summed rather than
-    // the repo deciding with the author as a tiebreak. Ranking an author up is
-    // worth exactly what ranking a repo down costs, so a name you want to see
-    // draws level with work from a repo you'd otherwise reach for first. Then
-    // per-PR priority, then the chosen sort. Both axes are offset against
-    // Ordering: repo priority, then the author's priority within the group,
-    // then per-PR priority, then the chosen sort.
-    const order = (a: TrackedPr, b: TrackedPr) =>
-      REPO_PRIORITY_WEIGHT[prioOf(b.repo)] - REPO_PRIORITY_WEIGHT[prioOf(a.repo)] ||
-      REPO_PRIORITY_WEIGHT[authorPrioOf(b.author)] - REPO_PRIORITY_WEIGHT[authorPrioOf(a.author)] ||
-      PR_PRIORITY_WEIGHT[b.priority] - PR_PRIORITY_WEIGHT[a.priority] ||
-      SORTERS[sortMode](a, b);
+    // A PR's rank is one score: its repo's weight, its author's, and its own,
+    // summed. Each is a real weight, not a tiebreak for the one before it —
+    // ranking an author up is worth exactly what ranking a repo down costs,
+    // and marking one PR critical lifts it clear of an unimportant repo.
+    // Equal scores fall through to the chosen sort.
+    const prWeight = (p: TrackedPr) =>
+      REPO_PRIORITY_WEIGHT[prioOf(p.repo)] +
+      REPO_PRIORITY_WEIGHT[authorPrioOf(p.author)] +
+      PR_PRIORITY_WEIGHT[p.priority];
+    const order = (a: TrackedPr, b: TrackedPr) => prWeight(b) - prWeight(a) || SORTERS[sortMode](a, b);
     const sorted = [...visible].sort(order);
     const mineSorted = [...mine].sort(order);
 
@@ -1828,8 +1826,7 @@ export function MainApp() {
       collapseKey: `${groupMode}:${key}`,
       keyedBy,
     }));
-    const prWeight = (p: TrackedPr) =>
-      REPO_PRIORITY_WEIGHT[prioOf(p.repo)] + REPO_PRIORITY_WEIGHT[authorPrioOf(p.author)];
+    // A group ranks by its strongest PR, on the same score.
     const groupWeight = (g: { prs: TrackedPr[] }) => Math.max(...g.prs.map(prWeight));
     if (groupMode === "reason") {
       entries.sort(
