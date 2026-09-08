@@ -60,7 +60,7 @@ import { setThemeOrg } from "../lib/theme";
 import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
-import { ciTone, isFinished, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
+import { ciTone, isAuthored, isFinished, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
 import {
   initReviewStore,
   lockedReview,
@@ -83,7 +83,6 @@ import {
 /** Reason grouping: a PR appears once, under its most specific reason. */
 const REASONS: { key: PrSource; label: string }[] = [
   { key: "review-requested", label: "Needs your review" },
-  { key: "authored", label: "Yours" },
   { key: "chat", label: "From chat" },
   { key: "manual", label: "Pinned" },
   { key: "involved", label: "Involved" },
@@ -93,6 +92,16 @@ const REASONS: { key: PrSource; label: string }[] = [
 type GroupMode = "org" | "repo" | "reason" | "type" | "author";
 /** Group key of the pinned "Yours" group, present in every group mode. */
 const MINE_GROUP = "__mine";
+/** A rail group. `collapseKey` persists its open/closed state; `keyedBy`
+ *  says what the key names when it is a single repo or author, which is
+ *  what gives the header a priority tag and a context menu. */
+type RailGroup = {
+  key: string;
+  label: string;
+  prs: TrackedPr[];
+  collapseKey: string;
+  keyedBy?: "repo" | "author";
+};
 type SortMode = "activity" | "attention" | "repo";
 
 /** Opening a persistently-critical PR is itself the acknowledgment. */
@@ -1758,21 +1767,23 @@ export function MainApp() {
         prioOf(pr.repo) !== "ignored" &&
         authorPrioOf(pr.author) !== "ignored" &&
         (showMuted || !pr.muted) &&
-        (showReviewed || !reviewedAndIdle(pr)) &&
-        (showFinished || !isFinished(pr)) &&
-        (showDrafts || !pr.isDraft || pr.sources.includes("authored")),
+        (showFinished || !isFinished(pr)),
     );
     const bucketMatched = bucketFilter
       ? unignored.filter((pr) => inBucket(pr, bucketFilter))
       : unignored;
-    // Your own PRs are pinned above everything and never hidden by the
-    // readiness chips — those describe PRs ready for YOUR review, and you
-    // don't review your own. What you need to know about yours is whether
-    // to act (CI red, changes requested, approved and mergeable), and that
-    // is exactly what the chips would hide.
-    const isMine = (pr: TrackedPr) => pr.sources.includes("authored");
-    const mine = bucketMatched.filter(isMine);
-    const others = bucketMatched.filter((pr) => !isMine(pr));
+    // Your own PRs are pinned above everything and skip the reviewer-facing
+    // filters below (reviewed, drafts, the readiness chips) — those describe
+    // PRs ready for YOUR review, and you don't review your own. What you need
+    // to know about yours is whether to act (CI red, changes requested,
+    // approved and mergeable), and that is exactly what they would hide.
+    const mine = bucketMatched.filter(isAuthored);
+    const others = bucketMatched.filter(
+      (pr) =>
+        !isAuthored(pr) &&
+        (showReviewed || !reviewedAndIdle(pr)) &&
+        (showDrafts || !pr.isDraft),
+    );
     const visible = others.filter((pr) => passesReady(pr, ready));
     const hiddenByReady = others.length - visible.length;
     // A PR carries both pulls, the repo's and the author's, summed rather than
@@ -1806,14 +1817,13 @@ export function MainApp() {
       bucket.prs.push(pr);
       byKey.set(key, bucket);
     }
-    const entries = [...byKey.entries()].map(([key, v]) => ({ key, ...v }));
-    // Your own group reads as yours: the PR sources already know which
-    // PRs you authored, so no viewer lookup is needed.
-    if (groupMode === "author") {
-      for (const g of entries) {
-        if (g.prs.some((p) => p.sources.includes("authored"))) g.label = `you · @${g.key}`;
-      }
-    }
+    const keyedBy = groupMode === "repo" || groupMode === "author" ? groupMode : undefined;
+    const entries: RailGroup[] = [...byKey.entries()].map(([key, v]) => ({
+      key,
+      ...v,
+      collapseKey: `${groupMode}:${key}`,
+      keyedBy,
+    }));
     const prWeight = (p: TrackedPr) =>
       REPO_PRIORITY_WEIGHT[prioOf(p.repo)] + REPO_PRIORITY_WEIGHT[authorPrioOf(p.author)];
     const groupWeight = (g: { prs: TrackedPr[] }) => Math.max(...g.prs.map(prWeight));
@@ -1831,19 +1841,19 @@ export function MainApp() {
       );
     } else if (groupMode === "author") {
       // The author's own priority orders the groups — a repo's rank is a
-      // property of the PRs inside, not of the person. You come first
-      // among equals; the rest alphabetical.
-      const mine = (g: { label: string }) => (g.label.startsWith("you") ? 0 : 1);
+      // property of the PRs inside, not of the person. Then alphabetical.
       entries.sort(
         (a, b) =>
           REPO_PRIORITY_WEIGHT[authorPrioOf(b.key)] - REPO_PRIORITY_WEIGHT[authorPrioOf(a.key)] ||
-          mine(a) - mine(b) ||
           a.key.localeCompare(b.key),
       );
     } else {
       entries.sort((a, b) => groupWeight(b) - groupWeight(a) || a.label.localeCompare(b.label));
     }
-    if (mineSorted.length > 0) entries.unshift({ key: MINE_GROUP, label: "Yours", prs: mineSorted });
+    // One group in every mode, so one collapse state rather than one per mode.
+    if (mineSorted.length > 0) {
+      entries.unshift({ key: MINE_GROUP, label: "Yours", prs: mineSorted, collapseKey: MINE_GROUP });
+    }
     return { grouped: entries, hiddenByReady };
   }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed, showFinished, showDrafts]);
 
@@ -1912,10 +1922,8 @@ export function MainApp() {
   // Visible PRs in display order, for j/k navigation.
   const flatVisible = useMemo(
     () =>
-      grouped.flatMap((g) =>
-        collapsed.has(`${groupMode}:${g.key}`) ? [] : g.prs,
-      ),
-    [grouped, collapsed, groupMode],
+      grouped.flatMap((g) => (collapsed.has(g.collapseKey) ? [] : g.prs)),
+    [grouped, collapsed],
   );
 
   // One table drives both the handler and the help sheet, so a shortcut can't
@@ -2259,26 +2267,24 @@ export function MainApp() {
                 </div>
               )}
               {grouped.map((group) => {
-                const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
+                const isCollapsed = collapsed.has(group.collapseKey);
                 const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
-                const pinned = group.key === MINE_GROUP;
-                const repoPrio = groupMode === "repo" && !pinned ? prioOf(group.key) : null;
-                const authorPrio = groupMode === "author" && !pinned ? authorPrioOf(group.key) : null;
+                const repoPrio = group.keyedBy === "repo" ? prioOf(group.key) : null;
+                const authorPrio = group.keyedBy === "author" ? authorPrioOf(group.key) : null;
                 const groupPrio = repoPrio ?? authorPrio;
                 return (
                   <div key={group.key} className="rail-group">
                     <button
                       className="group-header"
-                      onClick={() => toggleGroup(`${groupMode}:${group.key}`)}
+                      onClick={() => toggleGroup(group.collapseKey)}
                       onContextMenu={(e) => {
                         // A repo or author group's PRs all share the thing the
                         // group is keyed on, so the header carries its priority
                         // menu. Other modes have nothing group-wide to set.
-                        if (pinned) return;
-                        if (groupMode === "repo") {
+                        if (group.keyedBy === "repo") {
                           e.preventDefault();
                           setMenu({ x: e.clientX, y: e.clientY, kind: "repo", repo: group.key });
-                        } else if (groupMode === "author") {
+                        } else if (group.keyedBy === "author") {
                           e.preventDefault();
                           // The profile link follows the PRs' host, so a GHE
                           // org doesn't get sent to github.com.

@@ -413,13 +413,10 @@ function Thread({
   onShowCode: (thread: ReviewThread) => void;
   onReplied: () => void;
 }) {
-  const [replying, setReplying] = useState(false);
-  // A reply started from one comment quotes it; the header Reply starts blank.
-  const [prefill, setPrefill] = useState("");
-  const replyTo = (c: PrComment) => {
-    setPrefill(quoteOf(c));
-    setReplying(true);
-  };
+  // The open reply's seed: a reply started from one comment quotes it, the
+  // header Reply starts blank, null is closed.
+  const [reply, setReply] = useState<string | null>(null);
+  const replyTo = (c: PrComment) => setReply(quoteOf(c));
   const [root, ...replies] = thread.comments;
   if (!root) return null;
   return (
@@ -451,7 +448,7 @@ function Thread({
           </span>
         )}
         <span className="spacer" />
-        {!replying && (
+        {reply === null && (
           <>
             <button
               className="thread-reply-btn"
@@ -460,13 +457,7 @@ function Thread({
               {thread.resolved ? "Unresolve" : "Resolve"}
             </button>
             {!thread.resolved && (
-              <button
-                className="thread-reply-btn"
-                onClick={() => {
-                  setPrefill("");
-                  setReplying(true);
-                }}
-              >
+              <button className="thread-reply-btn" onClick={() => setReply("")}>
                 Reply
               </button>
             )}
@@ -477,20 +468,17 @@ function Thread({
       {replies.map((c) => (
         <Comment key={c.id} comment={c} isReply onChanged={onReplied} onQuoteReply={replyTo} />
       ))}
-      {replying && (
+      {reply !== null && (
         <Composer
-          key={prefill} // remount to adopt a new quote
-          initialBody={prefill}
+          key={reply} // remount to adopt a new quote
+          initialBody={reply}
           autoFocus
           placeholder="Reply to this thread…"
           submitLabel="Reply"
-          onCancel={() => {
-            setReplying(false);
-            setPrefill("");
-          }}
+          onCancel={() => setReply(null)}
           onSubmit={async (body) => {
             await ipc.replyToThread(thread.id, body);
-            setPrefill("");
+            setReply(null);
             onReplied();
           }}
         />

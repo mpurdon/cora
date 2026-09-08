@@ -52,6 +52,11 @@ export function isFinished(pr: TrackedPr): boolean {
   return pr.state === "CLOSED" || pr.state === "MERGED";
 }
 
+/** One of yours: the poll's `author:@me` scope tagged it. */
+export function isAuthored(pr: TrackedPr): boolean {
+  return pr.sources.includes("authored");
+}
+
 export function timeAgo(iso: string): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return "";

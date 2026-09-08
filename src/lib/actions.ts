@@ -1,5 +1,5 @@
 import type { TrackedPr } from "../bindings/TrackedPr";
-import { ciTone, isFinished, mergeTone } from "../state/prStore";
+import { ciTone, isAuthored, isFinished, mergeTone } from "../state/prStore";
 
 /**
  * The attention buckets both windows share: what the user should DO.
@@ -20,7 +20,7 @@ export const ACTION_META: Record<ActionKind, { label: string; short: string }> =
 
 export function inBucket(pr: TrackedPr, kind: ActionKind): boolean {
   if (pr.muted || isFinished(pr)) return false;
-  const authored = pr.sources.includes("authored");
+  const authored = isAuthored(pr);
   switch (kind) {
     case "fix":
       return authored && (ciTone(pr) === "bad" || mergeTone(pr) === "bad");

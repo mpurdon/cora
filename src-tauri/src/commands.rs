@@ -1722,6 +1722,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
                     .collect()
             })
             .unwrap_or_default();
+        let flag = |k: &str| v.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
         Some(PrComment {
             id: v.get("id")?.as_str()?.to_string(),
             author,
@@ -1732,14 +1733,7 @@ pub async fn get_pr_comments(app: AppHandle, pr_id: String) -> AppResult<PrConve
             reactions,
             // viewerCanUpdate is true for a maintainer on anyone's comment;
             // Edit is offered only on your own words.
-            viewer_can_edit: v
-                .get("viewerCanUpdate")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-                && v
-                    .get("viewerDidAuthor")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
+            viewer_can_edit: flag("viewerCanUpdate") && flag("viewerDidAuthor"),
             is_review_comment,
         })
     };
