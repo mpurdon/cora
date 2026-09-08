@@ -91,6 +91,8 @@ const REASONS: { key: PrSource; label: string }[] = [
 ];
 
 type GroupMode = "org" | "repo" | "reason" | "type" | "author";
+/** Group key of the pinned "Yours" group, present in every group mode. */
+const MINE_GROUP = "__mine";
 type SortMode = "activity" | "attention" | "repo";
 
 /** Opening a persistently-critical PR is itself the acknowledgment. */
@@ -109,17 +111,21 @@ function passesReady(pr: TrackedPr, f: ReadyFilters): boolean {
   if (isFinished(pr)) return true;
   // ciPass admits "no checks configured" (idle) — nothing is blocking.
   if (f.ciPass && !["ok", "idle"].includes(ciTone(pr))) return false;
-  // reviewNeeded keeps only PRs that still need YOUR decision. reviewTone is
-  // the aggregate (REVIEW_REQUIRED while any requested reviewer hasn't weighed
-  // in), so on its own it keeps a PR you've already approved when a co-reviewer
-  // still owes one — hence the second clause: a standing decision of yours,
-  // not re-requested, no longer needs you.
-  if (f.reviewNeeded) {
-    if (reviewTone(pr) !== "warn") return false;
-    const iDecided =
-      (pr.myReviewState === "APPROVED" || pr.myReviewState === "CHANGES_REQUESTED") &&
-      !pr.myReviewRerequested;
-    if (iDecided) return false;
+  // reviewNeeded keeps only PRs that still need YOUR decision.
+  //  - A re-requested review always needs you, whatever the aggregate says
+  //    (after "changes requested", a push re-requests you while GitHub's
+  //    decision still reads CHANGES_REQUESTED).
+  //  - Once you've decided (approved / requested changes), the ball is in
+  //    the author's court only while nothing has happened since: commits or
+  //    comments after your review hand it back to you. reviewedAndIdle is
+  //    that same "nothing since" test the rail hides on by default.
+  //  - Otherwise fall back to the aggregate: REVIEW_REQUIRED while any
+  //    requested reviewer hasn't weighed in.
+  if (f.reviewNeeded && !pr.myReviewRerequested) {
+    const iDecided = pr.myReviewState === "APPROVED" || pr.myReviewState === "CHANGES_REQUESTED";
+    if (iDecided) {
+      if (reviewedAndIdle(pr)) return false;
+    } else if (reviewTone(pr) !== "warn") return false;
   }
   // noConflicts drops only known-conflicting; UNKNOWN is GitHub still computing.
   if (f.noConflicts && mergeTone(pr) === "bad") return false;
@@ -1745,8 +1751,16 @@ export function MainApp() {
     const bucketMatched = bucketFilter
       ? unignored.filter((pr) => inBucket(pr, bucketFilter))
       : unignored;
-    const visible = bucketMatched.filter((pr) => passesReady(pr, ready));
-    const hiddenByReady = unignored.length - visible.length;
+    // Your own PRs are pinned above everything and never hidden by the
+    // readiness chips — those describe PRs ready for YOUR review, and you
+    // don't review your own. What you need to know about yours is whether
+    // to act (CI red, changes requested, approved and mergeable), and that
+    // is exactly what the chips would hide.
+    const isMine = (pr: TrackedPr) => pr.sources.includes("authored");
+    const mine = bucketMatched.filter(isMine);
+    const others = bucketMatched.filter((pr) => !isMine(pr));
+    const visible = others.filter((pr) => passesReady(pr, ready));
+    const hiddenByReady = others.length - visible.length;
     // A PR carries both pulls, the repo's and the author's, summed rather than
     // the repo deciding with the author as a tiebreak. Ranking an author up is
     // worth exactly what ranking a repo down costs, so a name you want to see
@@ -1754,13 +1768,13 @@ export function MainApp() {
     // per-PR priority, then the chosen sort. Both axes are offset against
     // Ordering: repo priority, then the author's priority within the group,
     // then per-PR priority, then the chosen sort.
-    const sorted = [...visible].sort(
-      (a, b) =>
-        REPO_PRIORITY_WEIGHT[prioOf(b.repo)] - REPO_PRIORITY_WEIGHT[prioOf(a.repo)] ||
-        REPO_PRIORITY_WEIGHT[authorPrioOf(b.author)] - REPO_PRIORITY_WEIGHT[authorPrioOf(a.author)] ||
-        PR_PRIORITY_WEIGHT[b.priority] - PR_PRIORITY_WEIGHT[a.priority] ||
-        SORTERS[sortMode](a, b),
-    );
+    const order = (a: TrackedPr, b: TrackedPr) =>
+      REPO_PRIORITY_WEIGHT[prioOf(b.repo)] - REPO_PRIORITY_WEIGHT[prioOf(a.repo)] ||
+      REPO_PRIORITY_WEIGHT[authorPrioOf(b.author)] - REPO_PRIORITY_WEIGHT[authorPrioOf(a.author)] ||
+      PR_PRIORITY_WEIGHT[b.priority] - PR_PRIORITY_WEIGHT[a.priority] ||
+      SORTERS[sortMode](a, b);
+    const sorted = [...visible].sort(order);
+    const mineSorted = [...mine].sort(order);
 
     const byKey = new Map<string, { label: string; prs: TrackedPr[] }>();
     for (const pr of sorted) {
@@ -1815,6 +1829,7 @@ export function MainApp() {
     } else {
       entries.sort((a, b) => groupWeight(b) - groupWeight(a) || a.label.localeCompare(b.label));
     }
+    if (mineSorted.length > 0) entries.unshift({ key: MINE_GROUP, label: "Yours", prs: mineSorted });
     return { grouped: entries, hiddenByReady };
   }, [prs, filter, sortMode, groupMode, ready, prioOf, authorPrioOf, bucketFilter, showMuted, showReviewed, showFinished]);
 
@@ -2129,7 +2144,7 @@ export function MainApp() {
               </button>
               <button
                 className={`chip${ready.reviewNeeded ? " on" : ""}`}
-                data-tip="Show only PRs still awaiting a review decision"
+                data-tip="Show only PRs awaiting your review, or with activity since you last reviewed"
                 onClick={() => toggleReady("reviewNeeded")}
               >
                 <span className="lamp warn" /> needs review
@@ -2225,8 +2240,9 @@ export function MainApp() {
               {grouped.map((group) => {
                 const isCollapsed = collapsed.has(`${groupMode}:${group.key}`);
                 const unreadSum = group.prs.reduce((n, p) => n + p.unread.length, 0);
-                const repoPrio = groupMode === "repo" ? prioOf(group.key) : null;
-                const authorPrio = groupMode === "author" ? authorPrioOf(group.key) : null;
+                const pinned = group.key === MINE_GROUP;
+                const repoPrio = groupMode === "repo" && !pinned ? prioOf(group.key) : null;
+                const authorPrio = groupMode === "author" && !pinned ? authorPrioOf(group.key) : null;
                 const groupPrio = repoPrio ?? authorPrio;
                 return (
                   <div key={group.key} className="rail-group">
@@ -2237,6 +2253,7 @@ export function MainApp() {
                         // A repo or author group's PRs all share the thing the
                         // group is keyed on, so the header carries its priority
                         // menu. Other modes have nothing group-wide to set.
+                        if (pinned) return;
                         if (groupMode === "repo") {
                           e.preventDefault();
                           setMenu({ x: e.clientX, y: e.clientY, kind: "repo", repo: group.key });
