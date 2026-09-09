@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "bindings": "cd src-tauri && TS_RS_EXPORT_DIR=../src/bindings cargo test export"
   },
   "dependencies": {
@@ -31,6 +32,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^5.0.0"
   }
 }
