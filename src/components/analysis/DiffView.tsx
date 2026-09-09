@@ -127,6 +127,9 @@ export function parseDiff(raw: string): DiffFile[] {
     } else if (line.startsWith("-")) {
       current.deletions += 1;
       current.lines.push({ kind: "del", text: line.slice(1), newLine: null });
+    } else if (line.startsWith("\\")) {
+      // "\ No newline at end of file" — not a real line, so it must not
+      // consume a line number or appear in the parsed output.
     } else {
       current.lines.push({
         kind: "ctx",
