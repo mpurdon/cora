@@ -883,11 +883,14 @@ body.col-resizing * {
   text-align: left;
   background: color-mix(in srgb, var(--text) 6%, var(--ink-1));
   border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  border-right: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+  border-left: 1px solid transparent;
 }
 
 .group-header[aria-expanded="false"] {
   background: color-mix(in srgb, var(--text) 3%, var(--ink-1));
+  border-color: var(--line);
 }
 
 .group-header:hover {
@@ -897,6 +900,16 @@ body.col-resizing * {
 .group-header .eyebrow {
   color: var(--text);
   font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-header .group-count,
+.group-header .prio-tag,
+.group-header .unread-count {
+  flex-shrink: 0;
 }
 
 .group-header .chevron {
