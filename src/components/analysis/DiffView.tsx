@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { tip } from "../Tooltip";
 import { CopyButton } from "../CopyButton";
 import type { PrConversation } from "../../bindings/PrConversation";
-import type { ReviewMark } from "../../bindings/ReviewMark";
 import type { ReviewPlanEntry } from "../../bindings/ReviewPlanEntry";
 import type { ReviewThread } from "../../bindings/ReviewThread";
 
@@ -786,7 +785,7 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
   const [conversation, setConversation] = useState<PrConversation | null>(null);
   const [ignoreGlobs, setIgnoreGlobs] = useState<string[]>([]);
   const [showSkipped, setShowSkipped] = useState(false);
-  const [mark, setMark] = useState<ReviewMark | null>(null);
+  const mark = current?.mark ?? null;
   const [sinceMode, setSinceMode] = useState(false);
   const [sinceRaw, setSinceRaw] = useState<string | null>(null);
   const [sinceFailed, setSinceFailed] = useState(false);
@@ -846,16 +845,19 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     loadComments();
     void ipc.getSettings().then((s) => setIgnoreGlobs(s.reviewIgnoreGlobs));
     void ensureAnalysis(prId, "context", undefined, false).catch(() => {});
-    // The backend plants the mark on first look; later heads show the
-    // "changed since your last look" banner against it.
-    void ipc
-      .ensureReviewMark(prId)
-      .then(setMark)
-      .catch(() => setMark(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prId, headSha]);
 
   const stale = mark != null && mark.headSha !== headSha;
+  // The mark can advance from outside this component — the file rail's last
+  // checkbox plants it too — and the delta only makes sense against a stale
+  // one, so leave since-mode whenever the banner goes.
+  useEffect(() => {
+    if (stale) return;
+    setSinceMode(false);
+    setSinceRaw(null);
+    setSinceFailed(false);
+  }, [stale]);
 
   const toggleSince = () => {
     if (sinceMode) {
@@ -875,11 +877,26 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     }
   };
 
-  const caughtUp = () => {
-    void ipc.setReviewMark(prId).then(setMark).catch(() => {});
-    setSinceMode(false);
-    setSinceRaw(null);
-    setSinceFailed(false);
+  // "I'm caught up" says the changes since the mark have been seen — so it
+  // says so on the files too, not just the mark: every file the delta
+  // touches that isn't already checked off gets marked viewed, then the mark
+  // moves. Otherwise the banner goes away while the rail still shows the
+  // very files it was about as unviewed.
+  const caughtUp = async () => {
+    let delta: Set<string> | null = null;
+    try {
+      const since = sinceRaw ?? (await ipc.getDiffSince(prId));
+      delta = new Set(parseDiffCached(since).map((f) => f.path));
+    } catch {
+      // A force-push orphaned the marked SHA: with nothing to compare
+      // against, every file counts as changed.
+    }
+    for (const [path, digest] of fullDigests) {
+      if (delta && !delta.has(path)) continue;
+      if (entry?.viewed[path] === digest) continue;
+      storeSetViewed(prId, path, digest, true);
+    }
+    await useDiffStore.getState().catchUp(prId);
   };
 
   // A file counts as viewed only while its patch digest still matches — an
@@ -891,7 +908,8 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     [raw],
   );
 
-  const activeRaw = sinceMode && sinceRaw !== null ? sinceRaw : raw;
+  const showingSince = stale && sinceMode && sinceRaw !== null;
+  const activeRaw = showingSince ? sinceRaw : raw;
   const allFiles = useMemo(() => {
     const parsed = activeRaw ? parseDiffCached(activeRaw) : [];
     if (activeRaw === raw) return parsed;
@@ -927,10 +945,16 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
     const digest = fullDigests.get(file.path);
     return digest != null && entry?.viewed[file.path] === digest;
   };
+  // Every file that counts toward review progress, from the FULL diff — in
+  // since-mode `files` is only the delta, and "all viewed" must mean all.
+  const significantDigests = useMemo(
+    () => new Map([...fullDigests].filter(([p]) => !matchesAny(p, ignoreGlobs))),
+    [fullDigests, ignoreGlobs],
+  );
   const setViewed = (file: DiffFile, viewed: boolean) => {
     const digest = fullDigests.get(file.path);
     if (!digest) return;
-    storeSetViewed(prId, file.path, digest, viewed);
+    storeSetViewed(prId, file.path, digest, viewed, significantDigests);
     if (!viewed) return;
     // Marking collapses the file and rearranges the layout under the scroll
     // position — give the scroll an explicit destination instead: the next
@@ -1090,14 +1114,14 @@ export function DiffView({ prId, headSha }: { prId: string; headSha: string }) {
           <button className={`since-toggle${sinceMode ? " active" : ""}`} onClick={toggleSince}>
             {sinceMode ? "Show full diff" : "Show only new changes"}
           </button>
-          <button className="since-toggle" onClick={caughtUp}>
+          <button className="since-toggle" onClick={() => void caughtUp()}>
             I'm caught up
           </button>
         </div>
       )}
       <div className="eyebrow diff-summary">
         <span>
-          {sinceMode && sinceRaw !== null ? "since your last look · " : ""}
+          {showingSince ? "since your last look · " : ""}
           {files.length} files ·{" "}
           <span className="add">+{files.reduce((n, f) => n + f.additions, 0)}</span>{" "}
           <span className="del">−{files.reduce((n, f) => n + f.deletions, 0)}</span>

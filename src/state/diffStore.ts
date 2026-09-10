@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { ipc } from "../lib/ipc";
 import type { Explainable } from "../lib/comments";
 import type { C4Node } from "../bindings/C4Node";
+import type { ReviewMark } from "../bindings/ReviewMark";
 
 /** One PR's raw diff + viewed-file digests, shared between the file rail and
  *  the Diff tab so opening a PR fetches from GitHub once, not per consumer. */
@@ -12,6 +13,8 @@ export interface DiffEntry {
   error: string | null;
   /** path → digest of the patch that was marked viewed */
   viewed: Record<string, string>;
+  /** Where the reviewer left off — the head of their last complete look. */
+  mark: ReviewMark | null;
 }
 
 /** One-shot "open a pre-filled comment composer" request, e.g. from an
@@ -58,7 +61,18 @@ interface DiffState {
    *  highlights it and keeps it in view (scroll spy). */
   visiblePath: string | null;
   ensure: (prId: string, headSha: string) => Promise<void>;
-  setViewed: (prId: string, path: string, digest: string, viewed: boolean) => void;
+  /** `significant` is path → digest of every file that counts toward review
+   *  progress; when this toggle makes the last of them viewed, the review mark
+   *  advances to this head (see `catchUp`). */
+  setViewed: (
+    prId: string,
+    path: string,
+    digest: string,
+    viewed: boolean,
+    significant?: Map<string, string>,
+  ) => void;
+  /** "I'm caught up": plant the review mark at the PR's current head. */
+  catchUp: (prId: string) => Promise<void>;
   requestFocusFile: (path: string) => void;
   clearFocusFile: () => void;
   requestCompose: (req: ComposeRequest) => void;
@@ -102,13 +116,17 @@ export const useDiffStore = create<DiffState>((set, get) => ({
           raw: null,
           error: null,
           viewed: existing?.viewed ?? {},
+          mark: existing?.mark ?? null,
         },
       },
     }));
     try {
-      const [raw, viewedRows] = await Promise.all([
+      // The backend plants the mark on first look; later heads show the
+      // "changed since your last look" banner against it.
+      const [raw, viewedRows, mark] = await Promise.all([
         ipc.getPrDiff(prId),
         ipc.getViewedFiles(prId),
+        ipc.ensureReviewMark(prId).catch(() => null),
       ]);
       if (get().entries[prId]?.headSha !== headSha) return; // superseded by a newer head
       set((s) => ({
@@ -120,6 +138,7 @@ export const useDiffStore = create<DiffState>((set, get) => ({
             raw,
             error: null,
             viewed: Object.fromEntries(viewedRows.map((r) => [r.path, r.digest])),
+            mark,
           },
         },
       }));
@@ -128,13 +147,20 @@ export const useDiffStore = create<DiffState>((set, get) => ({
       set((s) => ({
         entries: {
           ...s.entries,
-          [prId]: { headSha, status: "error", raw: null, error: String(e), viewed: {} },
+          [prId]: {
+            headSha,
+            status: "error",
+            raw: null,
+            error: String(e),
+            viewed: {},
+            mark: existing?.mark ?? null,
+          },
         },
       }));
     }
   },
 
-  setViewed: (prId, path, digest, viewed) => {
+  setViewed: (prId, path, digest, viewed, significant) => {
     set((s) => {
       const entry = s.entries[prId];
       if (!entry) return s;
@@ -144,6 +170,28 @@ export const useDiffStore = create<DiffState>((set, get) => ({
       return { entries: { ...s.entries, [prId]: { ...entry, viewed: next } } };
     });
     void ipc.setFileViewed(prId, path, digest, viewed);
+    // Checking off the last file means the reviewer has seen everything at
+    // this head, which is exactly what the review mark records — so advance
+    // it here rather than waiting for "I'm caught up". Otherwise the "since
+    // your last look" delta keeps resurfacing changes they already checked
+    // off, and the viewed marks on them look wrong when they aren't.
+    const entry = get().entries[prId];
+    if (!viewed || !significant || !entry) return;
+    if (entry.mark?.headSha === entry.headSha) return;
+    for (const [p, d] of significant) {
+      if (entry.viewed[p] !== d) return;
+    }
+    void get().catchUp(prId);
+  },
+
+  catchUp: async (prId) => {
+    const mark = await ipc.setReviewMark(prId).catch(() => null);
+    if (!mark) return;
+    set((s) => {
+      const entry = s.entries[prId];
+      if (!entry) return s;
+      return { entries: { ...s.entries, [prId]: { ...entry, mark } } };
+    });
   },
 
   requestFocusFile: (path) => set({ focusPath: path }),

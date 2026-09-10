@@ -130,7 +130,13 @@ export function PrFilesRail({
               e.stopPropagation();
               const digest = digests.get(f.path);
               if (!digest) return;
-              setViewed(pr.id, f.path, digest, !viewed);
+              setViewed(
+                pr.id,
+                f.path,
+                digest,
+                !viewed,
+                new Map(significant.map((s) => [s.path, digests.get(s.path)!])),
+              );
               if (viewed) return;
               // Just marked viewed: point the diff at the next unviewed
               // file (tree order, wrapping), skipping ignore-glob files.
