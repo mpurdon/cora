@@ -408,10 +408,12 @@ function quoteOf(comment: PrComment): string {
 }
 
 function Thread({
+  prId,
   thread,
   onShowCode,
   onReplied,
 }: {
+  prId: string;
   thread: ReviewThread;
   onShowCode: (thread: ReviewThread) => void;
   onReplied: () => void;
@@ -455,7 +457,7 @@ function Thread({
           <>
             <button
               className="thread-reply-btn"
-              onClick={() => void ipc.resolveThread(thread.id, !thread.resolved).then(onReplied)}
+              onClick={() => void ipc.resolveThread(thread.id, !thread.resolved, prId).then(onReplied)}
             >
               {thread.resolved ? "Unresolve" : "Resolve"}
             </button>
@@ -480,7 +482,7 @@ function Thread({
           submitLabel="Reply"
           onCancel={() => setReply(null)}
           onSubmit={async (body) => {
-            await ipc.replyToThread(thread.id, body);
+            await ipc.replyToThread(thread.id, body, prId);
             setReply(null);
             onReplied();
           }}
@@ -723,7 +725,7 @@ export function CommentsView({
         <section>
           <span className="eyebrow">Review threads ({open.length} open)</span>
           {open.map((t) => (
-            <Thread key={t.id} thread={t} onShowCode={setCodeThread} onReplied={load} />
+            <Thread key={t.id} prId={prId} thread={t} onShowCode={setCodeThread} onReplied={load} />
           ))}
         </section>
       )}
@@ -767,7 +769,7 @@ export function CommentsView({
         <section>
           <span className="eyebrow">Resolved threads ({resolved.length})</span>
           {resolved.map((t) => (
-            <Thread key={t.id} thread={t} onShowCode={setCodeThread} onReplied={load} />
+            <Thread key={t.id} prId={prId} thread={t} onShowCode={setCodeThread} onReplied={load} />
           ))}
         </section>
       )}

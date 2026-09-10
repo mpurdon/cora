@@ -229,10 +229,12 @@ export function planTooltip(plan: ReviewPlanEntry): string | undefined {
 
 /** Compact review thread rendered inline under its diff line. */
 function InlineThread({
+  prId,
   thread,
   onChanged,
   lineText,
 }: {
+  prId: string;
   thread: ReviewThread;
   onChanged: () => void;
   /** Current content of the thread's anchor line, for ± suggestions. */
@@ -289,7 +291,7 @@ function InlineThread({
           suggestionSeed={lineText}
           onCancel={() => setReplying(false)}
           onSubmit={async (body) => {
-            await ipc.replyToThread(thread.id, body);
+            await ipc.replyToThread(thread.id, body, prId);
             onChanged();
           }}
         />
@@ -300,7 +302,7 @@ function InlineThread({
           </button>
           <button
             className="thread-reply-btn"
-            onClick={() => void ipc.resolveThread(thread.id, true).then(onChanged)}
+            onClick={() => void ipc.resolveThread(thread.id, true, prId).then(onChanged)}
           >
             Resolve
           </button>
@@ -457,7 +459,7 @@ function useLineComments({
     onChanged();
   };
 
-  return { path, range, selecting, seedBody, rangeText, seed, close, onPointerDown, onPointerMove, submit };
+  return { prId, path, range, selecting, seedBody, rangeText, seed, close, onPointerDown, onPointerMove, submit };
 }
 type LineComments = ReturnType<typeof useLineComments>;
 
@@ -515,7 +517,7 @@ function CommentableLine({
         {text}
       </div>
       {threads?.map((t) => (
-        <InlineThread key={t.id} thread={t} onChanged={onChanged} lineText={text} />
+        <InlineThread key={t.id} prId={comments.prId} thread={t} onChanged={onChanged} lineText={text} />
       ))}
       {showComposer && range != null && (
         <div className="inline-thread">

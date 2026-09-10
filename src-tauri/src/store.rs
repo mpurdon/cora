@@ -1012,6 +1012,29 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// Everything you did to one PR, oldest first — the PR's History tab
+    /// interleaves these with its commits.
+    pub fn list_audit_for(&self, pr_id: &str) -> AppResult<Vec<crate::models::AuditEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, at, action, subject_id, subject_label, old_value, new_value, undone
+             FROM audit WHERE subject_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![pr_id], |r| {
+            Ok(crate::models::AuditEntry {
+                id: r.get(0)?,
+                at: r.get(1)?,
+                action: r.get(2)?,
+                subject_id: r.get(3)?,
+                subject_label: r.get(4)?,
+                old_value: r.get(5)?,
+                new_value: r.get(6)?,
+                undone: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn get_audit(&self, id: i64) -> AppResult<Option<crate::models::AuditEntry>> {
         Ok(self.list_audit(500)?.into_iter().find(|e| e.id == id))
     }

@@ -1,39 +1,26 @@
 import { useEffect, useState } from "react";
 import { tip } from "./Tooltip";
 import type { AuditEntry } from "../bindings/AuditEntry";
+import { auditPr, describeAudit } from "../lib/audit";
 import { ipc } from "../lib/ipc";
 import { timeAgo } from "../state/prStore";
-
-function describe(entry: AuditEntry): string {
-  switch (entry.action) {
-    case "muted":
-      return "Muted";
-    case "unmuted":
-      return "Unmuted";
-    case "untracked":
-      return "Untracked";
-    case "tracked":
-      return "Tracked";
-    case "pr-priority":
-      return `PR priority ${entry.oldValue} → ${entry.newValue}`;
-    case "repo-priority":
-      return `Repo priority ${entry.oldValue} → ${entry.newValue}`;
-    case "merged":
-      return `Merged (${entry.newValue.replace(/^merged \(|\)$/g, "")})`;
-    case "closed":
-      return "Closed";
-    case "reopened":
-      return "Reopened";
-    default:
-      return entry.action;
-  }
-}
 
 /** Merges are permanent; close/reopen are reversed with the PR controls. */
 const UNDOABLE = new Set(["muted", "unmuted", "untracked", "tracked", "pr-priority", "repo-priority"]);
 
-/** Everything you did to CORA's tracking state, undoable. */
-export function HistoryDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+/** Everything you did — to CORA's tracking state (undoable) and on GitHub
+ *  through it. Each PR entry names its PR and opens it in the main window. */
+export function HistoryDrawer({
+  open,
+  onClose,
+  onOpenPr,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Open a PR from an entry: by id when it's still tracked, else by
+   *  repo and number so it can be fetched again. */
+  onOpenPr: (pr: { id: string; repo: string; number: number }) => void;
+}) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,11 +52,27 @@ export function HistoryDrawer({ open, onClose }: { open: boolean; onClose: () =>
         <div className="drawer-body">
           {error && <div className="settings-error">{error}</div>}
           {entries.length === 0 && <div className="drawer-empty">no actions recorded yet</div>}
-          {entries.map((entry) => (
+          {entries.map((entry) => {
+            const pr = auditPr(entry);
+            return (
             <div key={entry.id} className={`audit-entry${entry.undone ? " undone" : ""}`}>
               <div className="audit-main">
-                <span className="audit-action">{describe(entry)}</span>
-                <span className="audit-subject mono">{entry.subjectLabel}</span>
+                <span className="audit-action">
+                  {describeAudit(entry)}
+                  {pr && (
+                    <button
+                      className="audit-pr mono"
+                      data-tip={pr.title ? `Open ${pr.title}` : "Open this PR"}
+                      onClick={() => {
+                        onOpenPr(pr);
+                        onClose();
+                      }}
+                    >
+                      {pr.ref}
+                    </button>
+                  )}
+                </span>
+                <span className="audit-subject mono">{pr ? pr.title : entry.subjectLabel}</span>
                 <span className="audit-when mono">{timeAgo(entry.at)} ago</span>
               </div>
               {entry.undone ? (
@@ -80,7 +83,8 @@ export function HistoryDrawer({ open, onClose }: { open: boolean; onClose: () =>
                 </button>
               ) : null}
             </div>
-          ))}
+            );
+          })}
         </div>
       </aside>
     </>

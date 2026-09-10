@@ -1724,6 +1724,36 @@ body.col-resizing * {
   text-decoration: underline;
 }
 
+/* Your own actions on the PR, interleaved with its commits: the same row
+   grid so the timeline reads as one column, in the assistant's violet so
+   they're told from pushes at a glance. */
+.lamp.you {
+  background: var(--chat);
+  border-radius: 50%;
+}
+
+.action-row .action-you {
+  color: var(--chat);
+  cursor: default;
+}
+
+.action-row .commit-msg {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* The PR an audit entry is about, inline after the action, opens it. */
+.audit-pr {
+  margin-left: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--chat);
+}
+
+.audit-pr:hover {
+  text-decoration: underline;
+}
+
 .commit-msg {
   font-size: 12.5px;
   white-space: nowrap;

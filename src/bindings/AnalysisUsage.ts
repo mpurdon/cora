@@ -5,6 +5,17 @@
  */
 export type AnalysisUsage = { inputTokens: number, outputTokens: number, turns: number, 
 /**
+ * Prompt tokens served from the cache — the reason `input_tokens` can
+ * read as a few dozen on a run that sent hundreds of thousands: Bedrock
+ * reports only the uncached remainder there. Zero on runs before this
+ * was recorded.
+ */
+cacheReadTokens: number, 
+/**
+ * Prompt tokens written into the cache this run.
+ */
+cacheWriteTokens: number, 
+/**
  * Wall-clock time of the architecture pass, kickoff to submission.
  */
 elapsedMs: number, 

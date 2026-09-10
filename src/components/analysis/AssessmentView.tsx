@@ -6,7 +6,7 @@ import type { BoundaryImpact } from "../../bindings/BoundaryImpact";
 import type { WaFinding } from "../../bindings/WaFinding";
 import { findingMarker, IMPACT_LABEL, PILLAR_LABEL, type Explainable } from "../../lib/comments";
 
-const FIT_LABEL = {
+export const FIT_LABEL = {
   fits: "fits the architecture",
   tension: "in tension with the architecture",
   misfit: "does not fit the architecture",

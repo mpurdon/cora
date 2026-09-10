@@ -90,6 +90,7 @@ export const ipc = {
   setAuthorPriority: (author: string, priority: RepoPriority) =>
     invoke<void>("set_author_priority", { author, priority }),
   getAuditLog: () => invoke<AuditEntry[]>("get_audit_log"),
+  getPrAudit: (prId: string) => invoke<AuditEntry[]>("get_pr_audit", { prId }),
   undoAudit: (id: number) => invoke<void>("undo_audit", { id }),
   getActivity: () => invoke<ActivityItem[]>("get_activity"),
   markActivityRead: (ids: number[], read: boolean) =>
@@ -108,14 +109,16 @@ export const ipc = {
     invoke<void>("merge_pr", { prId, method }),
   submitReview: (prId: string, event: "approve" | "request-changes" | "comment", body: string) =>
     invoke<ReviewVerdict>("submit_review", { prId, event, body }),
-  resolveThread: (threadId: string, resolve: boolean) =>
-    invoke<void>("resolve_thread", { threadId, resolve }),
+  /** `prId` is only for the history: a thread id names no PR, so say which
+   *  one the action lands on for it to show in that PR's History tab. */
+  resolveThread: (threadId: string, resolve: boolean, prId?: string) =>
+    invoke<void>("resolve_thread", { threadId, resolve, prId: prId ?? null }),
   closePr: (prId: string) => invoke<void>("close_pr", { prId }),
   reopenPr: (prId: string) => invoke<void>("reopen_pr", { prId }),
   addPrComment: (prId: string, body: string) =>
     invoke<void>("add_pr_comment", { prId, body }),
-  replyToThread: (threadId: string, body: string) =>
-    invoke<void>("reply_to_thread", { threadId, body }),
+  replyToThread: (threadId: string, body: string, prId?: string) =>
+    invoke<void>("reply_to_thread", { threadId, body, prId: prId ?? null }),
   updateComment: (commentId: string, body: string, isReviewComment: boolean) =>
     invoke<void>("update_comment", { commentId, body, isReviewComment }),
   addDiffComment: (prId: string, path: string, line: number, body: string, startLine?: number) =>

@@ -278,6 +278,17 @@ pub struct AnalysisUsage {
     pub output_tokens: i64,
     #[ts(type = "number")]
     pub turns: i64,
+    /// Prompt tokens served from the cache — the reason `input_tokens` can
+    /// read as a few dozen on a run that sent hundreds of thousands: Bedrock
+    /// reports only the uncached remainder there. Zero on runs before this
+    /// was recorded.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub cache_read_tokens: i64,
+    /// Prompt tokens written into the cache this run.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub cache_write_tokens: i64,
     /// Wall-clock time of the architecture pass, kickoff to submission.
     #[serde(default)]
     #[ts(type = "number")]

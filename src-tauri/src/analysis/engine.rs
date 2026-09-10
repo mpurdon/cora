@@ -1344,6 +1344,7 @@ pub async fn run(
     let mut nudged = false;
     let mut resubmits = 0u32;
     let (mut total_in, mut total_out) = (0i32, 0i32);
+    let (mut total_cache_read, mut total_cache_write) = (0i32, 0i32);
     note(app, &mut trace, &pr_id, level, &focus_key, "status", "starting exploration");
 
     // The write-up is the run's longest turn. As submit_analysis streams in,
@@ -1410,6 +1411,8 @@ pub async fn run(
         if let Some(usage) = resp.usage() {
             total_in += usage.input_tokens();
             total_out += usage.output_tokens();
+            total_cache_read += usage.cache_read_input_tokens().unwrap_or(0);
+            total_cache_write += usage.cache_write_input_tokens().unwrap_or(0);
             crate::usage::record(app, &pr, "analysis", &model_id, usage);
             devlog::debug(
                 app,
@@ -1540,6 +1543,8 @@ pub async fn run(
                     let usage = AnalysisUsage {
                         input_tokens: total_in as i64,
                         output_tokens: total_out as i64,
+                        cache_read_tokens: total_cache_read as i64,
+                        cache_write_tokens: total_cache_write as i64,
                         turns: (turn + 1) as i64,
                         elapsed_ms: run_started.elapsed().as_millis() as i64,
                         effort: effort.clone(),
@@ -1628,6 +1633,8 @@ pub async fn run(
                         let usage = AnalysisUsage {
                             input_tokens: total_in as i64,
                             output_tokens: total_out as i64,
+                            cache_read_tokens: total_cache_read as i64,
+                            cache_write_tokens: total_cache_write as i64,
                             turns: (turn + 1) as i64,
                             elapsed_ms: run_started.elapsed().as_millis() as i64,
                             effort: effort.clone(),

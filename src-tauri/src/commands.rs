@@ -352,6 +352,31 @@ pub fn get_audit_log(orgs: State<'_, crate::orgs::Orgs>) -> AppResult<Vec<crate:
     store.list_audit(200)
 }
 
+/// Your own actions on one PR, for its History tab.
+#[tauri::command]
+pub fn get_pr_audit(
+    orgs: State<'_, crate::orgs::Orgs>,
+    pr_id: String,
+) -> AppResult<Vec<crate::models::AuditEntry>> {
+    orgs.active().list_audit_for(&pr_id)
+}
+
+/// Comments, replies, and thread resolutions are recorded here, in the
+/// commands themselves, so the history sees them whether the reviewer or
+/// the assistant did the typing; `via` names the assistant when it did.
+fn audit_pr_action(store: &Store, action: &str, pr_id: &str, detail: &str, via: Option<&str>) {
+    let label = pr_label(store, pr_id);
+    let value = match (detail.is_empty(), via) {
+        (true, None) => String::new(),
+        (true, Some(v)) => v.to_string(),
+        (false, None) => detail.to_string(),
+        (false, Some(v)) => format!("{detail} · {v}"),
+    };
+    // Recording is bookkeeping; the GitHub write already happened, so a
+    // failure here must not turn a posted comment into a reported error.
+    let _ = store.add_audit(action, pr_id, &label, "", &value);
+}
+
 // -- activity feed (callout) ----------------------------------------------
 
 #[tauri::command]
@@ -979,6 +1004,15 @@ async fn refresh_pr_inner(
 /// Post a top-level comment on the PR conversation.
 #[tauri::command]
 pub async fn add_pr_comment(app: AppHandle, pr_id: String, body: String) -> AppResult<()> {
+    add_pr_comment_as(app, pr_id, body, None).await
+}
+
+pub(crate) async fn add_pr_comment_as(
+    app: AppHandle,
+    pr_id: String,
+    body: String,
+    via: Option<&str>,
+) -> AppResult<()> {
     if body.trim().is_empty() {
         return Err(AppError::Other("comment is empty".into()));
     }
@@ -995,6 +1029,7 @@ pub async fn add_pr_comment(app: AppHandle, pr_id: String, body: String) -> AppR
             &serde_json::json!({ "subjectId": pr_id, "body": body }),
         )
         .await?;
+    audit_pr_action(&store, "commented", &pr_id, "", via);
     Ok(())
 }
 
@@ -1039,7 +1074,24 @@ pub async fn update_comment(
 
 /// Reply to a code review thread.
 #[tauri::command]
-pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) -> AppResult<()> {
+pub async fn reply_to_thread(
+    app: AppHandle,
+    thread_id: String,
+    body: String,
+    pr_id: Option<String>,
+) -> AppResult<()> {
+    reply_to_thread_as(app, thread_id, body, pr_id.as_deref(), None).await
+}
+
+/// `pr_id` is only for the record: a thread id names no PR, so the caller
+/// says which one this lands on when it wants the reply in that PR's history.
+pub(crate) async fn reply_to_thread_as(
+    app: AppHandle,
+    thread_id: String,
+    body: String,
+    pr_id: Option<&str>,
+    via: Option<&str>,
+) -> AppResult<()> {
     if body.trim().is_empty() {
         return Err(AppError::Other("reply is empty".into()));
     }
@@ -1058,6 +1110,9 @@ pub async fn reply_to_thread(app: AppHandle, thread_id: String, body: String) ->
             &serde_json::json!({ "threadId": thread_id, "body": body }),
         )
         .await?;
+    if let Some(pr_id) = pr_id {
+        audit_pr_action(&store, "replied", pr_id, "", via);
+    }
     Ok(())
 }
 
@@ -1192,7 +1247,22 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
 
 /// Resolve or unresolve a review thread.
 #[tauri::command]
-pub async fn resolve_thread(app: AppHandle, thread_id: String, resolve: bool) -> AppResult<()> {
+pub async fn resolve_thread(
+    app: AppHandle,
+    thread_id: String,
+    resolve: bool,
+    pr_id: Option<String>,
+) -> AppResult<()> {
+    resolve_thread_as(app, thread_id, resolve, pr_id.as_deref(), None).await
+}
+
+pub(crate) async fn resolve_thread_as(
+    app: AppHandle,
+    thread_id: String,
+    resolve: bool,
+    pr_id: Option<&str>,
+    via: Option<&str>,
+) -> AppResult<()> {
     let store = app.state::<crate::orgs::Orgs>().active();
     let token = secrets::github_pat()?
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
@@ -1208,6 +1278,10 @@ pub async fn resolve_thread(app: AppHandle, thread_id: String, resolve: bool) ->
          }"
     };
     client.run(doc, &serde_json::json!({ "threadId": thread_id })).await?;
+    if let Some(pr_id) = pr_id {
+        let verb = if resolve { "thread-resolved" } else { "thread-unresolved" };
+        audit_pr_action(&store, verb, pr_id, "", via);
+    }
     let _ = app.emit(events::REVIEWS_CHANGED, ());
     Ok(())
 }
@@ -1590,6 +1664,18 @@ pub async fn add_diff_comment(
     body: String,
     start_line: Option<i64>,
 ) -> AppResult<()> {
+    add_diff_comment_as(app, pr_id, path, line, body, start_line, None).await
+}
+
+pub(crate) async fn add_diff_comment_as(
+    app: AppHandle,
+    pr_id: String,
+    path: String,
+    line: i64,
+    body: String,
+    start_line: Option<i64>,
+    via: Option<&str>,
+) -> AppResult<()> {
     if body.trim().is_empty() {
         return Err(AppError::Other("comment is empty".into()));
     }
@@ -1622,6 +1708,8 @@ pub async fn add_diff_comment(
         }
         return Err(e);
     }
+    let store = app.state::<crate::orgs::Orgs>().active();
+    audit_pr_action(&store, "diff-commented", &pr_id, &format!("{path}:{line}"), via);
     // A new thread of yours can gate Approve — tell the UI to refetch.
     let _ = app.emit(events::REVIEWS_CHANGED, ());
     Ok(())

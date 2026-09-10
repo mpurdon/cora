@@ -28,6 +28,8 @@ use crate::models::{Settings, TrackedPr};
 use crate::secrets;
 
 const MAX_CHAT_TURNS: usize = 12;
+/// How the history marks a GitHub write the assistant made on the user's behalf.
+const VIA: &str = "via assistant";
 const MAX_OUTPUT_TOKENS: i32 = 4096;
 const MAX_CONVERSATION_CHARS: usize = 30_000;
 
@@ -558,17 +560,19 @@ fn describe_action(name: &str, input: &Value) -> ChatPendingAction {
     }
 }
 
-/// Execute a confirmed action through the app's command layer, and audit the
-/// ones that aren't already audited there — the history reads as the user's.
+/// Execute a confirmed action through the app's command layer. The commands
+/// record the history themselves; `VIA` marks the entries as the assistant's.
 async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) -> AppResult<String> {
-    let store = app.state::<crate::orgs::Orgs>().active();
-    let label = crate::commands::pr_label(&store, pr_id);
     let input = &action.input;
     match action.name.as_str() {
         "post_pr_comment" => {
-            crate::commands::add_pr_comment(app.clone(), pr_id.to_string(), str_arg(input, "body")?)
-                .await?;
-            store.add_audit("commented", pr_id, &label, "", "via assistant")?;
+            crate::commands::add_pr_comment_as(
+                app.clone(),
+                pr_id.to_string(),
+                str_arg(input, "body")?,
+                Some(VIA),
+            )
+            .await?;
             Ok("Posted a comment on the PR".into())
         }
         "post_diff_comment" => {
@@ -580,22 +584,16 @@ async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) ->
             let start_line = input.get("start_line").and_then(Value::as_i64);
             let body = str_arg(input, "body")?;
             let suggested = body.contains("```suggestion");
-            crate::commands::add_diff_comment(
+            crate::commands::add_diff_comment_as(
                 app.clone(),
                 pr_id.to_string(),
                 path.clone(),
                 line,
                 body,
                 start_line,
+                Some(VIA),
             )
             .await?;
-            store.add_audit(
-                "diff-commented",
-                pr_id,
-                &label,
-                "",
-                &format!("{path}:{line} · via assistant"),
-            )?;
             Ok(if suggested {
                 format!("Posted a suggested change on {path}:{line}")
             } else {
@@ -603,21 +601,26 @@ async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) ->
             })
         }
         "reply_to_thread" => {
-            crate::commands::reply_to_thread(
+            crate::commands::reply_to_thread_as(
                 app.clone(),
                 str_arg(input, "thread_id")?,
                 str_arg(input, "body")?,
+                Some(pr_id),
+                Some(VIA),
             )
             .await?;
-            store.add_audit("replied", pr_id, &label, "", "via assistant")?;
             Ok("Replied to the review thread".into())
         }
         "resolve_thread" => {
             let resolve = input.get("resolve").and_then(Value::as_bool).unwrap_or(true);
-            crate::commands::resolve_thread(app.clone(), str_arg(input, "thread_id")?, resolve)
-                .await?;
-            let verb = if resolve { "thread-resolved" } else { "thread-unresolved" };
-            store.add_audit(verb, pr_id, &label, "", "via assistant")?;
+            crate::commands::resolve_thread_as(
+                app.clone(),
+                str_arg(input, "thread_id")?,
+                resolve,
+                Some(pr_id),
+                Some(VIA),
+            )
+            .await?;
             Ok(if resolve {
                 "Resolved the review thread".into()
             } else {

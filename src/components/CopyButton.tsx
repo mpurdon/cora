@@ -14,10 +14,15 @@ export function CopyButton({
   text,
   what,
   icon,
+  label,
 }: {
   text: string | null | (() => string | null);
   what: string;
   icon?: React.ReactNode;
+  /** With a label the button is a full action button reading `label`, and
+   *  says "Copied" for a moment after — for the places an icon alone would
+   *  be too quiet, like beside Re-analyze. */
+  label?: string;
 }) {
   // One tri-state rather than two booleans that must never both be true.
   const [status, setStatus] = useState<"idle" | "copied" | "failed">("idle");
@@ -33,20 +38,23 @@ export function CopyButton({
     setStatus(next);
     setTimeout(() => setStatus("idle"), next === "copied" ? 1500 : 2500);
   };
+  const copy = () => {
+    const value = typeof text === "function" ? text() : text;
+    if (value == null) return void flash("failed");
+    void navigator.clipboard
+      .writeText(value)
+      .then(() => flash("copied"))
+      .catch(() => flash("failed"));
+  };
+  if (label) {
+    return (
+      <button className="action-btn" disabled={text === null} {...tip(title)} onClick={copy}>
+        {status === "copied" ? "Copied" : status === "failed" ? "Couldn't copy" : label}
+      </button>
+    );
+  }
   return (
-    <button
-      className="icon-btn"
-      disabled={text === null}
-      {...tip(title)}
-      onClick={() => {
-        const value = typeof text === "function" ? text() : text;
-        if (value == null) return void flash("failed");
-        void navigator.clipboard
-          .writeText(value)
-          .then(() => flash("copied"))
-          .catch(() => flash("failed"));
-      }}
-    >
+    <button className="icon-btn" disabled={text === null} {...tip(title)} onClick={copy}>
       {status === "copied" ? <IconCheck /> : (icon ?? <IconClipboard />)}
     </button>
   );

@@ -31,6 +31,7 @@ import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
 import { HistoryDrawer } from "../components/HistoryDrawer";
+import { assessmentMarkdown } from "../lib/assessmentMarkdown";
 import { PrioritySelector } from "../components/PrioritySelector";
 import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { Settings } from "../bindings/Settings";
@@ -1162,12 +1163,30 @@ function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps)
               {" "}
               · {result.usage.turns} turns · {formatTokens(result.usage.inputTokens)} in /{" "}
               {formatTokens(result.usage.outputTokens)} out
+              {result.usage.cacheReadTokens + result.usage.cacheWriteTokens > 0 && (
+                // "46 in" on a run that sent 300k is the cache doing its
+                // job: Bedrock counts only the uncached remainder as input.
+                // Say where the rest went so the number reads as a win, not
+                // a bug.
+                <span
+                  data-tip="Prompt tokens served from the cache / written into it — billed at a tenth and a quarter more than plain input"
+                >
+                  {" "}
+                  · cache {formatTokens(result.usage.cacheReadTokens)} read /{" "}
+                  {formatTokens(result.usage.cacheWriteTokens)} written
+                </span>
+              )}
               {result.usage.elapsedMs > 0 && <> · {Math.round(result.usage.elapsedMs / 1000)}s</>}
               {result.usage.effort && <> · effort {result.usage.effort}</>}
             </>
           )}
         </span>
         <span className="spacer" />
+        <CopyButton
+          label="Copy"
+          what="the assessment as Markdown — summary, findings, review plan, and run metrics"
+          text={() => assessmentMarkdown(pr, result)}
+        />
         <button className="action-btn" data-tip="Run the analysis again from scratch" onClick={retry}>
           Re-analyze
         </button>
@@ -2662,7 +2681,23 @@ export function MainApp() {
           onClose={() => setShowHotkeys(false)}
         />
       )}
-      <HistoryDrawer open={showHistory} onClose={() => setShowHistory(false)} />
+      <HistoryDrawer
+        open={showHistory}
+        onClose={() => setShowHistory(false)}
+        onOpenPr={(pr) => {
+          // Still in the list: just open it. Aged out or untracked since:
+          // fetch it again by URL, which tracks it — reading your own history
+          // is as good a reason to track a PR as pasting its link.
+          if (prs.some((p) => p.id === pr.id)) {
+            select(pr.id);
+            return;
+          }
+          void ipc
+            .trackPrUrl(`https://github.com/${pr.repo}/pull/${pr.number}`)
+            .then((tracked) => select(tracked.id))
+            .catch(() => {});
+        }}
+      />
     </div>
   );
 }
