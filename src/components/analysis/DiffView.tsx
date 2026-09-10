@@ -68,6 +68,9 @@ export function parseDiff(raw: string): DiffFile[] {
   const files: DiffFile[] = [];
   let current: DiffFile | null = null;
   let newLine = 0;
+  // `--- `/`+++ ` are file headers only before a file's first `@@` hunk;
+  // inside a hunk the same prefixes are ordinary deleted/added content lines.
+  let inHunk = false;
   // Byte offset of the line being read, so each file can record where its slice
   // of `raw` starts and ends instead of copying the text.
   let offset = 0;
@@ -93,6 +96,7 @@ export function parseDiff(raw: string): DiffFile[] {
         patchEnd: raw.length,
       };
       newLine = 0;
+      inHunk = false;
       continue;
     }
     if (!current) continue;
@@ -106,8 +110,7 @@ export function parseDiff(raw: string): DiffFile[] {
     }
     if (
       line.startsWith("index ") ||
-      line.startsWith("--- ") ||
-      line.startsWith("+++ ") ||
+      (!inHunk && (line.startsWith("--- ") || line.startsWith("+++ "))) ||
       line.startsWith("similarity") ||
       line.startsWith("rename ") ||
       line.startsWith("old mode") ||
@@ -117,6 +120,7 @@ export function parseDiff(raw: string): DiffFile[] {
       continue;
     }
     if (line.startsWith("@@")) {
+      inHunk = true;
       const m = line.match(/\+(\d+)/);
       newLine = m ? Number(m[1]) : 0;
       current.lines.push({ kind: "hunk", text: line, newLine: null });
