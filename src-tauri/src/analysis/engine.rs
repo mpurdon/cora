@@ -89,6 +89,23 @@ C4 graph rules:
 When you are done exploring, you MUST call submit_analysis exactly once with the complete result. Include EVERY field in the schema — when a list has nothing to report, pass an empty array, never omit the field. Do not produce a final text answer."#;
 
 /// Team knowledge no diff reveals, appended to every model-facing prompt.
+/// The voice the app drafts in when the reviewer's settings name none.
+/// Deliberately plain: a colleague leaving a note, not a tool filing a
+/// report. Anything more particular is the reviewer's to write.
+pub const DEFAULT_REVIEW_VOICE: &str = "Plain and direct, like a colleague leaving a note — not a tool filing a report. Short sentences. Say what is wrong and what to do, then stop. No preamble, no sign-off, no \"Consider...\" when you mean \"do this\". Contractions are fine. No emoji, no bold labels, no bullet lists for a one-point comment. Criticize the code, never the author, and be specific enough that they can act without asking a follow-up.";
+
+/// The reviewer's voice, as a prompt section: everything the model writes
+/// for the reviewer to post — comments, replies, review summaries, the code
+/// pass's finding and suggestion text — should read as if they wrote it.
+/// Falls back to [`DEFAULT_REVIEW_VOICE`] when the setting is empty.
+pub(crate) fn voice_section(settings: &Settings) -> String {
+    let v = settings.review_voice.trim();
+    let v = if v.is_empty() { DEFAULT_REVIEW_VOICE } else { v };
+    format!(
+        "\n\n## The reviewer's voice\nAnything you write for the reviewer to post under their name — comments, replies, review summaries, finding and suggestion text — is read as THEIR words, so write it the way they write. Match this voice for wording, register, and rhythm, while keeping the substance rules above (what to say, how long, what to anchor to):\n{v}"
+    )
+}
+
 /// `repo` ("owner/name") adds that repo's review instructions, when set,
 /// after the global conventions block.
 pub(crate) fn conventions_section(settings: &Settings, repo: &str) -> String {
@@ -1813,6 +1830,7 @@ pub async fn code_findings(
 
     let mut system = CODE_PASS_PROMPT.to_string();
     system.push_str(&conventions_section(settings, &pr.info.repo));
+    system.push_str(&voice_section(settings));
 
     let mut specs = RepoTools::specs();
     specs.push((
@@ -2747,6 +2765,28 @@ mod tests {
         assert!(!long.contains(&"x".repeat(MAX_BODY_CHARS + 1)));
     }
     use super::*;
+
+    #[test]
+    fn the_voice_is_always_in_the_prompt_the_reviewers_own_or_the_default() {
+        // No setting: the default voice, not an empty section — a model told
+        // nothing about voice writes like a tool, which is the thing the
+        // section exists to prevent.
+        let mut settings = Settings::default();
+        let section = voice_section(&settings);
+        assert!(section.contains("## The reviewer's voice"));
+        assert!(section.contains(DEFAULT_REVIEW_VOICE));
+
+        // Whitespace is no voice either.
+        settings.review_voice = "  \n ".into();
+        assert!(voice_section(&settings).contains(DEFAULT_REVIEW_VOICE));
+
+        // A voice of their own replaces the default outright rather than
+        // stacking on it: the two would contradict.
+        settings.review_voice = "lowercase, blunt, prolly a 'brutal' or two".into();
+        let section = voice_section(&settings);
+        assert!(section.contains("prolly a 'brutal' or two"));
+        assert!(!section.contains(DEFAULT_REVIEW_VOICE));
+    }
 
     #[test]
     fn detects_max_tokens_over_cap() {

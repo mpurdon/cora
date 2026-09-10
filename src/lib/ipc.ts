@@ -50,6 +50,7 @@ export const events = {
 export const ipc = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
+  defaultReviewVoice: () => invoke<string>("default_review_voice"),
   listGithubOrgs: () => invoke<GithubOrg[]>("list_github_orgs"),
   getOrgState: () => invoke<OrgState>("get_org_state"),
   setActiveOrg: (login: string) => invoke<void>("set_active_org", { login }),

@@ -93,6 +93,14 @@ autoAnalyzeDailyCap: number,
  */
 reviewConventions: string, 
 /**
+ * How the reviewer sounds. Shapes every piece of text the app drafts
+ * for them to post — the code pass's finding/suggestion wording and the
+ * assistant's comments and review summaries — so those read like the
+ * reviewer wrote them. Empty means the built-in default
+ * (`engine::DEFAULT_REVIEW_VOICE`): plain and direct.
+ */
+reviewVoice: string, 
+/**
  * Default text to seed the approve composer with; empty falls back to
  * the dynamic per-PR summary. Overridable per repo below.
  */

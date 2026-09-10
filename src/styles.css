@@ -3633,6 +3633,20 @@ button.diff-file-header:hover {
   user-select: text;
 }
 
+/* The voice is prose, not globs: a readable face and room to write in. */
+.voice-editor {
+  min-height: 180px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .diff-file.viewed .diff-path {
   text-decoration: line-through;
   text-decoration-color: var(--idle);

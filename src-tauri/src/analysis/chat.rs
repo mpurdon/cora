@@ -181,6 +181,11 @@ fn build_system(
         });
     }
     parts.push(SystemPart {
+        label: "Your voice",
+        origin: if settings.review_voice.trim().is_empty() { "built-in default" } else { "your settings" },
+        text: crate::analysis::engine::voice_section(settings),
+    });
+    parts.push(SystemPart {
         label: "PR facts",
         origin: "github",
         text: format!(

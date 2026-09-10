@@ -250,6 +250,7 @@ pub fn run() {
             commands::check_aws,
             commands::take_pending_focus,
             commands::open_notification_settings,
+            commands::default_review_voice,
             commands::get_viewed_files,
             commands::set_file_viewed,
             commands::log_frontend_error,

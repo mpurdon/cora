@@ -405,6 +405,13 @@ pub struct Settings {
     /// libraries, review standards. Injected into analysis and chat prompts.
     #[serde(default)]
     pub review_conventions: String,
+    /// How the reviewer sounds. Shapes every piece of text the app drafts
+    /// for them to post — the code pass's finding/suggestion wording and the
+    /// assistant's comments and review summaries — so those read like the
+    /// reviewer wrote them. Empty means the built-in default
+    /// (`engine::DEFAULT_REVIEW_VOICE`): plain and direct.
+    #[serde(default)]
+    pub review_voice: String,
     /// Default text to seed the approve composer with; empty falls back to
     /// the dynamic per-PR summary. Overridable per repo below.
     #[serde(default)]
@@ -603,6 +610,7 @@ impl Default for Settings {
             auto_analyze_review_requests: true,
             auto_analyze_daily_cap: default_auto_analyze_cap(),
             review_conventions: String::new(),
+            review_voice: String::new(),
             default_approve_message: String::new(),
             repo_approve_messages: std::collections::HashMap::new(),
             repo_review_instructions: std::collections::HashMap::new(),

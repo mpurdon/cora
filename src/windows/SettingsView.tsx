@@ -137,6 +137,51 @@ function sliderFill(idx: number, maxIdx: number): React.CSSProperties {
 // the feed without deleting history.
 const FEED_STEPS = [50, 100, 150, 200, 300, 500];
 
+/** The voice textarea, with the built-in default one click away: an empty
+ *  setting shows the default as placeholder so the reviewer can see what
+ *  they'd be replacing, and "start from the default" copies it in as an
+ *  editable draft rather than making them retype it. */
+function VoiceEditor({ value, onSave }: { value: string; onSave: (v: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  const [fallback, setFallback] = useState("");
+  useEffect(() => {
+    void ipc.defaultReviewVoice().then(setFallback).catch(() => {});
+  }, []);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    if (draft !== value) onSave(draft);
+  };
+  return (
+    <>
+      <textarea
+        className="globs-editor voice-editor"
+        spellCheck={false}
+        placeholder={fallback}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+      />
+      <div className="field-actions">
+        {draft.trim() === "" ? (
+          <button className="action-btn" onClick={() => setDraft(fallback)} disabled={!fallback}>
+            Start from the default
+          </button>
+        ) : (
+          <button
+            className="action-btn"
+            onClick={() => {
+              setDraft("");
+              onSave("");
+            }}
+          >
+            Use the default
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 function Field({
   label,
   hint,
@@ -538,6 +583,13 @@ function GeneralPane({ settings, save }: PaneProps) {
           defaultValue={settings.reviewConventions}
           onBlur={(e) => void save({ reviewConventions: e.target.value })}
         />
+      </Field>
+
+      <Field
+        label="Your voice"
+        hint="How you write. Everything the app drafts for you to post — the code pass's finding and suggestion text, the assistant's comments and review summaries — is written in this voice, so it reads like you and not like a tool. Leave empty for the built-in default: plain and direct."
+      >
+        <VoiceEditor value={settings.reviewVoice} onSave={(v) => void save({ reviewVoice: v })} />
       </Field>
 
       <Field

@@ -36,6 +36,13 @@ pub fn get_settings(orgs: State<'_, crate::orgs::Orgs>) -> AppResult<Settings> {
     store.settings()
 }
 
+/// The voice the app drafts in when `review_voice` is empty — so the
+/// settings pane can show it, and hand it over as a starting point to edit.
+#[tauri::command]
+pub fn default_review_voice() -> &'static str {
+    crate::analysis::engine::DEFAULT_REVIEW_VOICE
+}
+
 #[tauri::command]
 pub fn set_settings(
     window: WebviewWindow,
@@ -46,9 +53,10 @@ pub fn set_settings(
     let store = orgs.active();
     require_main(&window)?;
     store.save_settings(&settings)?;
-    // Team conventions are part of every chat session's system prompt, so a
-    // settings save has to reach open sessions the same way a finished
-    // analysis does — otherwise they keep the conventions they were built with.
+    // Team conventions and the reviewer's voice are part of every chat
+    // session's system prompt, so a settings save has to reach open sessions
+    // the same way a finished analysis does — otherwise they keep the prompt
+    // they were built with.
     crate::analysis::chat::invalidate_all_contexts(window.app_handle());
     // Re-emit immediately so settings that shape the visible set (the PR age
     // window) take effect without waiting for the poll cycle the trigger kicks.

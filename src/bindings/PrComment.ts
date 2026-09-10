@@ -6,7 +6,9 @@ import type { ReactionGroup } from "./ReactionGroup";
  */
 export type PrComment = { id: string, author: string, isBot: boolean, body: string, createdAt: string, url: string, reactions: Array<ReactionGroup>, 
 /**
- * Whether the PAT owner wrote this — the UI only offers Edit on your own.
+ * Whether the PAT owner wrote this and may still edit it — the UI only
+ * offers Edit on your own comments, never on a maintainer's power over
+ * someone else's.
  */
 viewerCanEdit: boolean, 
 /**
