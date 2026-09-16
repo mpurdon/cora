@@ -14,6 +14,13 @@ export type TrackedPr = { sources: Array<PrSource>, muted: boolean, priority: Pr
  */
 unread: Array<ChangeKind>, firstSeen: string, lastChangeAt: string, 
 /**
+ * When the PR last came back to you: the newest change that
+ * `ChangeKind::hands_back`. "Reviewed and idle" is judged against this
+ * rather than `last_change_at`, so a mechanical change after your
+ * review can't resurface the PR as needing it again.
+ */
+lastHandbackAt: string, 
+/**
  * Persistent critical re-assertion state — set elsewhere (poll-time
  * re-derivation), always false at construction here.
  */

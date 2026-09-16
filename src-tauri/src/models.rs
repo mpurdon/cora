@@ -111,6 +111,25 @@ pub enum ChangeKind {
     DraftChanged,
 }
 
+impl ChangeKind {
+    /// Does this change hand the PR back to a reviewer who already gave a
+    /// verdict? Commits, human comments, a reopen, or a draft marked ready
+    /// do — there is something new to look at. A CI flip, a title edit, or
+    /// GitHub's aggregate `reviewDecision` settling minutes after your own
+    /// review (it lags, and the feed already calls that transition
+    /// mechanical) do not: nothing about the code or the conversation moved.
+    pub fn hands_back(self) -> bool {
+        matches!(
+            self,
+            ChangeKind::New
+                | ChangeKind::NewCommits
+                | ChangeKind::NewComments
+                | ChangeKind::Reopened
+                | ChangeKind::DraftChanged
+        )
+    }
+}
+
 /// A PR plus Cora-local tracking state. This is what both windows render.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -126,6 +145,12 @@ pub struct TrackedPr {
     pub unread: Vec<ChangeKind>,
     pub first_seen: String,
     pub last_change_at: String,
+    /// When the PR last came back to you: the newest change that
+    /// `ChangeKind::hands_back`. "Reviewed and idle" is judged against this
+    /// rather than `last_change_at`, so a mechanical change after your
+    /// review can't resurface the PR as needing it again.
+    #[serde(default)]
+    pub last_handback_at: String,
     /// Persistent critical re-assertion state — set elsewhere (poll-time
     /// re-derivation), always false at construction here.
     #[serde(default)]

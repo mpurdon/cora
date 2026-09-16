@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS prs (
   unread         TEXT NOT NULL DEFAULT '[]',
   first_seen     TEXT NOT NULL,
   last_change_at TEXT NOT NULL,
-  priority       TEXT NOT NULL DEFAULT 'normal'
+  priority       TEXT NOT NULL DEFAULT 'normal',
+  last_handback_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS analyses (
   pr_id      TEXT NOT NULL,
@@ -129,6 +130,24 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         // Additive migration; harmless error when the column already exists.
         let _ = conn.execute("ALTER TABLE prs ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'", []);
+        // Rows from before the column: reconstruct the last hand-back from
+        // the feed, which kept a row per commit/comment/reopen/ready, and
+        // fall back to the last change where the feed has nothing (its rows
+        // are pruned). Copying last_change_at alone would leave every PR
+        // whose newest change was mechanical looking freshly handed back.
+        if conn
+            .execute("ALTER TABLE prs ADD COLUMN last_handback_at TEXT NOT NULL DEFAULT ''", [])
+            .is_ok()
+        {
+            let _ = conn.execute(
+                "UPDATE prs SET last_handback_at = COALESCE(
+                   (SELECT max(at) FROM activity
+                     WHERE activity.pr_id = prs.id
+                       AND activity.kind IN ('new', 'commits', 'comment', 'reopened', 'ready')),
+                   last_change_at)",
+                [],
+            );
+        }
         // Cleanup for a fixed bug: untracked-but-still-searchable PRs spammed
         // "now tracking" rows every poll cycle. "CI is green" rows are no
         // longer recorded (green isn't news); drop the historical ones too.
@@ -175,7 +194,7 @@ impl Store {
     pub fn list_prs(&self) -> AppResult<Vec<TrackedPr>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT data, sources, muted, unread, first_seen, last_change_at, priority
+            "SELECT data, sources, muted, unread, first_seen, last_change_at, priority, last_handback_at
              FROM prs WHERE tracked = 1 ORDER BY last_change_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -186,11 +205,12 @@ impl Store {
             let first_seen: String = row.get(4)?;
             let last_change_at: String = row.get(5)?;
             let priority: String = row.get(6)?;
-            Ok((data, sources, muted, unread, first_seen, last_change_at, priority))
+            let last_handback_at: String = row.get(7)?;
+            Ok((data, sources, muted, unread, first_seen, last_change_at, priority, last_handback_at))
         })?;
         let mut prs = Vec::new();
         for row in rows {
-            let (data, sources, muted, unread, first_seen, last_change_at, priority) = row?;
+            let (data, sources, muted, unread, first_seen, last_change_at, priority, last_handback_at) = row?;
             let info: PrInfo = match serde_json::from_str(&data) {
                 Ok(i) => i,
                 Err(_) => continue, // schema drift: skip rather than poison the list
@@ -203,6 +223,7 @@ impl Store {
                 unread: serde_json::from_str(&unread).unwrap_or_default(),
                 first_seen,
                 last_change_at,
+                last_handback_at,
                 needs_attention: false,
             });
         }
@@ -277,15 +298,24 @@ impl Store {
         now: &str,
     ) -> AppResult<TrackedPr> {
         let existing = self.get_pr(&info.id)?;
-        let (first_seen, muted, priority, mut unread, mut merged_sources, last_change_at) =
+        let (first_seen, muted, priority, mut unread, mut merged_sources, last_change_at, last_handback_at) =
             match existing {
-                Some(p) => (p.first_seen, p.muted, p.priority, p.unread, p.sources, p.last_change_at),
+                Some(p) => (
+                    p.first_seen,
+                    p.muted,
+                    p.priority,
+                    p.unread,
+                    p.sources,
+                    p.last_change_at,
+                    p.last_handback_at,
+                ),
                 None => (
                     now.to_string(),
                     false,
                     crate::models::PrPriority::Standard,
                     Vec::new(),
                     Vec::new(),
+                    now.to_string(),
                     now.to_string(),
                 ),
             };
@@ -296,14 +326,19 @@ impl Store {
         }
         unread.extend_from_slice(new_changes);
         let last_change_at = if new_changes.is_empty() { last_change_at } else { now.to_string() };
+        let last_handback_at = if new_changes.iter().any(|c| c.hands_back()) {
+            now.to_string()
+        } else {
+            last_handback_at
+        };
 
         let data = serde_json::to_string(info).map_err(|e| AppError::Other(e.to_string()))?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO prs (id, data, sources, muted, tracked, unread, first_seen, last_change_at)
-             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7)
+            "INSERT INTO prs (id, data, sources, muted, tracked, unread, first_seen, last_change_at, last_handback_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
-               data = ?2, sources = ?3, tracked = 1, unread = ?5, last_change_at = ?7",
+               data = ?2, sources = ?3, tracked = 1, unread = ?5, last_change_at = ?7, last_handback_at = ?8",
             params![
                 info.id,
                 data,
@@ -312,6 +347,7 @@ impl Store {
                 serde_json::to_string(&unread).unwrap(),
                 first_seen,
                 last_change_at,
+                last_handback_at,
             ],
         )?;
         Ok(TrackedPr {
@@ -322,6 +358,7 @@ impl Store {
             unread,
             first_seen,
             last_change_at,
+            last_handback_at,
             needs_attention: false,
         })
     }
@@ -1152,6 +1189,17 @@ mod tests {
         assert_eq!(updated.unread, vec![ChangeKind::New, ChangeKind::CiChanged]);
         assert_eq!(updated.first_seen, "2026-01-01T00:00:00Z");
         assert_eq!(updated.last_change_at, "2026-01-02T00:00:00Z");
+        // CI flipping is not the PR coming back to you.
+        assert_eq!(updated.last_handback_at, "2026-01-01T00:00:00Z");
+        let pushed = store
+            .upsert_pr(
+                &pr("PR_1"),
+                &[PrSource::Authored],
+                &[ChangeKind::NewCommits],
+                "2026-01-03T00:00:00Z",
+            )
+            .unwrap();
+        assert_eq!(pushed.last_handback_at, "2026-01-03T00:00:00Z");
     }
 
     #[test]

@@ -157,11 +157,13 @@ function reviewedAndIdle(pr: TrackedPr): boolean {
   if (pr.myReviewRerequested) return false;
   if (!pr.myReviewState || !pr.myReviewedAt) return false;
   if (pr.myReviewState !== "APPROVED" && pr.myReviewState !== "CHANGES_REQUESTED") return false;
-  // Gate on CORA's change detection (commits, comments, CI, review state),
-  // not GitHub's updatedAt — your own housekeeping (resolving threads,
-  // labels) bumps updatedAt but shouldn't resurface a reviewed PR. The
-  // review itself registers as a change — allow slack for that echo.
-  return Date.parse(pr.lastChangeAt) - Date.parse(pr.myReviewedAt) < 2 * 60_000;
+  // Gate on the last change that handed the PR back (commits, human
+  // comments, reopened, marked ready) — not on every change CORA detects,
+  // and not on GitHub's updatedAt. A CI flip, or GitHub's aggregate review
+  // decision settling minutes after your own review, would otherwise
+  // resurface a PR you just approved as "needs review". Your own review
+  // can register as a comment — allow slack for that echo.
+  return Date.parse(pr.lastHandbackAt) - Date.parse(pr.myReviewedAt) < 2 * 60_000;
 }
 
 /** Routine dependency/action/toolchain bumps — low-risk housekeeping that

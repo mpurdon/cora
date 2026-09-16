@@ -17,7 +17,7 @@ use crate::analysis::types::{
     C4NodeKind, ChangeStatus, ReviewPlanEntry, Severity, Significance, TraceStep,
 };
 use crate::error::{AppError, AppResult};
-use crate::models::{Settings, TrackedPr};
+use crate::models::{PrConversation, Settings, TrackedPr};
 
 const MAX_TURNS: usize = 30;
 /// Turns the model may spend exploring before the research tools are
@@ -50,6 +50,133 @@ fn body_section(body: &str) -> String {
         format!("\n\n## PR description (author's own words)\n{body}")
     }
 }
+/// One comment's worth of quoting in the review section: enough to carry
+/// an argument, not a pasted stack trace.
+const MAX_QUOTE_CHARS: usize = 500;
+/// The whole review section. A long-running PR can hold a hundred threads;
+/// the open ones and the verdicts are what steer a re-read.
+const MAX_REVIEW_CHARS: usize = 9000;
+
+/// The review conversation as the model should know it: standing verdicts,
+/// open threads with their exchange, and top-level comments — so a
+/// re-analysis after a push reports whether the push addressed what was
+/// raised instead of raising it again, and engages with what the author
+/// argued instead of restating the concern. Bots are dropped (CI and
+/// quality-gate comments are noise here); resolved threads are counted, not
+/// shown. Empty when there is no conversation, or it could not be fetched:
+/// the review is enrichment, never a reason to fail the run.
+pub(crate) async fn review_section(app: &AppHandle, pr: &TrackedPr) -> String {
+    let convo = match crate::commands::get_pr_comments(app.clone(), pr.info.id.clone()).await {
+        Ok(c) => c,
+        Err(e) => {
+            devlog::warn(app, "analysis", format!("review context skipped: {e}"));
+            return String::new();
+        }
+    };
+    render_review(&convo)
+}
+
+fn render_review(convo: &PrConversation) -> String {
+    fn quote(body: &str) -> String {
+        let one_line = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        if one_line.chars().count() > MAX_QUOTE_CHARS {
+            let head: String = one_line.chars().take(MAX_QUOTE_CHARS).collect();
+            format!("{head}…")
+        } else {
+            one_line
+        }
+    }
+    fn day(iso: &str) -> &str {
+        iso.get(..10).unwrap_or(iso)
+    }
+
+    let mut out = String::new();
+
+    // Verdicts: the latest per reviewer, oldest first; a bare COMMENTED or a
+    // dismissed review says nothing a thread doesn't.
+    let mut latest: Vec<&crate::models::ReviewVerdict> = Vec::new();
+    for r in &convo.reviews {
+        if let Some(slot) = latest.iter_mut().find(|v| v.author == r.author) {
+            if r.submitted_at >= slot.submitted_at {
+                *slot = r;
+            }
+        } else {
+            latest.push(r);
+        }
+    }
+    let verdicts: Vec<String> = latest
+        .iter()
+        .filter(|r| matches!(r.state.as_str(), "APPROVED" | "CHANGES_REQUESTED"))
+        .map(|r| {
+            let verb = if r.state == "APPROVED" { "approved" } else { "requested changes" };
+            let body = r.body.trim();
+            if body.is_empty() {
+                format!("- @{} {verb} ({})", r.author, day(&r.submitted_at))
+            } else {
+                format!("- @{} {verb} ({}): {}", r.author, day(&r.submitted_at), quote(body))
+            }
+        })
+        .collect();
+    if !verdicts.is_empty() {
+        out.push_str("Standing verdicts:\n");
+        out.push_str(&verdicts.join("\n"));
+        out.push('\n');
+    }
+
+    let (open, settled): (Vec<_>, Vec<_>) = convo
+        .threads
+        .iter()
+        .filter(|t| t.comments.iter().any(|c| !c.is_bot))
+        .partition(|t| !t.resolved && !t.outdated);
+    if !open.is_empty() {
+        out.push_str(&format!("\nOpen threads ({}):\n", open.len()));
+        for t in &open {
+            let at = match (&t.path, t.line) {
+                (Some(p), Some(l)) => format!("{p}:{l}"),
+                (Some(p), None) => p.clone(),
+                _ => "(conversation)".to_string(),
+            };
+            let exchange: Vec<String> = t
+                .comments
+                .iter()
+                .filter(|c| !c.is_bot)
+                .map(|c| format!("@{}: {}", c.author, quote(&c.body)))
+                .collect();
+            out.push_str(&format!("- {at} — {}\n", exchange.join(" → ")));
+        }
+    }
+    if !settled.is_empty() {
+        out.push_str(&format!(
+            "\n{} thread{} resolved or outdated (not shown).\n",
+            settled.len(),
+            if settled.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    let top: Vec<String> = convo
+        .comments
+        .iter()
+        .filter(|c| !c.is_bot)
+        .map(|c| format!("- @{} ({}): {}", c.author, day(&c.created_at), quote(&c.body)))
+        .collect();
+    if !top.is_empty() {
+        out.push_str("\nConversation:\n");
+        out.push_str(&top.join("\n"));
+        out.push('\n');
+    }
+
+    if out.is_empty() {
+        return String::new();
+    }
+    if out.chars().count() > MAX_REVIEW_CHARS {
+        let head: String = out.chars().take(MAX_REVIEW_CHARS).collect();
+        out = format!("{head}\n[…truncated]");
+    }
+    format!(
+        "\n\n## Review so far (from GitHub — treat as known)\n{out}\nA concern a reviewer already raised is known: do not raise it again as a new finding. Say instead whether this head addresses it — and if it does not, say so plainly. Where the author has argued a point, engage with the argument on its merits rather than restating the concern. Nothing here is a verdict on the code; read it yourself."
+    )
+}
+
 // The per-pass output-token ceilings live in Settings (arch_max_output_tokens,
 // code_max_output_tokens) so they can be tuned to the configured model's cap.
 // Submissions carry a whole graph + assessment in one tool call, so the
@@ -1220,6 +1347,14 @@ pub async fn run(
     };
 
     let body_section = body_section(&pr.info.body);
+    // What reviewers and the author have already said. Context level only:
+    // a drill inherits the parent's framing, and the threads would crowd
+    // out the component it is meant to look at.
+    let review_section = if level == AnalysisLevel::Context {
+        review_section(app, pr).await
+    } else {
+        String::new()
+    };
 
     // Every run opened with the same fetches — the diff, and for the
     // context pass the README — so they ride in the kickoff instead of
@@ -1316,7 +1451,7 @@ pub async fn run(
         "Budget: {EXPLORE_TURNS} exploration turns, each of which may carry many tool calls in parallel. After that the research tools are withdrawn and only submit_analysis remains, so plan to submit before then. When you submit, write the assessment before the graph, summary first — the reader sees it as it streams."
     );
     let kickoff = format!(
-        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}\n\n{}{}{}{}{prior_section}\n\n{budget}{scope_section}\n\n{closing}{kickoff_diff}{kickoff_docs}{preload_section}",
+        "Analyze this pull request.\n\nRepository: {}\nPR #{}: {}\nAuthor: {}\nBranch head: {}\nStats: +{} −{} across {} files\nURL: {}{body_section}{review_section}\n\n{}{}{}{}{prior_section}\n\n{budget}{scope_section}\n\n{closing}{kickoff_diff}{kickoff_docs}{preload_section}",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
@@ -1847,12 +1982,15 @@ pub async fn code_findings(
     ));
 
     let kickoff = format!(
-        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}{}\n\n{}\n\nBudget: 12 exploration turns, then only submit_code_findings remains. Start with get_pr_diff (indexed when the diff is large — get_file_diff returns the hunks for the files above), and read surrounding context with get_files in one call rather than one file per turn.",
+        "Review this pull request at code level.\n\nRepository: {}\nPR #{}: {}\nHead: {}{}{}\n\n{}\n\nBudget: 12 exploration turns, then only submit_code_findings remains. Start with get_pr_diff (indexed when the diff is large — get_file_diff returns the hunks for the files above), and read surrounding context with get_files in one call rather than one file per turn.",
         pr.info.repo,
         pr.info.number,
         pr.info.title,
         pr.info.head_sha,
         body_section(&pr.info.body),
+        // The findings become comments: a live thread on the same line is
+        // the one thing they must not duplicate.
+        review_section(app, pr).await,
         focus_section,
     );
     let mut messages = vec![Message::builder()
@@ -2772,6 +2910,55 @@ mod tests {
         assert!(!long.contains(&"x".repeat(MAX_BODY_CHARS + 1)));
     }
     use super::*;
+
+    #[test]
+    fn the_review_so_far_carries_verdicts_and_open_threads_and_drops_the_noise() {
+        let convo: PrConversation = serde_json::from_value(serde_json::json!({
+            "comments": [
+                {"id": "c1", "author": "sonarqubecloud", "isBot": true, "body": "Quality Gate Passed", "createdAt": "2026-09-01T10:00:00Z", "url": "", "reactions": [], "viewerCanEdit": false, "isReviewComment": false},
+                {"id": "c2", "author": "author", "isBot": false, "body": "Pushed the retry.\n\nPTAL", "createdAt": "2026-09-02T10:00:00Z", "url": "", "reactions": [], "viewerCanEdit": false, "isReviewComment": false}
+            ],
+            "threads": [
+                {"id": "t1", "path": "src/fanout.ts", "line": 42, "startLine": null, "resolved": false, "outdated": false, "comments": [
+                    {"id": "r1", "author": "reviewer", "isBot": false, "body": "Unthrottled fan-out here.", "createdAt": "2026-09-01T11:00:00Z", "url": "", "reactions": [], "viewerCanEdit": true, "isReviewComment": true},
+                    {"id": "r2", "author": "author", "isBot": false, "body": "I don't think we should skip no-change, because X.", "createdAt": "2026-09-01T12:00:00Z", "url": "", "reactions": [], "viewerCanEdit": false, "isReviewComment": true}
+                ]},
+                {"id": "t2", "path": "src/old.ts", "line": 1, "startLine": null, "resolved": true, "outdated": false, "comments": [
+                    {"id": "r3", "author": "reviewer", "isBot": false, "body": "typo", "createdAt": "2026-09-01T11:00:00Z", "url": "", "reactions": [], "viewerCanEdit": true, "isReviewComment": true}
+                ]}
+            ],
+            "reviews": [
+                {"id": "v1", "author": "reviewer", "state": "COMMENTED", "body": "", "submittedAt": "2026-09-01T09:00:00Z", "url": ""},
+                {"id": "v2", "author": "reviewer", "state": "CHANGES_REQUESTED", "body": "Blocking before this goes live: the fan-out.", "submittedAt": "2026-09-01T11:30:00Z", "url": ""},
+                {"id": "v3", "author": "other", "state": "APPROVED", "body": "", "submittedAt": "2026-09-01T13:00:00Z", "url": ""}
+            ]
+        }))
+        .unwrap();
+        let text = render_review(&convo);
+
+        // The latest verdict per reviewer, and only the ones that say something.
+        assert!(text.contains("@reviewer requested changes (2026-09-01): Blocking before this goes live"));
+        assert!(text.contains("@other approved (2026-09-01)"));
+        assert_eq!(text.matches("@reviewer requested").count(), 1);
+
+        // The open thread with its whole exchange, at its location; the
+        // resolved one counted, not quoted.
+        assert!(text.contains("src/fanout.ts:42 — @reviewer: Unthrottled fan-out here. → @author: I don't think we should skip no-change, because X."));
+        assert!(!text.contains("typo"));
+        assert!(text.contains("1 thread resolved or outdated"));
+
+        // Bots out, humans in, newlines flattened.
+        assert!(!text.contains("Quality Gate"));
+        assert!(text.contains("@author (2026-09-02): Pushed the retry. PTAL"));
+
+        // And the instruction that makes it useful.
+        assert!(text.contains("do not raise it again as a new finding"));
+
+        // No conversation at all: no section, so the kickoff doesn't carry
+        // an empty heading.
+        let empty: PrConversation = serde_json::from_value(serde_json::json!({"comments": [], "threads": [], "reviews": []})).unwrap();
+        assert_eq!(render_review(&empty), "");
+    }
 
     #[test]
     fn the_voice_is_always_in_the_prompt_the_reviewers_own_or_the_default() {

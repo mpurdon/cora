@@ -2566,6 +2566,17 @@ body.col-resizing * {
   flex: 1;
 }
 
+/* Two buttons now share the row's end; they hold their width and the usage
+   line gives way, rather than "Re-analyze" breaking across two lines. */
+.panel-meta .action-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.panel-meta .panel-usage {
+  min-width: 0;
+}
+
 .panel-usage {
   font-size: 10.5px;
   color: var(--muted);
