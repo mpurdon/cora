@@ -140,25 +140,6 @@ impl ChangeKind {
     }
 }
 
-impl ChangeKind {
-    /// Does this change hand the PR back to a reviewer who already gave a
-    /// verdict? Commits, human comments, a reopen, or a draft marked ready
-    /// do — there is something new to look at. A CI flip, a title edit, or
-    /// GitHub's aggregate `reviewDecision` settling minutes after your own
-    /// review (it lags, and the feed already calls that transition
-    /// mechanical) do not: nothing about the code or the conversation moved.
-    pub fn hands_back(self) -> bool {
-        matches!(
-            self,
-            ChangeKind::New
-                | ChangeKind::NewCommits
-                | ChangeKind::NewComments
-                | ChangeKind::Reopened
-                | ChangeKind::DraftChanged
-        )
-    }
-}
-
 /// A PR plus Cora-local tracking state. This is what both windows render.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
