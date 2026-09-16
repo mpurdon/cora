@@ -48,13 +48,15 @@ pub fn record(
         ChangeKind::New => 0,
         ChangeKind::DraftChanged => 1,
         ChangeKind::NewCommits => 2,
-        ChangeKind::CiChanged => 3,
-        ChangeKind::NewComments => 4,
-        ChangeKind::ReviewChanged => 5,
-        ChangeKind::Reopened => 6,
-        ChangeKind::TitleChanged => 7,
-        ChangeKind::Closed => 8,
-        ChangeKind::Merged => 9,
+        // A push dismisses the verdict, so the dismissal follows the push.
+        ChangeKind::ApprovalDismissed | ChangeKind::ChangesRequestDismissed => 3,
+        ChangeKind::CiChanged => 4,
+        ChangeKind::NewComments => 5,
+        ChangeKind::ReviewChanged => 6,
+        ChangeKind::Reopened => 7,
+        ChangeKind::TitleChanged => 8,
+        ChangeKind::Closed => 9,
+        ChangeKind::Merged => 10,
     };
     let mut ordered: Vec<&ChangeKind> = changes.iter().collect();
     ordered.sort_by_key(|c| causal_rank(c));
@@ -89,6 +91,26 @@ pub fn record(
             }
             ChangeKind::NewCommits => {
                 ("commits", pr.info.author.clone(), "pushed new commits".into(), String::new())
+            }
+            // Your verdict stopped counting. The poll delta can't name the
+            // dismisser; when it came with a push, the pusher is the author
+            // for all practical purposes. Otherwise leave it actor-less
+            // rather than guess — the PR header carries the timeline's
+            // precise answer.
+            ChangeKind::ApprovalDismissed | ChangeKind::ChangesRequestDismissed => {
+                let what = if *change == ChangeKind::ApprovalDismissed {
+                    "approval"
+                } else {
+                    "change request"
+                };
+                let pushed = changes.contains(&ChangeKind::NewCommits);
+                let actor = if pushed { pr.info.author.clone() } else { String::new() };
+                let summary = if pushed {
+                    format!("pushed commits that dismissed your {what} — review again")
+                } else {
+                    format!("your {what} was dismissed — review again")
+                };
+                ("dismissed", actor, summary, String::new())
             }
             ChangeKind::CiChanged => match pr.info.ci_status.as_deref() {
                 Some("FAILURE") | Some("ERROR") => {
@@ -127,7 +149,7 @@ pub fn record(
         // whether or not this cycle saw the transition.
         let superseded: &[&str] = match kind {
             "merged" | "closed" | "reopened" => MECHANICAL_KINDS,
-            "commits" | "ci" | "review" => &[kind],
+            "commits" | "ci" | "review" | "dismissed" => &[kind],
             _ => &[],
         };
         let _ = store.supersede_activity(&pr.info.id, superseded);
@@ -140,6 +162,9 @@ pub fn record(
         // history but arrive pre-read. On your own PRs it demands attention.
         let pre_read =
             self_acted || (kind == "ci" && !pr.sources.contains(&PrSource::Authored));
+        // A dismissed verdict is about you whatever the PR's priority: it
+        // features in the callout so the author never has to ping you.
+        let important = important || kind == "dismissed";
         if store
             .add_activity(now, &pr.info, kind, &actor, &summary, &comment_id, important, pre_read)
             .is_ok()
@@ -149,8 +174,11 @@ pub fn record(
     }
     // Once YOU have reviewed (and nobody re-requested), the "review
     // requested" row has served its purpose. Someone else's review never
-    // retires it — they still want yours.
-    if pr.info.my_review_state.is_some() && !pr.info.my_review_rerequested {
+    // retires it — they still want yours. Nor does a dismissed review of
+    // yours: that state means your verdict no longer counts.
+    if pr.info.my_review_state.as_deref().is_some_and(|s| s != "DISMISSED")
+        && !pr.info.my_review_rerequested
+    {
         let _ = store.supersede_activity(&pr.info.id, &["new"]);
     }
     wrote
@@ -303,5 +331,116 @@ pub mod priority {
             assert!(is_important(EffectivePriority::Important));
             assert!(!is_important(EffectivePriority::Standard));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{PrInfo, PrPriority, TrackedPr};
+
+    fn info() -> PrInfo {
+        PrInfo {
+            id: "PR_1".into(),
+            number: 1,
+            title: "t".into(),
+            body: String::new(),
+            url: "u".into(),
+            repo: "o/r".into(),
+            author: "author".into(),
+            is_draft: false,
+            state: "OPEN".into(),
+            review_decision: Some("REVIEW_REQUIRED".into()),
+            my_review_state: Some("DISMISSED".into()),
+            my_reviewed_at: Some("2026-01-01T00:00:00Z".into()),
+            my_review_rerequested: false,
+            ci_status: None,
+            mergeable: "UNKNOWN".into(),
+            additions: 0,
+            deletions: 0,
+            changed_files: 0,
+            total_comments: 0,
+            recent_comments: vec![],
+            head_sha: "abc".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            labels: vec![],
+        }
+    }
+
+    /// A tracked PR in a standard repo, requested of you — the case where
+    /// nothing else would make its rows important.
+    fn tracked(store: &Arc<Store>, info: &PrInfo) -> TrackedPr {
+        let now = "2026-01-01T00:00:00Z";
+        let mut pr = store
+            .upsert_pr(info, &[PrSource::ReviewRequested], &[ChangeKind::New], now)
+            .unwrap();
+        pr.priority = PrPriority::Standard;
+        pr
+    }
+
+    #[test]
+    fn a_dismissed_approval_features_and_names_the_push() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let settings = crate::models::Settings::default();
+        let pr = tracked(&store, &info());
+        let now = "2026-01-01T01:00:00Z";
+        assert!(record(
+            &store,
+            &settings,
+            &pr,
+            &[ChangeKind::ApprovalDismissed, ChangeKind::NewCommits],
+            None,
+            now,
+            false,
+        ));
+        let rows = store.list_activity(10).unwrap();
+        let row = rows.iter().find(|r| r.kind == "dismissed").expect("a dismissed row");
+        assert!(row.important, "about you, so it features whatever the repo's priority");
+        assert!(!row.read);
+        assert_eq!(row.actor, "author");
+        assert!(row.summary.contains("dismissed your approval"), "{}", row.summary);
+        // Push first, dismissal second: the feed's causal order.
+        let kinds: Vec<&str> = rows.iter().map(|r| r.kind.as_str()).collect();
+        let push = kinds.iter().position(|k| *k == "commits").unwrap();
+        let dismissed = kinds.iter().position(|k| *k == "dismissed").unwrap();
+        assert!(dismissed < push, "newest first, so the dismissal lists above the push: {kinds:?}");
+    }
+
+    #[test]
+    fn a_manual_dismissal_has_no_actor_to_blame() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let settings = crate::models::Settings::default();
+        let pr = tracked(&store, &info());
+        let at = "2026-01-01T01:00:00Z";
+        record(&store, &settings, &pr, &[ChangeKind::ChangesRequestDismissed], None, at, false);
+        let rows = store.list_activity(10).unwrap();
+        let row = rows.iter().find(|r| r.kind == "dismissed").unwrap();
+        assert_eq!(row.actor, "");
+        assert!(row.summary.starts_with("your change request was dismissed"), "{}", row.summary);
+    }
+
+    #[test]
+    fn a_dismissed_review_does_not_retire_the_review_request() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let settings = crate::models::Settings::default();
+        let now = "2026-01-01T00:00:00Z";
+        // The "review requested" row, written when the PR was first seen.
+        let pr = tracked(&store, &info());
+        store
+            .add_activity(now, &pr.info, "new", "author", "review requested", "", true, false)
+            .unwrap();
+        let unread_request = || {
+            !store.list_activity(10).unwrap().into_iter().find(|r| r.kind == "new").unwrap().read
+        };
+        // Any later change on a PR whose review of yours is DISMISSED.
+        record(&store, &settings, &pr, &[ChangeKind::CiChanged], None, "2026-01-01T01:00:00Z", false);
+        assert!(unread_request(), "your verdict no longer counts, so they still want your review");
+
+        // Whereas a standing verdict of yours does retire it.
+        let mut approved = info();
+        approved.my_review_state = Some("APPROVED".into());
+        let pr = store.upsert_pr(&approved, &[PrSource::ReviewRequested], &[], now).unwrap();
+        record(&store, &settings, &pr, &[ChangeKind::CiChanged], None, "2026-01-01T02:00:00Z", false);
+        assert!(!unread_request());
     }
 }

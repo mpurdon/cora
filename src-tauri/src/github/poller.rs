@@ -207,6 +207,28 @@ fn notify_for_changes(
         );
     }
 
+    // The one that replaces the author's "can you re-approve?" ping.
+    let dismissed = if changes.contains(&ChangeKind::ApprovalDismissed) {
+        Some("approval")
+    } else if changes.contains(&ChangeKind::ChangesRequestDismissed) {
+        Some("change request")
+    } else {
+        None
+    };
+    if let Some(what) = dismissed {
+        let body = if changes.contains(&ChangeKind::NewCommits) {
+            format!("{} pushed new commits — {}", pr.info.author, pr.info.title)
+        } else {
+            pr.info.title.clone()
+        };
+        crate::notify::send(
+            app,
+            &format!("Your {what} on {short} was dismissed"),
+            &body,
+            Some(crate::notify::FocusTarget { pr_id: pr.info.id.clone(), comment_id: None }),
+        );
+    }
+
     if changes.contains(&ChangeKind::CiChanged)
         && pr.sources.contains(&PrSource::Authored)
         && matches!(pr.info.ci_status.as_deref(), Some("FAILURE") | Some("ERROR"))

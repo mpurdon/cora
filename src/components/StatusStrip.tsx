@@ -55,6 +55,8 @@ const KIND_LABEL: Record<ChangeKind, string> = {
   merged: "Merged",
   closed: "Closed",
   reopened: "Reopened",
+  "approval-dismissed": "Your approval was dismissed",
+  "changes-request-dismissed": "Your change request was dismissed",
 };
 
 /** The two kinds that outlive merely opening the PR, and what does clear them.

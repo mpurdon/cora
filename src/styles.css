@@ -647,6 +647,9 @@ input:focus-visible {
 .feed-icon.merged {
   color: var(--merge);
 }
+.feed-icon.warn {
+  color: var(--warn);
+}
 
 .feed-item.unread .feed-icon.neutral {
   color: var(--text);
@@ -1742,6 +1745,21 @@ body.col-resizing * {
   font-style: italic;
 }
 
+/* A review dismissal: something done *to* a verdict rather than by you, so
+   the line stays upright and the warn lamp carries it. Yours keeps the
+   violet "you" so it pairs with the approval it undid. */
+.dismissal-row .commit-sha {
+  cursor: default;
+}
+
+.dismissal-row .action-you {
+  color: var(--chat);
+}
+
+.dismissal-row .commit-msg {
+  color: var(--warn);
+}
+
 /* The PR an audit entry is about, inline after the action, opens it. */
 .audit-pr {
   margin-left: 6px;
@@ -1863,6 +1881,21 @@ body.col-resizing * {
 .review-chip.state-requested {
   border-style: dashed;
   color: var(--muted);
+}
+
+/* Your verdict, struck: the one chip that must not read like "you approved". */
+.review-chip.state-dismissed {
+  border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.review-chip.state-dismissed .review-glyph {
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.review-chip.state-dismissed .review-state {
+  color: var(--warn);
 }
 
 .action-btn {

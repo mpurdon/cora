@@ -96,6 +96,8 @@ function verbIcon(item: ActivityItem): { el: React.ReactElement; cls: string } {
       if (item.summary === "review approved") return { el: <IconCheckCircle />, cls: "ok" };
       if (item.summary === "changes requested") return { el: <IconXCircle />, cls: "bad" };
       return { el: <IconEye />, cls: "neutral" };
+    case "dismissed":
+      return { el: <IconAlertTriangle />, cls: "warn" };
     case "analysis":
       return { el: <IconSparkle />, cls: "chat" };
     default:
@@ -108,6 +110,8 @@ function verbIcon(item: ActivityItem): { el: React.ReactElement; cls: string } {
 function lineText(item: ActivityItem): string {
   if (item.kind === "comment") return item.summary.replace(/^commented:\s*/, "");
   if (item.kind === "analysis") return item.summary;
+  // The icon alone would read as a CI warning; say what was undone.
+  if (item.kind === "dismissed") return item.summary.replace(/ — review again$/, "");
   return "";
 }
 

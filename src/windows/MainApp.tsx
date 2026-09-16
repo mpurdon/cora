@@ -62,6 +62,7 @@ import { useChatStore } from "../state/chatStore";
 import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
 import { AttachmentRepo } from "../components/analysis/AttachedImage";
+import { describeDismissal, verdictNoun } from "../lib/dismissal";
 import { ciTone, isAuthored, isFinished, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
 import {
   initReviewStore,
@@ -270,16 +271,40 @@ function ReviewStrip({ reviews }: { reviews: PrReviews | null }) {
   const locked = lockedReview(reviews) != null;
   const iOweAReview = reviews.requested.includes(me);
   const others = reviews.reviews.filter((r) => r.author !== me);
-  const mine = locked || iOweAReview ? undefined : reviews.reviews.find((r) => r.author === me);
+  // A dismissed verdict of yours always shows, requested or not: "you
+  // approved" is exactly what the strip must stop saying, and "you
+  // requested" alone reads as if you never had.
+  const myLatest = reviews.reviews.find((r) => r.author === me);
+  const dismissed = myLatest?.state === "DISMISSED" ? myLatest : undefined;
+  const mine = locked || iOweAReview ? dismissed : myLatest;
   const requested = reviews.requested.filter((who) => who !== me || !locked);
   if (others.length === 0 && !mine && requested.length === 0) return null;
 
   const glyph = (state: string) =>
     state === "APPROVED" ? "✓" : state === "CHANGES_REQUESTED" ? "±" : "💬";
+  const d = reviews.myDismissal;
+  const dismissedChip = dismissed && (
+    <span
+      key="dismissed"
+      className="review-chip state-dismissed"
+      data-tip={
+        d
+          ? `${describeDismissal(d, me)} — GitHub no longer counts it; review again`
+          : "Your review was dismissed — GitHub no longer counts it; review again"
+      }
+    >
+      <span className="review-glyph">⊘</span>
+      your {d ? verdictNoun(d.previousState) : "review"} dismissed
+      <span className="review-state">
+        {d?.commitSha ? `by push ${d.commitSha}` : d ? `by @${d.actor}` : ""}
+      </span>
+    </span>
+  );
 
   return (
     <div className="review-strip">
-      {(mine ? [mine, ...others] : others).map((r) => (
+      {dismissedChip}
+      {(mine && !dismissed ? [mine, ...others] : others).map((r) => (
         <span key={r.author} className={`review-chip state-${r.state.toLowerCase()}`}>
           <span className="review-glyph">{glyph(r.state)}</span>
           {r.author === me ? "you" : r.author}
@@ -1461,7 +1486,9 @@ function Detail({
         <AnalysisPanel pr={pr} tab={tab} highlight={highlight} onFocusNodes={focusNodes} />
       )}
       {tab === "diff" && <DiffView prId={pr.id} headSha={pr.headSha} />}
-      {tab === "history" && <HistoryView prId={pr.id} headSha={pr.headSha} />}
+      {tab === "history" && (
+        <HistoryView prId={pr.id} headSha={pr.headSha} me={reviews?.viewerLogin ?? ""} />
+      )}
       {tab === "comments" && (
         <CommentsView
           prId={pr.id}

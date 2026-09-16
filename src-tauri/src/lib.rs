@@ -219,6 +219,7 @@ pub fn run() {
             commands::get_pr_comments,
             github::attachments::github_attachment,
             commands::get_pr_commits,
+            commands::get_pr_dismissals,
             commands::get_file_at_head,
             commands::refresh_pr,
             commands::get_pr_reviews,

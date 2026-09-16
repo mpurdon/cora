@@ -10,6 +10,7 @@ import type { ChangeKind } from "../bindings/ChangeKind";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { LogEntry } from "../bindings/LogEntry";
 import type { PrCommit } from "../bindings/PrCommit";
+import type { ReviewDismissal } from "../bindings/ReviewDismissal";
 import type { PrConversation } from "../bindings/PrConversation";
 import type { PrReviews } from "../bindings/PrReviews";
 import type { PrPriority } from "../bindings/PrPriority";
@@ -103,6 +104,7 @@ export const ipc = {
   githubAttachment: (repo: string, url: string) =>
     invoke<string>("github_attachment", { repo, url }),
   getPrCommits: (prId: string) => invoke<PrCommit[]>("get_pr_commits", { prId }),
+  getPrDismissals: (prId: string) => invoke<ReviewDismissal[]>("get_pr_dismissals", { prId }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),
   getPrReviews: (prId: string) => invoke<PrReviews>("get_pr_reviews", { prId }),
   mergePr: (prId: string, method: "squash" | "merge" | "rebase") =>

@@ -12,7 +12,8 @@ use crate::models::{ChangeKind, PrInfo, PrSource, ReviewMark, Settings, TrackedP
 /// superseded/retired automatically; comments and flagged rows never are.
 /// Owned here because the read/flag semantics live in this layer; the poller
 /// consumes it.
-pub const MECHANICAL_KINDS: &[&str] = &["new", "ready", "commits", "ci", "review", "analysis"];
+pub const MECHANICAL_KINDS: &[&str] =
+    &["new", "ready", "commits", "ci", "review", "dismissed", "analysis"];
 
 /// Feed rows that self-expire: notifications, not records. Once read, they are
 /// deleted after `PURGE_READ_AFTER_HOURS` instead of lingering in the feed.

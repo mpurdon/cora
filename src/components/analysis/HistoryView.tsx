@@ -3,7 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AuditEntry } from "../../bindings/AuditEntry";
 import type { PrCommit } from "../../bindings/PrCommit";
+import type { ReviewDismissal } from "../../bindings/ReviewDismissal";
 import { describeAudit } from "../../lib/audit";
+import { describeDismissal } from "../../lib/dismissal";
 import { ipc } from "../../lib/ipc";
 import { ciStatusTone, timeAgo } from "../../state/prStore";
 
@@ -12,11 +14,25 @@ import { ciStatusTone, timeAgo } from "../../state/prStore";
  *  reads in order instead of across two views. */
 type Item =
   | { kind: "commit"; at: string; commit: PrCommit }
-  | { kind: "action"; at: string; entry: AuditEntry };
+  | { kind: "action"; at: string; entry: AuditEntry }
+  | { kind: "dismissal"; at: string; dismissal: ReviewDismissal };
 
-export function HistoryView({ prId, headSha }: { prId: string; headSha: string }) {
+export function HistoryView({
+  prId,
+  headSha,
+  me,
+}: {
+  prId: string;
+  headSha: string;
+  /** Your login — a dismissal of your own review reads "your approval". */
+  me: string;
+}) {
   const [commits, setCommits] = useState<PrCommit[] | null>(null);
   const [actions, setActions] = useState<AuditEntry[]>([]);
+  // Review dismissals sit between "you approved" and the push that undid
+  // it — without them the timeline shows an approval that quietly stopped
+  // counting. Best effort: a failed fetch leaves the rest of the tab intact.
+  const [dismissals, setDismissals] = useState<ReviewDismissal[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const loadActions = () => void ipc.getPrAudit(prId).then(setActions).catch(() => {});
@@ -24,11 +40,13 @@ export function HistoryView({ prId, headSha }: { prId: string; headSha: string }
   useEffect(() => {
     setCommits(null);
     setActions([]);
+    setDismissals([]);
     setError(null);
     void ipc
       .getPrCommits(prId)
       .then(setCommits)
       .catch((e) => setError(String(e)));
+    void ipc.getPrDismissals(prId).then(setDismissals).catch(() => {});
     loadActions();
     // Anything you do from another tab — a comment, a review — lands here
     // without a reopen.
@@ -51,6 +69,7 @@ export function HistoryView({ prId, headSha }: { prId: string; headSha: string }
   const items: Item[] = [
     ...commits.map((c): Item => ({ kind: "commit", at: c.at, commit: c })),
     ...actions.filter((a) => !a.undone).map((a): Item => ({ kind: "action", at: a.at, entry: a })),
+    ...dismissals.map((d): Item => ({ kind: "dismissal", at: d.at, dismissal: d })),
   ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 
   if (items.length === 0) {
@@ -75,6 +94,25 @@ export function HistoryView({ prId, headSha }: { prId: string; headSha: string }
               <span />
               <span />
               <span className="commit-ago mono">{timeAgo(a.at)} ago</span>
+            </div>
+          );
+        }
+        if (item.kind === "dismissal") {
+          const d = item.dismissal;
+          const yours = d.reviewer === me;
+          return (
+            <div
+              key={`d:${d.at}:${d.reviewer}`}
+              className={`commit-row dismissal-row${yours ? " yours" : ""}`}
+            >
+              <span className="lamp warn" role="img" aria-label="review dismissed" />
+              <span className={`commit-sha mono${yours ? " action-you" : ""}`}>
+                {yours ? "you" : `@${d.reviewer}`}
+              </span>
+              <span className="commit-msg">{describeDismissal(d, me)}</span>
+              <span />
+              <span />
+              <span className="commit-ago mono">{timeAgo(d.at)} ago</span>
             </div>
           );
         }

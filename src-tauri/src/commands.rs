@@ -1130,29 +1130,33 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
     let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
     let data = client
         .run(
-            "query($owner: String!, $name: String!, $number: Int!) {
-              viewer { login }
-              repository(owner: $owner, name: $name) {
-                pullRequest(number: $number) {
-                  reviewRequests(first: 20) {
-                    nodes { requestedReviewer {
-                      ... on User { login }
-                      ... on Team { name }
-                    } }
-                  }
-                  latestReviews(first: 30) {
-                    nodes { author { login } state submittedAt }
-                  }
-                  commits(last: 1) { nodes { commit { committedDate } } }
-                  reviewThreads(first: 100) {
-                    nodes {
+            &format!("query($owner: String!, $name: String!, $number: Int!) {{
+              viewer {{ login }}
+              repository(owner: $owner, name: $name) {{
+                pullRequest(number: $number) {{
+                  reviewRequests(first: 20) {{
+                    nodes {{ requestedReviewer {{
+                      ... on User {{ login }}
+                      ... on Team {{ name }}
+                    }} }}
+                  }}
+                  latestReviews(first: 30) {{
+                    nodes {{ author {{ login }} state submittedAt }}
+                  }}
+                  viewerLatestReview {{ state submittedAt }}
+                  timelineItems(last: 20, itemTypes: [REVIEW_DISMISSED_EVENT]) {{
+                    nodes {{ ...DismissalFields }}
+                  }}
+                  commits(last: 1) {{ nodes {{ commit {{ committedDate }} }} }}
+                  reviewThreads(first: 100) {{
+                    nodes {{
                       isResolved
-                      comments(first: 1) { nodes { author { login } body } }
-                    }
-                  }
-                }
-              }
-            }",
+                      comments(first: 1) {{ nodes {{ author {{ login }} body }} }}
+                    }}
+                  }}
+                }}
+              }}
+            }}\n{DISMISSAL_FRAGMENT}"),
             &serde_json::json!({ "owner": owner, "name": name, "number": pr.info.number }),
         )
         .await?;
@@ -1173,7 +1177,7 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
         })
         .unwrap_or_default();
 
-    let reviews = data
+    let mut reviews: Vec<crate::models::ReviewSummary> = data
         .pointer("/repository/pullRequest/latestReviews/nodes")
         .and_then(serde_json::Value::as_array)
         .map(|nodes| {
@@ -1235,6 +1239,36 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
         })
         .unwrap_or((0, 0));
 
+    // `latestReviews` omits dismissed reviews, so a reviewer whose approval
+    // was just dismissed is absent from it — indistinguishable from someone
+    // who never reviewed. The viewer-scoped field still reports it; fold it
+    // back in as the viewer's latest, so the header can say what happened
+    // (and a just-submitted review held client-side sees the server agree).
+    let mut my_dismissal = None;
+    if data.pointer("/repository/pullRequest/viewerLatestReview/state").and_then(serde_json::Value::as_str)
+        == Some("DISMISSED")
+    {
+        reviews.retain(|r| r.author != viewer_login);
+        reviews.push(crate::models::ReviewSummary {
+            author: viewer_login.clone(),
+            state: "DISMISSED".into(),
+            submitted_at: data
+                .pointer("/repository/pullRequest/viewerLatestReview/submittedAt")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from),
+        });
+        my_dismissal = data
+            .pointer("/repository/pullRequest/timelineItems/nodes")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|nodes| {
+                nodes
+                    .iter()
+                    .rev()
+                    .filter_map(parse_review_dismissal)
+                    .find(|d| d.reviewer == viewer_login)
+            });
+    }
+
     Ok(crate::models::PrReviews {
         requested,
         reviews,
@@ -1242,7 +1276,71 @@ pub async fn get_pr_reviews(app: AppHandle, pr_id: String) -> AppResult<crate::m
         last_commit_at,
         open_threads,
         my_open_threads,
+        my_dismissal,
     })
+}
+
+/// The fields a `ReviewDismissedEvent` needs to become a `ReviewDismissal`.
+/// `pullRequestCommit` is set when a push dismissed the review under
+/// "dismiss stale approvals"; `dismissalMessage` when a person did it.
+const DISMISSAL_FRAGMENT: &str = "fragment DismissalFields on ReviewDismissedEvent {
+  createdAt
+  actor { login }
+  previousReviewState
+  dismissalMessage
+  review { author { login } }
+  pullRequestCommit { commit { abbreviatedOid url } }
+}";
+
+fn parse_review_dismissal(n: &serde_json::Value) -> Option<crate::models::ReviewDismissal> {
+    let text = |ptr: &str| n.pointer(ptr).and_then(serde_json::Value::as_str).map(String::from);
+    Some(crate::models::ReviewDismissal {
+        at: text("/createdAt")?,
+        actor: text("/actor/login").unwrap_or_else(|| "ghost".into()),
+        reviewer: text("/review/author/login").unwrap_or_else(|| "ghost".into()),
+        previous_state: text("/previousReviewState").unwrap_or_default(),
+        commit_sha: text("/pullRequestCommit/commit/abbreviatedOid"),
+        commit_url: text("/pullRequestCommit/commit/url"),
+        message: text("/dismissalMessage").unwrap_or_default(),
+    })
+}
+
+/// Every review dismissal on the PR, oldest first — the History tab
+/// interleaves them with commits so "approved, then a push dismissed it"
+/// reads in order.
+#[tauri::command]
+pub async fn get_pr_dismissals(
+    app: AppHandle,
+    pr_id: String,
+) -> AppResult<Vec<crate::models::ReviewDismissal>> {
+    let store = app.state::<crate::orgs::Orgs>().active();
+    let pr = store
+        .get_pr(&pr_id)?
+        .ok_or_else(|| AppError::Other("PR not found".into()))?;
+    let (owner, name) = pr.info.repo.split_once('/').unwrap();
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let settings = store.settings()?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?.with_health(crate::github::query::GraphQlClient::shared_health(&app));
+    let doc = format!(
+        "query($owner: String!, $name: String!, $number: Int!) {{
+          repository(owner: $owner, name: $name) {{
+            pullRequest(number: $number) {{
+              timelineItems(first: 100, itemTypes: [REVIEW_DISMISSED_EVENT]) {{
+                nodes {{ ...DismissalFields }}
+              }}
+            }}
+          }}
+        }}\n{DISMISSAL_FRAGMENT}"
+    );
+    let data = client
+        .run(&doc, &serde_json::json!({ "owner": owner, "name": name, "number": pr.info.number }))
+        .await?;
+    Ok(data
+        .pointer("/repository/pullRequest/timelineItems/nodes")
+        .and_then(serde_json::Value::as_array)
+        .map(|nodes| nodes.iter().filter_map(parse_review_dismissal).collect())
+        .unwrap_or_default())
 }
 
 /// Resolve or unresolve a review thread.

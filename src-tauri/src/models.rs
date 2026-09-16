@@ -109,6 +109,35 @@ pub enum ChangeKind {
     Closed,
     Reopened,
     DraftChanged,
+    /// Your approval was dismissed — by a push under "dismiss stale
+    /// approvals", or by hand — and GitHub wants a fresh one.
+    ApprovalDismissed,
+    /// Your changes-requested review was dismissed: someone overrode the
+    /// block rather than addressing it.
+    ChangesRequestDismissed,
+}
+
+impl ChangeKind {
+    /// Does this change hand the PR back to a reviewer who already gave a
+    /// verdict? Commits, human comments, a reopen, or a draft marked ready
+    /// do — there is something new to look at. A CI flip, a title edit, or
+    /// GitHub's aggregate `reviewDecision` settling minutes after your own
+    /// review (it lags, and the feed already calls that transition
+    /// mechanical) do not: nothing about the code or the conversation moved.
+    /// A dismissed verdict does: your review no longer counts, so the PR is
+    /// yours again whether or not anything else changed.
+    pub fn hands_back(self) -> bool {
+        matches!(
+            self,
+            ChangeKind::New
+                | ChangeKind::NewCommits
+                | ChangeKind::NewComments
+                | ChangeKind::Reopened
+                | ChangeKind::DraftChanged
+                | ChangeKind::ApprovalDismissed
+                | ChangeKind::ChangesRequestDismissed
+        )
+    }
 }
 
 impl ChangeKind {
@@ -681,6 +710,29 @@ pub struct ReviewSummary {
     pub submitted_at: Option<String>,
 }
 
+/// One review dismissal from the PR's timeline. GitHub's `latestReviews`
+/// drops dismissed reviews entirely, so without this a reviewer whose
+/// approval was just dismissed looks like one who never reviewed at all.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDismissal {
+    pub at: String,
+    /// Who dismissed it: the pusher for an automatic dismissal, the person
+    /// who clicked Dismiss for a manual one.
+    pub actor: String,
+    /// Whose review it was.
+    pub reviewer: String,
+    /// APPROVED | CHANGES_REQUESTED | COMMENTED — what the review said.
+    pub previous_state: String,
+    /// The push that dismissed it under "dismiss stale approvals"; None for
+    /// a manual dismissal.
+    pub commit_sha: Option<String>,
+    pub commit_url: Option<String>,
+    /// The reason given for a manual dismissal; empty otherwise.
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -703,6 +755,10 @@ pub struct PrReviews {
     #[serde(default)]
     #[ts(type = "number")]
     pub my_open_threads: i64,
+    /// The dismissal of your latest review, when that is what happened to
+    /// it — the header names the push (or person) that undid your verdict.
+    #[serde(default)]
+    pub my_dismissal: Option<ReviewDismissal>,
 }
 
 /// One user-taken action, recorded for the History view. `old_value` is what
@@ -914,6 +970,15 @@ pub fn compute_changes(old: &PrInfo, new: &PrInfo) -> Vec<ChangeKind> {
     if old.head_sha != new.head_sha {
         changes.push(ChangeKind::NewCommits);
     }
+    // Your verdict stopped counting. Only a transition *from* a verdict
+    // is news: a PR first seen with a dismissed review has nothing to say.
+    if new.my_review_state.as_deref() == Some("DISMISSED") {
+        match old.my_review_state.as_deref() {
+            Some("APPROVED") => changes.push(ChangeKind::ApprovalDismissed),
+            Some("CHANGES_REQUESTED") => changes.push(ChangeKind::ChangesRequestDismissed),
+            _ => {}
+        }
+    }
     // `old == 0 && new > 1` is almost always the one-time migration blip from
     // rows stored before comment tracking existed — don't spam on upgrade.
     if new.total_comments > old.total_comments
@@ -1011,6 +1076,29 @@ mod tests {
         assert!(changes.contains(&ChangeKind::CiChanged));
         assert!(changes.contains(&ChangeKind::NewCommits));
         assert_eq!(changes.len(), 3);
+    }
+
+    #[test]
+    fn a_dismissed_verdict_is_a_change_only_from_a_verdict() {
+        let mut old = pr();
+        let mut new = pr();
+        old.my_review_state = Some("APPROVED".into());
+        new.my_review_state = Some("DISMISSED".into());
+        assert_eq!(compute_changes(&old, &new), vec![ChangeKind::ApprovalDismissed]);
+        assert!(ChangeKind::ApprovalDismissed.hands_back());
+
+        old.my_review_state = Some("CHANGES_REQUESTED".into());
+        assert_eq!(compute_changes(&old, &new), vec![ChangeKind::ChangesRequestDismissed]);
+
+        // First seen already dismissed, or a bare comment dismissed: nothing
+        // to hand back, nothing to say.
+        old.my_review_state = None;
+        assert!(compute_changes(&old, &new).is_empty());
+        old.my_review_state = Some("COMMENTED".into());
+        assert!(compute_changes(&old, &new).is_empty());
+        // Unchanged DISMISSED must not re-fire every poll.
+        old.my_review_state = Some("DISMISSED".into());
+        assert!(compute_changes(&old, &new).is_empty());
     }
 
     #[test]
