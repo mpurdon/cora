@@ -1023,8 +1023,9 @@ function TeamsPane({ settings, save }: PaneProps) {
         hint="A wrong result is fixed under Settings → Users → Teams email, which always wins."
       >
         <span className="field-static">
-          Your Users override → their GitHub profile email → the address they sign commits with
-          → a guess from their name → an off-domain address, flagged.
+          Your Users override → their GitHub profile email (only if your PAT has the{" "}
+          <span className="mono">read:user</span> scope; skipped otherwise) → the address they
+          sign commits with → a guess from their name → an off-domain address, flagged.
         </span>
       </Field>
     </section>

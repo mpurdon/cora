@@ -75,7 +75,7 @@ pub async fn resolve_recipient(app: &AppHandle, pr_id: &str) -> AppResult<TeamsR
     let data = client
         .run(
             "query($login: String!, $owner: String!, $name: String!, $number: Int!) {
-              user(login: $login) { email name }
+              user(login: $login) { name }
               repository(owner: $owner, name: $name) {
                 pullRequest(number: $number) {
                   commits(last: 30) { nodes { commit { author { email user { login } } } } }
@@ -114,10 +114,21 @@ pub async fn resolve_recipient(app: &AppHandle, pr_id: &str) -> AppResult<TeamsR
     let mut commits = authors("/repository/pullRequest/commits/nodes");
     commits.extend(authors("/repository/defaultBranchRef/target/history/nodes"));
 
+    // The profile email is the one field behind a PAT scope (read:user /
+    // user:email) most tokens lack, and GitHub fails the whole query over
+    // it — so it's asked for separately and treated as a bonus. Missing
+    // scope, private email, no such field: all the same "nothing there".
+    let profile_email = client
+        .run("query($login: String!) { user(login: $login) { email } }", &json!({ "login": login }))
+        .await
+        .ok()
+        .and_then(|d| d.pointer("/user/email").and_then(Value::as_str).map(String::from))
+        .unwrap_or_default();
+
     let known = GitHubKnows {
         login: login.clone(),
         name: data.pointer("/user/name").and_then(Value::as_str).unwrap_or_default().to_string(),
-        profile_email: data.pointer("/user/email").and_then(Value::as_str).unwrap_or_default().to_string(),
+        profile_email,
         commits,
     };
     pick_recipient(&known, &settings.teams_email_domains).ok_or_else(|| {
