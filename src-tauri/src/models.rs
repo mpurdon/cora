@@ -377,7 +377,7 @@ pub struct Settings {
     /// so it also overrides a wrong guess.
     #[serde(default)]
     pub author_emails: std::collections::HashMap<String, String>,
-    /// The domains work addresses live on ("trajectorservices.com"). With
+    /// The domains work addresses live on ("example.com"). With
     /// these set, a Teams message goes to an address on them or to one you
     /// set by hand — never quietly to the gmail on someone's GitHub
     /// profile — and an author with no usable address at all gets a guess
