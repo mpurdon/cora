@@ -929,17 +929,19 @@ function TeamsPane({ settings, save }: PaneProps) {
       >
         <ol className="teams-howto">
           <li>
-            In Teams open <strong>Workflows</strong> → <em>Build from scratch</em>. Trigger:{" "}
-            <strong>When a Teams webhook request is received</strong>. Copy its URL into the
-            field above.
+            In Teams open <strong>Workflows</strong> → <em>Build from scratch</em>. Under{" "}
+            <em>Starts when</em> pick <strong>Teams → From a link</strong> (that's the webhook
+            trigger; Power Automate calls it "When a Teams webhook request is received"). Copy
+            its URL into the field above.
           </li>
           <li>
-            Add <strong>Microsoft Teams → Create a chat</strong>. Members: your address and{" "}
-            <span className="mono">triggerBody()?['to']</span>. For a 1:1 it returns the chat you
-            already have.
+            Under <em>Then do this</em> add <strong>Teams → Create a chat</strong>. Members:
+            your address and <span className="mono">triggerBody()?['to']</span>. For a 1:1 it
+            returns the chat you already have. If the simplified builder doesn't list it, choose{" "}
+            <em>Build with Power Automate</em> — the full editor has every Teams action.
           </li>
           <li>
-            Add <strong>Microsoft Teams → Post message in a chat or channel</strong>. Post as{" "}
+            Add <strong>Teams → Post message in a chat or channel</strong>. Post as{" "}
             <em>User</em>, post in <em>Group chat</em>, chat = the id from step 2, message ={" "}
             <span className="mono">triggerBody()?['text']</span>.
           </li>
