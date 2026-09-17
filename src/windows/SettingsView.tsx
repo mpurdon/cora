@@ -931,8 +931,10 @@ function TeamsPane({ settings, save }: PaneProps) {
           <li>
             In Teams open <strong>Workflows</strong> → <em>Build from scratch</em>. Under{" "}
             <em>Starts when</em> pick <strong>Teams → From a link</strong> (that's the webhook
-            trigger; Power Automate calls it "When a Teams webhook request is received"). Copy
-            its URL into the field above.
+            trigger; Power Automate calls it "When a Teams webhook request is received"). Set{" "}
+            <em>Who can trigger the workflow?</em> to <strong>Anyone</strong> — CORA's request
+            carries no Microsoft sign-in, so the tenant-only options would reject it; the URL's
+            signature is the secret. Copy its URL into the field above.
           </li>
           <li>
             Under <em>Then do this</em> add <strong>Teams → Create a chat</strong>. Members:
