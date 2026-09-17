@@ -18,7 +18,16 @@ authorPriorities: { [key in string]: RepoPriority },
  * say (private profile email, noreply commit emails). Consulted first,
  * so it also overrides a wrong guess.
  */
-authorEmails: { [key in string]: string }, pollIntervalSecs: number, 
+authorEmails: { [key in string]: string }, 
+/**
+ * The domains work addresses live on ("trajectorservices.com"). With
+ * these set, a Teams message goes to an address on them or to one you
+ * set by hand — never quietly to the gmail on someone's GitHub
+ * profile — and an author with no usable address at all gets a guess
+ * of the form the org uses (first.last@) on the first domain, flagged
+ * as a guess.
+ */
+teamsEmailDomains: Array<string>, pollIntervalSecs: number, 
 /**
  * Show the always-on-top callout window when the app starts.
  */

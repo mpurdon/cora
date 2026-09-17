@@ -38,10 +38,11 @@ const WEBHOOK_TIMEOUT_SECS: u64 = 20;
 /// Audit action for a message to the author — the History tab's row.
 pub const AUDIT_ACTION: &str = "teams-messaged";
 
-/// Who the author is on Teams. Settings first (it's also the override for a
-/// wrong guess), then GitHub's public profile email, then the address they
-/// author their commits with — corporate SSO orgs almost always sign
-/// commits with the work address, which is the Teams one.
+/// Who the author is on Teams. Settings first (it's also the override for
+/// a wrong guess); then what GitHub knows — the profile's public email and
+/// the addresses they author commits with, on this PR and on the repo's
+/// main branch — ranked by `pick_recipient`, which is where the work-domain
+/// rules live.
 pub async fn resolve_recipient(app: &AppHandle, pr_id: &str) -> AppResult<TeamsRecipient> {
     let store = app.state::<crate::orgs::Orgs>().active();
     let pr = store
@@ -49,7 +50,9 @@ pub async fn resolve_recipient(app: &AppHandle, pr_id: &str) -> AppResult<TeamsR
         .ok_or_else(|| AppError::Other("PR not found".into()))?;
     let login = pr.info.author.clone();
     let settings = store.settings()?;
-    if let Some(email) = settings.author_emails.get(&login).map(|e| e.trim()).filter(|e| !e.is_empty()) {
+    if let Some(email) =
+        settings.author_emails.get(&login).map(|e| e.trim()).filter(|e| !e.is_empty())
+    {
         return Ok(TeamsRecipient { login, email: email.to_string(), source: "settings".into() });
     }
 
@@ -58,42 +61,195 @@ pub async fn resolve_recipient(app: &AppHandle, pr_id: &str) -> AppResult<TeamsR
         .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
     let client = GraphQlClient::new(&settings.github_graphql_url, &token)?
         .with_health(GraphQlClient::shared_health(app));
+    // The main-branch history serves twice: the author's commits beyond this
+    // PR, and everyone else's (name, address) pairs, from which the org's
+    // local-part convention is learned for the guess.
     let data = client
         .run(
             "query($login: String!, $owner: String!, $name: String!, $number: Int!) {
-              user(login: $login) { email }
+              user(login: $login) { email name }
               repository(owner: $owner, name: $name) {
                 pullRequest(number: $number) {
                   commits(last: 30) { nodes { commit { author { email user { login } } } } }
                 }
+                defaultBranchRef { target { ... on Commit {
+                  history(first: 100) { nodes { author { email user { login name } } } }
+                } } }
               }
             }",
             &json!({ "login": login, "owner": owner, "name": name, "number": pr.info.number }),
         )
         .await?;
 
-    if let Some(email) = data.pointer("/user/email").and_then(Value::as_str).filter(|e| usable_email(e)) {
-        return Ok(TeamsRecipient { login, email: email.to_string(), source: "profile".into() });
+    let authors = |ptr: &str| -> Vec<CommitAuthor> {
+        data.pointer(ptr)
+            .and_then(Value::as_array)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|n| {
+                        let a = n.pointer("/commit/author").or_else(|| n.pointer("/author"))?;
+                        Some(CommitAuthor {
+                            login: a.pointer("/user/login").and_then(Value::as_str)?.to_string(),
+                            name: a
+                                .pointer("/user/name")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            email: a.get("email").and_then(Value::as_str)?.to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut commits = authors("/repository/pullRequest/commits/nodes");
+    commits.extend(authors("/repository/defaultBranchRef/target/history/nodes"));
+
+    let known = GitHubKnows {
+        login: login.clone(),
+        name: data.pointer("/user/name").and_then(Value::as_str).unwrap_or_default().to_string(),
+        profile_email: data.pointer("/user/email").and_then(Value::as_str).unwrap_or_default().to_string(),
+        commits,
+    };
+    pick_recipient(&known, &settings.teams_email_domains).ok_or_else(|| {
+        AppError::Other(format!(
+            "No Teams address for @{login} — GitHub shows no usable email and their commits don't carry one. Set it under Settings → Users."
+        ))
+    })
+}
+
+/// One commit's author as GitHub reports it: the account it's linked to,
+/// that account's display name, and the address on the commit.
+#[derive(Debug, Clone)]
+struct CommitAuthor {
+    login: String,
+    name: String,
+    email: String,
+}
+
+/// Everything GitHub could tell us about the author, gathered so the
+/// ranking is a pure function of it.
+#[derive(Debug, Clone, Default)]
+struct GitHubKnows {
+    login: String,
+    name: String,
+    profile_email: String,
+    /// This PR's commits and the repo's recent main-branch history — the
+    /// author's own and everyone else's.
+    commits: Vec<CommitAuthor>,
+}
+
+/// The ranking. With work domains configured: the profile email if it's
+/// on one, else the on-domain address they sign most commits with, else a
+/// guess from their display name in the org's convention, else — flagged
+/// — whatever off-domain address exists. Without domains: profile, then
+/// commits, no guessing (there's no domain to guess on).
+fn pick_recipient(known: &GitHubKnows, domains: &[String]) -> Option<TeamsRecipient> {
+    let domains: Vec<String> =
+        domains.iter().map(|d| d.trim().trim_start_matches('@').to_lowercase()).filter(|d| !d.is_empty()).collect();
+    let on_domain = |email: &str| -> bool {
+        domains.is_empty() || email.rsplit('@').next().is_some_and(|d| domains.contains(&d.to_lowercase()))
+    };
+    let recipient = |email: String, source: &str| {
+        Some(TeamsRecipient { login: known.login.clone(), email, source: source.into() })
+    };
+
+    let profile = known.profile_email.trim().to_lowercase();
+    if usable_email(&profile) && on_domain(&profile) {
+        return recipient(profile, "profile");
     }
-    let commit_emails = data
-        .pointer("/repository/pullRequest/commits/nodes")
-        .and_then(Value::as_array)
-        .map(|nodes| {
-            nodes
-                .iter()
-                .filter(|n| {
-                    n.pointer("/commit/author/user/login").and_then(Value::as_str) == Some(login.as_str())
-                })
-                .filter_map(|n| n.pointer("/commit/author/email").and_then(Value::as_str))
-                .collect::<Vec<_>>()
+    let mine: Vec<&str> = known
+        .commits
+        .iter()
+        .filter(|c| c.login == known.login)
+        .map(|c| c.email.as_str())
+        .collect();
+    let work: Vec<&str> = mine.iter().copied().filter(|e| on_domain(&e.to_lowercase())).collect();
+    if let Some(email) = commonest_email(&work) {
+        return recipient(email, "commits");
+    }
+    if let Some(primary) = domains.first() {
+        let convention = learn_convention(&known.commits, &domains).unwrap_or(Convention::FirstDotLast);
+        if let Some(local) = convention.local_part(&known.name) {
+            return recipient(format!("{local}@{primary}"), "guessed");
+        }
+    }
+    // Off-domain, and only because nothing better exists: the header says
+    // so, and the send still sits behind the user's confirmation.
+    if usable_email(&profile) {
+        return recipient(profile, "personal");
+    }
+    commonest_email(&mine).and_then(|email| recipient(email, "personal"))
+}
+
+/// How an org forms the local part of a work address from a person's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Convention {
+    FirstDotLast,
+    FirstLast,
+    FLast,
+    FirstL,
+    First,
+}
+
+impl Convention {
+    const ALL: [Convention; 5] = [
+        Convention::FirstDotLast,
+        Convention::FirstLast,
+        Convention::FLast,
+        Convention::FirstL,
+        Convention::First,
+    ];
+
+    /// The local part this convention gives a display name — None when the
+    /// name can't supply the parts ("mp", a handle, a single word).
+    fn local_part(self, name: &str) -> Option<String> {
+        let parts: Vec<String> = name
+            .to_lowercase()
+            .split_whitespace()
+            .map(|w| w.chars().filter(|c| c.is_ascii_alphabetic()).collect::<String>())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let (first, last) = match parts.as_slice() {
+            [] => return None,
+            [only] => (only.as_str(), ""),
+            [first, .., last] => (first.as_str(), last.as_str()),
+        };
+        if last.is_empty() && self != Convention::First {
+            return None;
+        }
+        Some(match self {
+            Convention::FirstDotLast => format!("{first}.{last}"),
+            Convention::FirstLast => format!("{first}{last}"),
+            Convention::FLast => format!("{}{last}", &first[..1]),
+            Convention::FirstL => format!("{first}{}", &last[..1]),
+            Convention::First => first.to_string(),
         })
-        .unwrap_or_default();
-    match commonest_email(&commit_emails) {
-        Some(email) => Ok(TeamsRecipient { login, email, source: "commits".into() }),
-        None => Err(AppError::Other(format!(
-            "No Teams address for @{login} — GitHub shows no email and their commits don't carry one. Set it under Settings → Users."
-        ))),
     }
+}
+
+/// The convention most on-domain (name, address) pairs in the history
+/// follow — one vote per person, and only when at least two people agree,
+/// since one pair matches several conventions by coincidence.
+fn learn_convention(commits: &[CommitAuthor], domains: &[String]) -> Option<Convention> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut votes = [0usize; 5];
+    for c in commits {
+        let email = c.email.trim().to_lowercase();
+        let Some((local, domain)) = email.rsplit_once('@') else { continue };
+        if !domains.contains(&domain.to_string()) || seen.contains(&c.login.as_str()) {
+            continue;
+        }
+        seen.push(&c.login);
+        for (i, conv) in Convention::ALL.iter().enumerate() {
+            if conv.local_part(&c.name).as_deref() == Some(local) {
+                votes[i] += 1;
+            }
+        }
+    }
+    let (i, best) = votes.iter().enumerate().max_by_key(|(_, n)| **n)?;
+    (*best >= 2).then_some(Convention::ALL[i])
 }
 
 /// Real, deliverable addresses only: GitHub's noreply aliases would bounce.
@@ -239,6 +395,94 @@ pub fn validate_webhook_url(url: &str) -> AppResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn author(login: &str, name: &str, email: &str) -> CommitAuthor {
+        CommitAuthor { login: login.into(), name: name.into(), email: email.into() }
+    }
+
+    fn known(profile: &str, commits: Vec<CommitAuthor>) -> GitHubKnows {
+        GitHubKnows {
+            login: "adamh".into(),
+            name: "Adam Hare".into(),
+            profile_email: profile.into(),
+            commits,
+        }
+    }
+
+    fn domains() -> Vec<String> {
+        vec!["corp.com".into(), "corp-services.com".into()]
+    }
+
+    #[test]
+    fn with_domains_set_the_gmail_on_the_profile_loses_to_the_work_commit_address() {
+        let k = known("adam@gmail.com", vec![author("adamh", "Adam Hare", "Adam.Hare@Corp.com")]);
+        let r = pick_recipient(&k, &domains()).unwrap();
+        assert_eq!((r.email.as_str(), r.source.as_str()), ("adam.hare@corp.com", "commits"));
+        // Without domains the profile email is taken at its word.
+        let r = pick_recipient(&k, &[]).unwrap();
+        assert_eq!((r.email.as_str(), r.source.as_str()), ("adam@gmail.com", "profile"));
+    }
+
+    #[test]
+    fn a_work_profile_email_wins_outright() {
+        let k = known("ahare@corp-services.com", vec![author("adamh", "Adam Hare", "adam.hare@corp.com")]);
+        let r = pick_recipient(&k, &domains()).unwrap();
+        assert_eq!((r.email.as_str(), r.source.as_str()), ("ahare@corp-services.com", "profile"));
+    }
+
+    #[test]
+    fn nothing_on_domain_means_a_guess_in_the_orgs_convention_on_the_first_domain() {
+        // Two colleagues establish first.last; the author only ever used noreply.
+        let k = known(
+            "",
+            vec![
+                author("adamh", "Adam Hare", "1+adamh@users.noreply.github.com"),
+                author("jo", "Jo Bloggs", "jo.bloggs@corp.com"),
+                author("sam", "Sam Lee", "sam.lee@corp-services.com"),
+            ],
+        );
+        let r = pick_recipient(&k, &domains()).unwrap();
+        assert_eq!((r.email.as_str(), r.source.as_str()), ("adam.hare@corp.com", "guessed"));
+
+        // The convention is learned, not assumed: flast colleagues → flast guess.
+        let k = known(
+            "",
+            vec![author("jo", "Jo Bloggs", "jbloggs@corp.com"), author("sam", "Sam Lee", "slee@corp.com")],
+        );
+        assert_eq!(pick_recipient(&k, &domains()).unwrap().email, "ahare@corp.com");
+    }
+
+    #[test]
+    fn a_guess_needs_a_two_word_name_and_a_domain() {
+        let mut k = known("", vec![]);
+        k.name = "mp".into();
+        assert!(pick_recipient(&k, &domains()).is_none());
+        k.name = "Adam Hare".into();
+        assert!(pick_recipient(&k, &[]).is_none(), "no domain to guess on");
+        assert_eq!(pick_recipient(&k, &domains()).unwrap().source, "guessed");
+    }
+
+    #[test]
+    fn an_off_domain_address_is_the_flagged_last_resort() {
+        let mut k = known("adam@gmail.com", vec![]);
+        k.name = "mp".into(); // no guess possible
+        let r = pick_recipient(&k, &domains()).unwrap();
+        assert_eq!((r.email.as_str(), r.source.as_str()), ("adam@gmail.com", "personal"));
+    }
+
+    #[test]
+    fn one_matching_pair_is_not_a_convention() {
+        // "Jo Bloggs" → "jobloggs" and "jbloggs" can't both be right; one
+        // person can't settle it.
+        let commits = vec![author("jo", "Jo Bloggs", "jobloggs@corp.com")];
+        assert_eq!(learn_convention(&commits, &domains()), None);
+        let commits = vec![
+            author("jo", "Jo Bloggs", "jobloggs@corp.com"),
+            author("jo", "Jo Bloggs", "jobloggs@corp.com"), // same person twice: one vote
+            author("sam", "Sam Lee", "samlee@corp.com"),
+        ];
+        assert_eq!(learn_convention(&commits, &domains()), Some(Convention::FirstLast));
+    }
 
     #[test]
     fn the_work_address_outvotes_a_stray_personal_one() {

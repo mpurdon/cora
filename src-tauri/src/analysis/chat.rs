@@ -708,12 +708,22 @@ async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) ->
         "message_author_on_teams" => {
             let out =
                 crate::teams::message_author(app, pr_id, &str_arg(input, "body")?, Some(VIA)).await?;
+            let who = match out.recipient.source.as_str() {
+                "guessed" => format!(
+                    "@{} at {} — an address GUESSED from their display name in the org's convention; suggest the user confirms it arrived",
+                    out.recipient.login, out.recipient.email
+                ),
+                "personal" => format!(
+                    "@{} at {} — a personal, off-domain address, the only one GitHub had",
+                    out.recipient.login, out.recipient.email
+                ),
+                _ => format!("@{} ({})", out.recipient.login, out.recipient.email),
+            };
             Ok(if out.delivery == "sent" {
-                format!("Sent on Teams to @{} ({})", out.recipient.login, out.recipient.email)
+                format!("Sent on Teams to {who}")
             } else {
                 format!(
-                    "No Teams webhook is configured, so Teams was opened on the chat with @{} ({}) with the message drafted — the user has to press Enter there to send it. Do not describe it as sent.",
-                    out.recipient.login, out.recipient.email
+                    "No Teams webhook is configured, so Teams was opened on the chat with {who} with the message drafted — the user has to press Enter there to send it. Do not describe it as sent."
                 )
             })
         }

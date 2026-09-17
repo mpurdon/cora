@@ -310,7 +310,7 @@ export function SettingsView({
               <GitHubPane settings={settings} save={save} />
             </PaneNameCtx.Provider>
             <PaneNameCtx.Provider value="Teams">
-              <TeamsPane />
+              <TeamsPane settings={settings} save={save} />
             </PaneNameCtx.Provider>
             <PaneNameCtx.Provider value="AWS">
               <AwsPane settings={settings} save={save} />
@@ -325,7 +325,7 @@ export function SettingsView({
           {pane === "general" && <GeneralPane settings={settings} save={save} />}
           {pane === "appearance" && <AppearancePane />}
           {pane === "github" && <GitHubPane settings={settings} save={save} />}
-          {pane === "teams" && <TeamsPane />}
+          {pane === "teams" && <TeamsPane settings={settings} save={save} />}
           {pane === "orgs" && <OrgsPane />}
           {pane === "repos" && (
             <ReposPane
@@ -807,8 +807,9 @@ function GitHubPane({ settings, save }: PaneProps) {
  *  flow the user builds once, posting as them, driven by a webhook. The
  *  trigger URL is the credential; it goes to the Keychain like the PAT. With
  *  no webhook the button still works — it opens Teams with the text drafted. */
-function TeamsPane() {
+function TeamsPane({ settings, save }: PaneProps) {
   const [present, setPresent] = useState(false);
+  const [domainsDraft, setDomainsDraft] = useState(settings.teamsEmailDomains.join(", "));
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [testTo, setTestTo] = useState("");
@@ -954,11 +955,46 @@ function TeamsPane() {
   "pr":   { "repo": "…", "number": 42, "title": "…", "url": "…", "author": "…" }
 }`}</pre>
       </Field>
+      <h3 className="pane-subhead">Who gets the message</h3>
       <Field
-        label="Who gets the message"
-        hint="Resolved per PR: the address you set under Users, else the author's public GitHub email, else the address they sign their commits with."
+        label="Work email domains"
+        hint={
+          <>
+            Comma-separated, e.g. <span className="mono">example.com, example-services.com</span>.
+            With these set, only addresses on them count — the gmail on someone's GitHub profile
+            never wins — and an author with no work address on record gets a guess in the org's
+            convention (<span className="mono">first.last@</span> the first domain, learned from
+            the repo's commit history), marked as a guess in the composer. Leave blank to take
+            GitHub at its word.
+          </>
+        }
       >
-        <span className="field-static">Settings → Users → Teams email overrides a wrong guess.</span>
+        <input
+          className="mono"
+          placeholder="example.com, example-services.com"
+          value={domainsDraft}
+          onChange={(e) => setDomainsDraft(e.target.value)}
+          onBlur={() => {
+            const domains = domainsDraft
+              .split(/[,\s]+/)
+              .map((d) => d.trim().replace(/^@/, "").toLowerCase())
+              .filter(Boolean);
+            setDomainsDraft(domains.join(", "));
+            if (domains.join(",") !== settings.teamsEmailDomains.join(",")) {
+              void save({ teamsEmailDomains: domains });
+            }
+          }}
+          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        />
+      </Field>
+      <Field
+        label="Resolution order"
+        hint="A wrong result is fixed under Settings → Users → Teams email, which always wins."
+      >
+        <span className="field-static">
+          Your Users override → their GitHub profile email → the address they sign commits with
+          → a guess from their name → an off-domain address, flagged.
+        </span>
       </Field>
     </section>
   );

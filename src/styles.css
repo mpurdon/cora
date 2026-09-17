@@ -1833,6 +1833,10 @@ body.col-resizing * {
   color: color-mix(in srgb, var(--muted) 70%, transparent);
 }
 
+.teams-source.warn {
+  color: var(--warn);
+}
+
 /* What just happened on the Teams route, beside the buttons. */
 .review-notice {
   font-size: 11px;

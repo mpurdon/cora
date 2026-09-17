@@ -5,7 +5,9 @@
  */
 export type TeamsRecipient = { login: string, email: string, 
 /**
- * settings | profile | commits — the settings override, the GitHub
- * profile's public email, or the address they author commits with.
+ * settings | profile | commits | guessed | personal — the settings
+ * override; the GitHub profile's public email; the address they author
+ * commits with; a first.last@work-domain guess from their display name
+ * (check it); or an off-domain address, all that could be found.
  */
 source: string, };

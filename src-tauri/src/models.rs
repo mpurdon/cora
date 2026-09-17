@@ -377,6 +377,14 @@ pub struct Settings {
     /// so it also overrides a wrong guess.
     #[serde(default)]
     pub author_emails: std::collections::HashMap<String, String>,
+    /// The domains work addresses live on ("trajectorservices.com"). With
+    /// these set, a Teams message goes to an address on them or to one you
+    /// set by hand — never quietly to the gmail on someone's GitHub
+    /// profile — and an author with no usable address at all gets a guess
+    /// of the form the org uses (first.last@) on the first domain, flagged
+    /// as a guess.
+    #[serde(default)]
+    pub teams_email_domains: Vec<String>,
     #[ts(type = "number")]
     pub poll_interval_secs: u64,
     /// Show the always-on-top callout window when the app starts.
@@ -631,6 +639,7 @@ impl Default for Settings {
             repo_priorities: std::collections::HashMap::new(),
             author_priorities: std::collections::HashMap::new(),
             author_emails: std::collections::HashMap::new(),
+            teams_email_domains: Vec::new(),
             poll_interval_secs: 45,
             show_callout_on_startup: true,
             github_graphql_url: "https://api.github.com/graphql".into(),
@@ -727,8 +736,10 @@ pub struct ReviewDismissal {
 pub struct TeamsRecipient {
     pub login: String,
     pub email: String,
-    /// settings | profile | commits — the settings override, the GitHub
-    /// profile's public email, or the address they author commits with.
+    /// settings | profile | commits | guessed | personal — the settings
+    /// override; the GitHub profile's public email; the address they author
+    /// commits with; a first.last@work-domain guess from their display name
+    /// (check it); or an off-domain address, all that could be found.
     pub source: String,
 }
 

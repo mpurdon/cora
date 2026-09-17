@@ -514,12 +514,16 @@ function ReviewActions({
           {recipient ? (
             <>
               → @{recipient.login} · {recipient.email}
-              <span className="teams-source">
+              <span className={`teams-source${/^(guessed|personal)$/.test(recipient.source) ? " warn" : ""}`}>
                 {recipient.source === "settings"
                   ? "from your settings"
                   : recipient.source === "profile"
                     ? "from their GitHub profile"
-                    : "from their commits"}
+                    : recipient.source === "commits"
+                      ? "from their commits"
+                      : recipient.source === "guessed"
+                        ? "guessed from their name — check it"
+                        : "personal address — not a work one"}
               </span>
             </>
           ) : recipientError ? (
