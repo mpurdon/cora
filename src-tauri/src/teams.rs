@@ -440,7 +440,9 @@ async fn flow_token(tenant: &str) -> AppResult<Option<String>> {
 /// The message as the flow's HTML field wants it: escaped, line breaks
 /// kept, the PR's own reference ("widgets#42", "acme/widgets#42") a link
 /// to the PR, and bare URLs clickable. The plain `text` stays the source of
-/// truth; this is a rendering of it.
+/// truth; this is a rendering of it. A line that is only the PR's URL is
+/// dropped once the ref carries the link: the plain text needs it (a
+/// compose box can't link a word), the HTML doesn't.
 fn message_html(text: &str, repo: &str, number: i64, url: &str) -> String {
     let escaped = text
         .replace('&', "&amp;")
@@ -453,9 +455,14 @@ fn message_html(text: &str, repo: &str, number: i64, url: &str) -> String {
     } else {
         Vec::new()
     };
+    let is_ref = |token: &str| refs.iter().any(|r| r == token);
+    let ref_linked = escaped
+        .split_whitespace()
+        .any(|t| is_ref(t.trim_end_matches(['.', ',', ';', ':', ')', '!', '?'])));
+    let redundant_url = |line: &str| ref_linked && line.trim() == url_attr(url);
     // One pass over whitespace-separated tokens: a token is the ref (with
     // trailing punctuation allowed), a URL, or plain text.
-    for line in escaped.split('\n') {
+    for line in escaped.split('\n').filter(|l| !redundant_url(l)) {
         if !out.is_empty() {
             out.push_str("<br>");
         }
@@ -467,7 +474,7 @@ fn message_html(text: &str, repo: &str, number: i64, url: &str) -> String {
             first = false;
             let trimmed = token.trim_end_matches(['.', ',', ';', ':', ')', '!', '?']);
             let tail = &token[trimmed.len()..];
-            if refs.iter().any(|r| r == trimmed) {
+            if is_ref(trimmed) {
                 out.push_str(&format!("<a href=\"{}\">{trimmed}</a>{tail}", url_attr(url)));
             } else if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
                 out.push_str(&format!("<a href=\"{trimmed}\">{trimmed}</a>{tail}"));
@@ -662,6 +669,25 @@ mod tests {
             "Approved <a href=\"https://github.com/acme/widgets/pull/42\">widgets#42</a>. See a.py &amp; b.py.<br>\
              <a href=\"https://github.com/acme/widgets/pull/42?x=1\">https://github.com/acme/widgets/pull/42?x=1</a>"
         );
+        // The seed's own trailing URL line is redundant once the ref links.
+        let html = message_html(
+            "Approved widgets#42. Nothing blocking from me.\nhttps://github.com/acme/widgets/pull/42",
+            "acme/widgets",
+            42,
+            "https://github.com/acme/widgets/pull/42",
+        );
+        assert_eq!(
+            html,
+            "Approved <a href=\"https://github.com/acme/widgets/pull/42\">widgets#42</a>. Nothing blocking from me."
+        );
+        // Without the ref in the text, the URL is the only link: kept.
+        let html = message_html(
+            "Approved your PR.\nhttps://github.com/acme/widgets/pull/42",
+            "acme/widgets",
+            42,
+            "https://github.com/acme/widgets/pull/42",
+        );
+        assert!(html.ends_with("<br><a href=\"https://github.com/acme/widgets/pull/42\">https://github.com/acme/widgets/pull/42</a>"));
         // The long form links too; another PR's number does not.
         assert!(message_html("acme/widgets#42,", "acme/widgets", 42, "u").starts_with("<a href=\"u\">acme/widgets#42</a>,"));
         assert_eq!(message_html("widgets#43", "acme/widgets", 42, "u"), "widgets#43");

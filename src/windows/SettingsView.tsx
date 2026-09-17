@@ -985,7 +985,7 @@ function TeamsPane({ settings, save }: PaneProps) {
         <pre className="teams-payload mono">{`{
   "to":   "author@yourcompany.com",
   "text": "Approved widgets#42. Nothing blocking from me.\nhttps://github.com/…/pull/42",
-  "html": "Approved <a href=\\"…\\">widgets#42</a>. Nothing blocking from me.<br><a href=\\"…\\">…</a>",
+  "html": "Approved <a href=\\"…\\">widgets#42</a>. Nothing blocking from me.",
   "pr":   { "repo": "…", "number": 42, "title": "…", "url": "…", "author": "…" }
 }`}</pre>
       </Field>
