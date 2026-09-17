@@ -1026,9 +1026,12 @@ function TeamsPane({ settings, save }: PaneProps) {
         hint="A wrong result is fixed under Settings → Users → Teams email, which always wins."
       >
         <span className="field-static">
-          Your Users override → their GitHub profile email (only if your PAT has the{" "}
-          <span className="mono">read:user</span> scope; skipped otherwise) → the address they
-          sign commits with → a guess from their name → an off-domain address, flagged.
+          Candidates come from your Users override, their GitHub profile email (only if your
+          PAT has the <span className="mono">read:user</span> scope) and the addresses they sign
+          commits with. When the Azure CLI is signed in, each is checked against your directory
+          and the matching user's principal name is what Teams gets, since a commit address is
+          often a mail alias Teams won't resolve; with no match, a unique display-name hit is
+          taken and flagged. Without the directory, the best candidate is used as is.
         </span>
       </Field>
     </section>

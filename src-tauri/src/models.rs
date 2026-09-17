@@ -744,10 +744,13 @@ pub struct ReviewDismissal {
 pub struct TeamsRecipient {
     pub login: String,
     pub email: String,
-    /// settings | profile | commits | guessed | personal — the settings
-    /// override; the GitHub profile's public email; the address they author
-    /// commits with; a first.last@work-domain guess from their display name
-    /// (check it); or an off-domain address, all that could be found.
+    /// directory | directory-name | settings | profile | commits | guessed |
+    /// personal. The first two are the directory's own answer (a candidate
+    /// address matched a user; only their display name did — check it); the
+    /// rest are GitHub-derived fallbacks when the directory can't be asked:
+    /// the settings override, the profile's public email, the address they
+    /// commit with, a first.last@ guess from their name, an off-domain
+    /// address.
     pub source: String,
 }
 

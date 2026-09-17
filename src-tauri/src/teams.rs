@@ -24,6 +24,7 @@
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::devlog;
 use crate::error::{AppError, AppResult};
 use crate::github::query::GraphQlClient;
 use crate::models::{events, TeamsOutcome, TeamsRecipient};
@@ -131,11 +132,141 @@ pub async fn resolve_recipient(app: &AppHandle, pr_id: &str) -> AppResult<TeamsR
         profile_email,
         commits,
     };
-    pick_recipient(&known, &settings.teams_email_domains).ok_or_else(|| {
+    let picked = pick_recipient(&known, &settings.teams_email_domains);
+
+    // The directory has the last word when it can be asked: Teams resolves
+    // chat members by user principal name, and the address someone signs
+    // commits with is often their mail alias on another of the org's
+    // domains. Any candidate that matches a directory user becomes that
+    // user's UPN; with no match, a unique display-name hit is taken, flagged.
+    if let Some(token) = graph_token(&settings.teams_tenant).await.unwrap_or_else(|e| {
+        devlog::warn(app, "teams", format!("directory lookup skipped: {e}"));
+        None
+    }) {
+        let candidates = directory_candidates(&known, picked.as_ref(), &settings.teams_email_domains);
+        match directory_lookup(&token, &candidates, &known.name).await {
+            Ok(Some((upn, by_name))) => {
+                return Ok(TeamsRecipient {
+                    login,
+                    email: upn,
+                    source: if by_name { "directory-name" } else { "directory" }.into(),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => devlog::warn(app, "teams", format!("directory lookup failed: {e}")),
+        }
+    }
+
+    picked.ok_or_else(|| {
         AppError::Other(format!(
             "No Teams address for @{login} — GitHub shows no usable email and their commits don't carry one. Set it under Settings → Users."
         ))
     })
+}
+
+/// Every address worth asking the directory about, best first, deduplicated:
+/// the settings override, the ranked pick, the profile email, and each
+/// on-domain commit address (an alias may be any of them).
+fn directory_candidates(
+    known: &GitHubKnows,
+    picked: Option<&TeamsRecipient>,
+    domains: &[String],
+) -> Vec<String> {
+    let domains: Vec<String> = domains.iter().map(|d| d.trim().trim_start_matches('@').to_lowercase()).collect();
+    let on_domain = |e: &str| domains.is_empty() || e.rsplit('@').next().is_some_and(|d| domains.contains(&d.to_string()));
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |e: &str| {
+        let e = e.trim().to_lowercase();
+        if usable_email(&e) && !out.contains(&e) {
+            out.push(e);
+        }
+    };
+    if let Some(p) = picked {
+        push(&p.email);
+    }
+    if on_domain(&known.profile_email.to_lowercase()) {
+        push(&known.profile_email);
+    }
+    for c in known.commits.iter().filter(|c| c.login == known.login) {
+        if on_domain(&c.email.to_lowercase()) {
+            push(&c.email);
+        }
+    }
+    out.truncate(6);
+    out
+}
+
+/// One Graph query for all candidates: a user whose mail, UPN, or any
+/// proxy address is one of them. Then, with nothing, the display name —
+/// accepted only when it names exactly one person. Returns (UPN, by_name).
+async fn directory_lookup(
+    token: &str,
+    candidates: &[String],
+    name: &str,
+) -> AppResult<Option<(String, bool)>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(WEBHOOK_TIMEOUT_SECS))
+        .build()?;
+    let users = |query: Vec<(&str, String)>| {
+        let client = client.clone();
+        // reqwest's query builder is a feature this build doesn't enable;
+        // the encoder used for deep links does the same job.
+        let url = format!(
+            "https://graph.microsoft.com/v1.0/users?{}",
+            query.iter().map(|(k, v)| format!("{k}={}", percent_encode(v))).collect::<Vec<_>>().join("&")
+        );
+        async move {
+            let resp = client
+                .get(url)
+                .bearer_auth(token)
+                .header("ConsistencyLevel", "eventual")
+                .send()
+                .await?;
+            let status = resp.status();
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            if !status.is_success() {
+                let msg = body.pointer("/error/message").and_then(Value::as_str).unwrap_or("");
+                return Err(AppError::Other(format!("Graph answered {status}: {msg}")));
+            }
+            Ok::<Vec<Value>, AppError>(
+                body.get("value").and_then(Value::as_array).cloned().unwrap_or_default(),
+            )
+        }
+    };
+    if !candidates.is_empty() {
+        let filter = candidates.iter().map(|e| address_filter(e)).collect::<Vec<_>>().join(" or ");
+        let hits = users(vec![
+            ("$filter", filter),
+            ("$select", "userPrincipalName".into()),
+            ("$top", "5".into()),
+        ])
+        .await?;
+        if let Some(upn) = hits.first().and_then(|u| u.get("userPrincipalName")).and_then(Value::as_str) {
+            return Ok(Some((upn.to_string(), false)));
+        }
+    }
+    let name = name.trim();
+    if name.split_whitespace().count() >= 1 && !name.is_empty() {
+        let hits = users(vec![
+            ("$search", format!("\"displayName:{}\"", name.replace('"', ""))),
+            ("$select", "userPrincipalName".into()),
+            ("$top", "2".into()),
+        ])
+        .await?;
+        if hits.len() == 1 {
+            if let Some(upn) = hits[0].get("userPrincipalName").and_then(Value::as_str) {
+                return Ok(Some((upn.to_string(), true)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The OData clause matching a user by any of the addresses they carry.
+/// A single quote is the only character that needs escaping (doubled).
+fn address_filter(email: &str) -> String {
+    let e = email.replace('\'', "''");
+    format!("(mail eq '{e}' or userPrincipalName eq '{e}' or proxyAddresses/any(p:p eq 'smtp:{e}'))")
 }
 
 /// One commit's author as GitHub reports it: the account it's linked to,
@@ -395,13 +526,24 @@ async fn post_webhook(url: &str, bearer: Option<&str>, payload: &Value) -> AppRe
 /// not signed in to that tenant is an error with the fix in it — the
 /// alternative, sending unsigned and reading a 401, tells the user less.
 async fn flow_token(tenant: &str) -> AppResult<Option<String>> {
+    az_token(&["--resource", FLOW_RESOURCE], tenant).await
+}
+
+/// A Microsoft Graph token from the same sign-in, for reading the
+/// directory with the user's own rights. Same None-when-no-CLI contract.
+async fn graph_token(tenant: &str) -> AppResult<Option<String>> {
+    az_token(&["--resource-type", "ms-graph"], tenant).await
+}
+
+async fn az_token(resource: &[&str], tenant: &str) -> AppResult<Option<String>> {
     let tenant = tenant.trim().to_string();
     let tenant_arg = tenant.clone();
+    let resource: Vec<String> = resource.iter().map(|s| s.to_string()).collect();
     let output = tauri::async_runtime::spawn_blocking(move || {
         let tenant = tenant_arg;
         for az in AZ_CANDIDATES {
             let mut cmd = std::process::Command::new(az);
-            cmd.args(["account", "get-access-token", "--resource", FLOW_RESOURCE, "-o", "json"]);
+            cmd.args(["account", "get-access-token", "-o", "json"]).args(&resource);
             if !tenant.is_empty() {
                 cmd.args(["--tenant", &tenant]);
             }
@@ -425,7 +567,7 @@ async fn flow_token(tenant: &str) -> AppResult<Option<String>> {
         let stderr = stderr.trim().lines().last().unwrap_or("").chars().take(300).collect::<String>();
         let login = if tenant.is_empty() { "az login".to_string() } else { format!("az login --tenant {tenant}") };
         return Err(AppError::Other(format!(
-            "Azure CLI couldn't issue a token for the Teams flow ({stderr}). Run `{login}` and try again."
+            "Azure CLI couldn't issue a token ({stderr}). Run `{login}` and try again."
         )));
     }
     let parsed: Value = serde_json::from_slice(&output.stdout)
@@ -693,6 +835,33 @@ mod tests {
         assert_eq!(message_html("widgets#43", "acme/widgets", 42, "u"), "widgets#43");
         // No PR (the test message): escape only.
         assert_eq!(message_html("<b>hi</b>", "", 0, ""), "&lt;b&gt;hi&lt;/b&gt;");
+    }
+
+    #[test]
+    fn directory_candidates_are_best_first_deduplicated_and_on_domain() {
+        let k = known(
+            "adam@gmail.com",
+            vec![
+                author("adamh", "Adam Hare", "Adam.Hare@corp-services.com"),
+                author("adamh", "Adam Hare", "adam.hare@corp-services.com"),
+                author("adamh", "Adam Hare", "adam@home.org"),
+                author("jo", "Jo Bloggs", "jo.bloggs@corp.com"),
+            ],
+        );
+        let picked = pick_recipient(&k, &domains()).unwrap();
+        let c = directory_candidates(&k, Some(&picked), &domains());
+        assert_eq!(c, vec!["adam.hare@corp-services.com"]);
+        // Without domains the personal addresses are candidates too.
+        let c = directory_candidates(&k, None, &[]);
+        assert_eq!(c, vec!["adam@gmail.com", "adam.hare@corp-services.com", "adam@home.org"]);
+    }
+
+    #[test]
+    fn the_address_filter_escapes_quotes() {
+        assert_eq!(
+            address_filter("o'neil@corp.com"),
+            "(mail eq 'o''neil@corp.com' or userPrincipalName eq 'o''neil@corp.com' or proxyAddresses/any(p:p eq 'smtp:o''neil@corp.com'))"
+        );
     }
 
     #[test]

@@ -709,6 +709,10 @@ async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) ->
             let out =
                 crate::teams::message_author(app, pr_id, &str_arg(input, "body")?, Some(VIA)).await?;
             let who = match out.recipient.source.as_str() {
+                "directory-name" => format!(
+                    "@{} at {} — matched only by display name in the directory; suggest the user confirms it reached the right person",
+                    out.recipient.login, out.recipient.email
+                ),
                 "guessed" => format!(
                     "@{} at {} — an address GUESSED from their display name in the org's convention; suggest the user confirms it arrived",
                     out.recipient.login, out.recipient.email

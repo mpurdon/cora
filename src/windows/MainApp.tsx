@@ -535,16 +535,22 @@ function ReviewActions({
           {recipient ? (
             <>
               → @{recipient.login} · {recipient.email}
-              <span className={`teams-source${/^(guessed|personal)$/.test(recipient.source) ? " warn" : ""}`}>
-                {recipient.source === "settings"
-                  ? "from your settings"
-                  : recipient.source === "profile"
-                    ? "from their GitHub profile"
-                    : recipient.source === "commits"
-                      ? "from their commits"
-                      : recipient.source === "guessed"
-                        ? "guessed from their name — check it"
-                        : "personal address — not a work one"}
+              <span
+                className={`teams-source${/^(guessed|personal|directory-name)$/.test(recipient.source) ? " warn" : ""}`}
+              >
+                {recipient.source === "directory"
+                  ? "matched in your directory"
+                  : recipient.source === "directory-name"
+                    ? "matched by name in your directory, check it"
+                    : recipient.source === "settings"
+                      ? "from your settings"
+                      : recipient.source === "profile"
+                        ? "from their GitHub profile"
+                        : recipient.source === "commits"
+                          ? "from their commits"
+                          : recipient.source === "guessed"
+                            ? "guessed from their name, check it"
+                            : "personal address, not a work one"}
               </span>
             </>
           ) : recipientError ? (
