@@ -929,7 +929,7 @@ function TeamsPane({ settings, save }: PaneProps) {
       >
         <ol className="teams-howto">
           <li>
-            In Teams open <strong>Workflows</strong> → <em>Create from blank</em>. Trigger:{" "}
+            In Teams open <strong>Workflows</strong> → <em>Build from scratch</em>. Trigger:{" "}
             <strong>When a Teams webhook request is received</strong>. Copy its URL into the
             field above.
           </li>
