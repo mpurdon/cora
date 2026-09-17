@@ -965,8 +965,9 @@ function TeamsPane({ settings, save }: PaneProps) {
           </li>
           <li>
             Under <em>Then do this</em> add <strong>Teams → Create a chat</strong>. Members:
-            your address and <span className="mono">triggerBody()?['to']</span>. For a 1:1 it
-            returns the chat you already have. If the simplified builder doesn't list it, choose{" "}
+            just <span className="mono">triggerBody()?['to']</span>; the action adds you itself,
+            and listing yourself too fails with "Duplicate chat members". For a 1:1 it returns
+            the chat you already have. If the simplified builder doesn't list it, choose{" "}
             <em>Build with Power Automate</em> — the full editor has every Teams action.
           </li>
           <li>
