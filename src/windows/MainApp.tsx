@@ -355,7 +355,13 @@ function ReviewActions({
   const [recipient, setRecipient] = useState<TeamsRecipient | null>(null);
   const [recipientError, setRecipientError] = useState<string | null>(null);
   const [webhook, setWebhook] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  // What the last send did, shown on the button itself for a few seconds.
+  const [notice, setNotice] = useState<{ short: string; full: string } | null>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   // The last text the app wrote into the box. Cancel keeps the box, so a
   // seed from one verdict would otherwise ride into the next as if you had
@@ -452,7 +458,11 @@ function ReviewActions({
 
   if (isFinished(pr)) return null;
 
-  const teamsButton = (
+  const teamsButton = notice ? (
+    <button className="action-btn btn-ok teams-sent" data-tip={notice.full} onClick={openTeams}>
+      {notice.short}
+    </button>
+  ) : (
     <button
       className="action-btn"
       data-tip={
@@ -479,7 +489,6 @@ function ReviewActions({
           you {verb}
         </span>
         {teamsButton}
-        {notice && <span className="review-notice">{notice}</span>}
       </>
     );
   }
@@ -493,8 +502,11 @@ function ReviewActions({
         const out = await ipc.messageAuthorOnTeams(pr.id, body);
         setNotice(
           out.delivery === "sent"
-            ? `Sent to @${out.recipient.login} on Teams`
-            : `Opened Teams with the message to @${out.recipient.login} — press Enter there to send it`,
+            ? { short: "✓ Sent", full: `Sent to @${out.recipient.login} on Teams` }
+            : {
+                short: "↗ Drafted",
+                full: `Opened Teams with the message to @${out.recipient.login}; press Enter there to send it`,
+              },
         );
         setMode(null);
         setBody("");
@@ -637,7 +649,6 @@ function ReviewActions({
         💬 Comment
       </button>
       {teamsButton}
-      {notice && <span className="review-notice">{notice}</span>}
     </>
   );
 }

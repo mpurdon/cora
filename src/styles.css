@@ -1837,11 +1837,9 @@ body.col-resizing * {
   color: var(--warn);
 }
 
-/* What just happened on the Teams route, beside the buttons. */
-.review-notice {
-  font-size: 11px;
-  color: var(--ok);
-  align-self: center;
+/* The Teams button acknowledging a send, in place, for a few seconds. */
+.action-btn.teams-sent {
+  transition: color 200ms, border-color 200ms;
 }
 
 .review-composer textarea {
