@@ -54,24 +54,31 @@ function convo(threads: ReviewThread[]): PrConversation {
 }
 
 describe("teamsSeed", () => {
+  it("never reaches for an em dash", () => {
+    const c = convo([thread("a.py", "fix", true), thread("b.py", "note: optional")]);
+    for (const r of [reviews("APPROVED"), reviews("CHANGES_REQUESTED"), reviews(), null]) {
+      expect(teamsSeed(pr, r, c, me)).not.toContain("\u2014");
+    }
+  });
+
   it("says approved, in the approve composer's words, and ends with the link", () => {
     const text = teamsSeed(pr, reviews("APPROVED"), convo([thread("a.py", "fix this", true)]), me);
     expect(text).toBe(
-      "Approved widgets#42 — my 1 comment on a.py is addressed.\n" + pr.url,
+      "Approved widgets#42. My 1 comment on a.py is addressed.\n" + pr.url,
     );
   });
 
   it("counts what the author still has to look at after changes requested", () => {
     const c = convo([thread("a.py", "fix this"), thread("b.py", "note: optional")]);
     expect(teamsSeed(pr, reviews("CHANGES_REQUESTED"), c, me)).toContain(
-      "Requested changes on widgets#42 — 1 comment to look at",
+      "Requested changes on widgets#42, 1 comment to look at",
     );
   });
 
   it("reads as a comment drop when there is no verdict", () => {
     const c = convo([thread("a.py", "praise: nice"), thread("b.py", "fyi: see docs")]);
     expect(teamsSeed(pr, reviews(), c, me)).toBe(
-      "Left 2 comments on widgets#42 — nothing blocking, back to you.\n" + pr.url,
+      "Left 2 comments on widgets#42, nothing blocking, back to you.\n" + pr.url,
     );
     expect(teamsSeed(pr, reviews(), convo([thread("a.py", "fix")]), me)).toContain(
       "Left 1 comment on widgets#42, back to you.",

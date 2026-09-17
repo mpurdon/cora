@@ -202,7 +202,7 @@ function joinFiles(names: string[]): string {
  *  point at — let them write their own). */
 export function requestChangesSeed(conversation: PrConversation | null, viewer: string): string {
   const mine = myCommentsSummary(conversation, viewer);
-  return mine ? `Requesting changes — see my ${mine}.` : "";
+  return mine ? `Requesting changes. See my ${mine}.` : "";
 }
 
 /** The comment-review seed: the same pointer to your line comments, with no
@@ -283,13 +283,14 @@ export function approveSeed(conversation: PrConversation | null, viewer: string)
   }
   if (nNotes > 0) {
     clauses.push(
-      `${nNotes} non-blocking note${nNotes === 1 ? "" : "s"} on ${joinFiles([...notes.keys()])} — ${
+      `${nNotes} non-blocking note${nNotes === 1 ? "" : "s"} on ${joinFiles([...notes.keys()])}, ${
         nNotes === 1 ? "take it or leave it" : "take them or leave them"
       }`,
     );
   }
-  if (clauses.length === 0) return "Approving — nothing blocking from me.";
-  return `Approving — ${clauses.join("; ")}.`;
+  if (clauses.length === 0) return "Approving. Nothing blocking from me.";
+  const first = clauses[0].charAt(0).toUpperCase() + clauses[0].slice(1);
+  return `Approving. ${[first, ...clauses.slice(1)].join("; ")}.`;
 }
 
 /** Approve-composer seed, in precedence order: this repo's override, else

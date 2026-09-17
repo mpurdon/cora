@@ -318,6 +318,7 @@ pub async fn message_author(
                 &json!({
                     "to": recipient.email,
                     "text": text,
+                    "html": message_html(text, &pr.info.repo, pr.info.number, &pr.info.url),
                     "pr": {
                         "repo": pr.info.repo,
                         "number": pr.info.number,
@@ -350,8 +351,13 @@ pub async fn send_test(app: &AppHandle, email: &str, text: &str) -> AppResult<()
     let url = secrets::teams_webhook()?
         .ok_or_else(|| AppError::Other("no Teams webhook configured".into()))?;
     let token = flow_token(&settings_tenant(app)?).await?;
-    post_webhook(&url, token.as_deref(), &json!({ "to": email.trim(), "text": text, "pr": Value::Null }))
-        .await
+    let payload = json!({
+        "to": email.trim(),
+        "text": text,
+        "html": message_html(text, "", 0, ""),
+        "pr": Value::Null,
+    });
+    post_webhook(&url, token.as_deref(), &payload).await
 }
 
 fn settings_tenant(app: &AppHandle) -> AppResult<String> {
@@ -429,6 +435,52 @@ async fn flow_token(tenant: &str) -> AppResult<Option<String>> {
         .and_then(Value::as_str)
         .map(|t| Some(t.to_string()))
         .ok_or_else(|| AppError::Other("Azure CLI returned no access token".into()))
+}
+
+/// The message as the flow's HTML field wants it: escaped, line breaks
+/// kept, the PR's own reference ("widgets#42", "acme/widgets#42") a link
+/// to the PR, and bare URLs clickable. The plain `text` stays the source of
+/// truth; this is a rendering of it.
+fn message_html(text: &str, repo: &str, number: i64, url: &str) -> String {
+    let escaped = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let mut out = String::with_capacity(escaped.len() + 64);
+    let refs: Vec<String> = if number > 0 && !url.is_empty() {
+        let short = repo.rsplit('/').next().unwrap_or(repo);
+        vec![format!("{repo}#{number}"), format!("{short}#{number}")]
+    } else {
+        Vec::new()
+    };
+    // One pass over whitespace-separated tokens: a token is the ref (with
+    // trailing punctuation allowed), a URL, or plain text.
+    for line in escaped.split('\n') {
+        if !out.is_empty() {
+            out.push_str("<br>");
+        }
+        let mut first = true;
+        for token in line.split(' ') {
+            if !first {
+                out.push(' ');
+            }
+            first = false;
+            let trimmed = token.trim_end_matches(['.', ',', ';', ':', ')', '!', '?']);
+            let tail = &token[trimmed.len()..];
+            if refs.iter().any(|r| r == trimmed) {
+                out.push_str(&format!("<a href=\"{}\">{trimmed}</a>{tail}", url_attr(url)));
+            } else if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+                out.push_str(&format!("<a href=\"{trimmed}\">{trimmed}</a>{tail}"));
+            } else {
+                out.push_str(token);
+            }
+        }
+    }
+    out
+}
+
+fn url_attr(url: &str) -> String {
+    url.replace('&', "&amp;").replace('"', "&quot;")
 }
 
 /// The desktop client first; with no `msteams:` handler registered the OS
@@ -595,6 +647,26 @@ mod tests {
         let msg = url.split("&message=").nth(1).unwrap();
         assert!(!msg.contains('&') && !msg.contains('=') && !msg.contains('#') && !msg.contains('\n'));
         assert!(msg.contains("%0A"), "newlines survive as line breaks: {msg}");
+    }
+
+    #[test]
+    fn the_html_copy_links_the_ref_and_bare_urls_and_keeps_line_breaks() {
+        let html = message_html(
+            "Approved widgets#42. See a.py & b.py.\nhttps://github.com/acme/widgets/pull/42?x=1",
+            "acme/widgets",
+            42,
+            "https://github.com/acme/widgets/pull/42",
+        );
+        assert_eq!(
+            html,
+            "Approved <a href=\"https://github.com/acme/widgets/pull/42\">widgets#42</a>. See a.py &amp; b.py.<br>\
+             <a href=\"https://github.com/acme/widgets/pull/42?x=1\">https://github.com/acme/widgets/pull/42?x=1</a>"
+        );
+        // The long form links too; another PR's number does not.
+        assert!(message_html("acme/widgets#42,", "acme/widgets", 42, "u").starts_with("<a href=\"u\">acme/widgets#42</a>,"));
+        assert_eq!(message_html("widgets#43", "acme/widgets", 42, "u"), "widgets#43");
+        // No PR (the test message): escape only.
+        assert_eq!(message_html("<b>hi</b>", "", 0, ""), "&lt;b&gt;hi&lt;/b&gt;");
     }
 
     #[test]

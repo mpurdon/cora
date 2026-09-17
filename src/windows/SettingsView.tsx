@@ -972,17 +972,20 @@ function TeamsPane({ settings, save }: PaneProps) {
           <li>
             Add <strong>Teams → Post message in a chat or channel</strong>. Post as{" "}
             <em>User</em>, post in <em>Group chat</em>, chat = the id from step 2, message ={" "}
-            <span className="mono">triggerBody()?['text']</span>.
+            <span className="mono">triggerBody()?['html']</span> (the PR reference and links
+            clickable, line breaks kept; <span className="mono">['text']</span> is the plain
+            copy).
           </li>
         </ol>
       </Field>
       <Field
         label="What CORA sends"
-        hint="One JSON body per message. Everything but `to` and `text` is there for a richer card if you want one."
+        hint="One JSON body per message. `html` is `text` rendered for the message field; `pr` is there for a richer card if you want one."
       >
         <pre className="teams-payload mono">{`{
   "to":   "author@yourcompany.com",
-  "text": "Approved widgets#42 — …\nhttps://github.com/…/pull/42",
+  "text": "Approved widgets#42. Nothing blocking from me.\nhttps://github.com/…/pull/42",
+  "html": "Approved <a href=\\"…\\">widgets#42</a>. Nothing blocking from me.<br><a href=\\"…\\">…</a>",
   "pr":   { "repo": "…", "number": 42, "title": "…", "url": "…", "author": "…" }
 }`}</pre>
       </Field>

@@ -219,7 +219,7 @@ When you are done exploring, you MUST call submit_analysis exactly once with the
 /// The voice the app drafts in when the reviewer's settings name none.
 /// Deliberately plain: a colleague leaving a note, not a tool filing a
 /// report. Anything more particular is the reviewer's to write.
-pub const DEFAULT_REVIEW_VOICE: &str = "Plain and direct, like a colleague leaving a note — not a tool filing a report. Short sentences. Say what is wrong and what to do, then stop. No preamble, no sign-off, no \"Consider...\" when you mean \"do this\". Contractions are fine. No emoji, no bold labels, no bullet lists for a one-point comment. Criticize the code, never the author, and be specific enough that they can act without asking a follow-up.";
+pub const DEFAULT_REVIEW_VOICE: &str = "Plain and direct, like a colleague leaving a note — not a tool filing a report. Short sentences. Say what is wrong and what to do, then stop. No preamble, no sign-off, no \"Consider...\" when you mean \"do this\". Contractions are fine. No emoji, no bold labels, no bullet lists for a one-point comment. No em dashes; use a comma, a period, or a colon. Criticize the code, never the author, and be specific enough that they can act without asking a follow-up.";
 
 /// The reviewer's voice, as a prompt section: everything the model writes
 /// for the reviewer to post — comments, replies, review summaries, the code

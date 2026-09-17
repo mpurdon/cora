@@ -7,7 +7,8 @@ import { approveSeed, isNonBlockingComment } from "./comments";
  *  you'd type it in a chat, ending with the link so Teams unfurls it. Built
  *  from the same conversation the approve composer reads, so "approved, my
  *  two comments are addressed" says the same thing in both places. The
- *  assistant writes its own; this is the no-LLM path. */
+ *  assistant writes its own; this is the no-LLM path. Plain punctuation
+ *  only: no em dashes in anything drafted as the user's words. */
 export function teamsSeed(
   pr: TrackedPr,
   reviews: PrReviews | null,
@@ -21,21 +22,23 @@ export function teamsSeed(
 
   let line: string;
   if (state === "APPROVED") {
-    // "Approving — my 2 comments on a.py are addressed." → "Approved #309 —
-    // my 2 comments on a.py are addressed."
+    // "Approving. My 2 comments on a.py are addressed." becomes
+    // "Approved widgets#42. My 2 comments on a.py are addressed."
     line = approveSeed(conversation, viewer).replace(/^Approving\b/, `Approved ${ref}`);
   } else if (state === "CHANGES_REQUESTED") {
     line =
       comments.blocking > 0
-        ? `Requested changes on ${ref} — ${count(comments.blocking, "comment")} to look at when you get a chance.`
-        : `Requested changes on ${ref} — details in the review.`;
+        ? `Requested changes on ${ref}, ${count(comments.blocking, "comment")} to look at when you get a chance.`
+        : `Requested changes on ${ref}, details in the review.`;
   } else if (comments.total > 0) {
     line = `Left ${count(comments.total, "comment")} on ${ref}${
-      comments.blocking === 0 ? " — nothing blocking" : ""
+      comments.blocking === 0 ? ", nothing blocking" : ""
     }, back to you.`;
   } else {
     line = `Had a look at ${ref}.`;
   }
+  // The link rides on its own line so Teams unfurls it; the webhook route
+  // also gets an HTML copy with the ref itself linked (teams.rs).
   return `${line}\n${pr.url}`;
 }
 

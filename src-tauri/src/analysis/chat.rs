@@ -389,7 +389,7 @@ fn action_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "message_author_on_teams",
-            "Send the PR's author a Microsoft Teams chat message from the user — typically that the review is approved, or that comments are waiting on them. Write it as the user would say it (their voice is in your context): one to three plain sentences, no markdown, ending with the PR's URL so Teams unfurls it. Delivery is whatever the user has set up — a webhook sends it directly; otherwise Teams opens with the text drafted and the user presses Enter — and the result says which. Pauses for user confirmation.",
+            "Send the PR's author a Microsoft Teams chat message from the user — typically that the review is approved, or that comments are waiting on them. Write it as the user would say it (their voice is in your context): one to three plain sentences, no markdown, no em dashes, ending with the PR's URL so Teams unfurls it. Delivery is whatever the user has set up — a webhook sends it directly; otherwise Teams opens with the text drafted and the user presses Enter — and the result says which. Pauses for user confirmation.",
             json!({"type": "object", "properties": {
                 "body": {"type": "string", "description": "The message, plain text"}
             }, "required": ["body"]}),
