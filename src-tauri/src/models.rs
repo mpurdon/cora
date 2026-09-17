@@ -385,6 +385,13 @@ pub struct Settings {
     /// as a guess.
     #[serde(default)]
     pub teams_email_domains: Vec<String>,
+    /// The Microsoft tenant the Workflows flow lives in ("example.com" or a
+    /// tenant id). A trigger restricted to "any user in my tenant" needs a
+    /// bearer token from that tenant on every call; Cora gets one from the
+    /// signed-in Azure CLI, and this says which of its accounts to use.
+    /// Empty: the CLI's default account.
+    #[serde(default)]
+    pub teams_tenant: String,
     #[ts(type = "number")]
     pub poll_interval_secs: u64,
     /// Show the always-on-top callout window when the app starts.
@@ -640,6 +647,7 @@ impl Default for Settings {
             author_priorities: std::collections::HashMap::new(),
             author_emails: std::collections::HashMap::new(),
             teams_email_domains: Vec::new(),
+            teams_tenant: String::new(),
             poll_interval_secs: 45,
             show_callout_on_startup: true,
             github_graphql_url: "https://api.github.com/graphql".into(),

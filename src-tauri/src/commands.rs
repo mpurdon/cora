@@ -216,7 +216,8 @@ pub async fn test_teams_webhook(window: WebviewWindow, email: String) -> AppResu
     if !email.contains('@') {
         return Err(AppError::Other("enter the address to send the test to".into()));
     }
-    crate::teams::send_test(&email, "Test from CORA — the Teams route works.").await
+    crate::teams::send_test(window.app_handle(), &email, "Test from CORA — the Teams route works.")
+        .await
 }
 
 /// Who a Teams message to this PR's author would reach — so the button can

@@ -8,8 +8,11 @@
 //!   Workflows app — "When a Teams webhook request is received" → "Create a
 //!   chat" (user + author) → "Post message in a chat or channel" as the
 //!   user. Cora POSTs `{to, text, …}`; the message lands in the 1:1 chat as
-//!   if typed. The trigger URL is the whole credential and lives in the
-//!   Keychain.
+//!   if typed. The trigger URL lives in the Keychain. A tenant that has
+//!   removed the trigger's "Anyone" option makes it demand a signed-in
+//!   tenant identity on every call; that comes from the Azure CLI, the same
+//!   way Microsoft's own SDKs' `AzureCliCredential` gets it — no app
+//!   registration involved.
 //! - **Deep link**: with no webhook, Teams' documented chat link opens the
 //!   1:1 with the text in the compose box. One Enter to send — honest about
 //!   what it is, and it needs nothing from anyone.
@@ -35,6 +38,11 @@ const CHAT_DEEP_LINK_WEB: &str = "https://teams.microsoft.com/l/chat/0/0";
 /// Deep links ride in a URL; keep well under what launchers truncate.
 const MAX_DEEP_LINK_TEXT_CHARS: usize = 1500;
 const WEBHOOK_TIMEOUT_SECS: u64 = 20;
+/// The audience a tenant-restricted Power Automate trigger validates.
+const FLOW_RESOURCE: &str = "https://service.flow.microsoft.com/";
+/// Where Homebrew and the official installer put `az`; a GUI app's PATH
+/// on macOS has neither, so the bare name is tried last.
+const AZ_CANDIDATES: &[&str] = &["/opt/homebrew/bin/az", "/usr/local/bin/az", "az"];
 /// Audit action for a message to the author — the History tab's row.
 pub const AUDIT_ACTION: &str = "teams-messaged";
 
@@ -292,8 +300,10 @@ pub async fn message_author(
 
     let delivery = match secrets::teams_webhook()? {
         Some(url) => {
+            let token = flow_token(&settings_tenant(app)?).await?;
             post_webhook(
                 &url,
+                token.as_deref(),
                 &json!({
                     "to": recipient.email,
                     "text": text,
@@ -325,24 +335,89 @@ pub async fn message_author(
 
 /// A test message to an address of the user's choosing — proves the flow
 /// is wired before anything real rides on it. Not audited: no PR involved.
-pub async fn send_test(email: &str, text: &str) -> AppResult<()> {
+pub async fn send_test(app: &AppHandle, email: &str, text: &str) -> AppResult<()> {
     let url = secrets::teams_webhook()?
         .ok_or_else(|| AppError::Other("no Teams webhook configured".into()))?;
-    post_webhook(&url, &json!({ "to": email.trim(), "text": text, "pr": Value::Null })).await
+    let token = flow_token(&settings_tenant(app)?).await?;
+    post_webhook(&url, token.as_deref(), &json!({ "to": email.trim(), "text": text, "pr": Value::Null }))
+        .await
 }
 
-async fn post_webhook(url: &str, payload: &Value) -> AppResult<()> {
+fn settings_tenant(app: &AppHandle) -> AppResult<String> {
+    Ok(app.state::<crate::orgs::Orgs>().active().settings()?.teams_tenant)
+}
+
+async fn post_webhook(url: &str, bearer: Option<&str>, payload: &Value) -> AppResult<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(WEBHOOK_TIMEOUT_SECS))
         .build()?;
-    let resp = client.post(url).json(payload).send().await?;
+    let mut req = client.post(url).json(payload);
+    if let Some(token) = bearer {
+        req = req.bearer_auth(token);
+    }
+    let resp = req.send().await?;
     let status = resp.status();
     if status.is_success() {
         return Ok(());
     }
     let body = resp.text().await.unwrap_or_default();
     let body = body.chars().take(300).collect::<String>();
-    Err(AppError::Other(format!("Teams webhook answered {status}: {body}")))
+    let hint = match status.as_u16() {
+        401 | 403 if bearer.is_none() => {
+            " — the trigger wants a signed-in tenant user; install the Azure CLI and run `az login --tenant <your tenant>`"
+        }
+        401 | 403 => " — the token was refused; check Settings → Teams → Microsoft tenant matches the flow's tenant, and `az login` there",
+        _ => "",
+    };
+    Err(AppError::Other(format!("Teams webhook answered {status}: {body}{hint}")))
+}
+
+/// A bearer token for the Flow service from the signed-in Azure CLI, for
+/// the tenant the user named. None when there is no CLI at all (a tenant
+/// that still allows "Anyone" needs no token). A CLI that is present but
+/// not signed in to that tenant is an error with the fix in it — the
+/// alternative, sending unsigned and reading a 401, tells the user less.
+async fn flow_token(tenant: &str) -> AppResult<Option<String>> {
+    let tenant = tenant.trim().to_string();
+    let tenant_arg = tenant.clone();
+    let output = tauri::async_runtime::spawn_blocking(move || {
+        let tenant = tenant_arg;
+        for az in AZ_CANDIDATES {
+            let mut cmd = std::process::Command::new(az);
+            cmd.args(["account", "get-access-token", "--resource", FLOW_RESOURCE, "-o", "json"]);
+            if !tenant.is_empty() {
+                cmd.args(["--tenant", &tenant]);
+            }
+            match cmd.output() {
+                Ok(out) => return Some(out),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Some(std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: Vec::new(),
+                    stderr: e.to_string().into_bytes(),
+                }),
+            }
+        }
+        None
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?;
+    let Some(output) = output else { return Ok(None) };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim().lines().last().unwrap_or("").chars().take(300).collect::<String>();
+        let login = if tenant.is_empty() { "az login".to_string() } else { format!("az login --tenant {tenant}") };
+        return Err(AppError::Other(format!(
+            "Azure CLI couldn't issue a token for the Teams flow ({stderr}). Run `{login}` and try again."
+        )));
+    }
+    let parsed: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| AppError::Other(format!("unexpected Azure CLI output: {e}")))?;
+    parsed
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .map(|t| Some(t.to_string()))
+        .ok_or_else(|| AppError::Other("Azure CLI returned no access token".into()))
 }
 
 /// The desktop client first; with no `msteams:` handler registered the OS

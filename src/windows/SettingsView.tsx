@@ -810,6 +810,7 @@ function GitHubPane({ settings, save }: PaneProps) {
 function TeamsPane({ settings, save }: PaneProps) {
   const [present, setPresent] = useState(false);
   const [domainsDraft, setDomainsDraft] = useState(settings.teamsEmailDomains.join(", "));
+  const [tenantDraft, setTenantDraft] = useState(settings.teamsTenant);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [testTo, setTestTo] = useState("");
@@ -879,6 +880,32 @@ function TeamsPane({ settings, save }: PaneProps) {
         </div>
       </Field>
 
+      <Field
+        label="Microsoft tenant"
+        hint={
+          <>
+            Needed when the trigger's <em>Who can trigger the workflow?</em> offers no "Anyone"
+            option: every call then has to carry a signed-in tenant user. CORA gets that from the
+            Azure CLI — install it (<span className="mono">brew install azure-cli</span>) and run{" "}
+            <span className="mono">az login --tenant {tenantDraft.trim() || "<tenant>"}</span> once;
+            it keeps itself signed in. This is the same credential Microsoft's SDKs call
+            AzureCliCredential — no app registration. Leave blank if the trigger allows Anyone.
+          </>
+        }
+      >
+        <input
+          className="mono"
+          placeholder="example.com or a tenant id"
+          value={tenantDraft}
+          onChange={(e) => setTenantDraft(e.target.value)}
+          onBlur={() => {
+            const t = tenantDraft.trim();
+            if (t !== settings.teamsTenant) void save({ teamsTenant: t });
+          }}
+          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        />
+      </Field>
+
       {present && (
         <Field
           label="Send a test"
@@ -931,10 +958,10 @@ function TeamsPane({ settings, save }: PaneProps) {
           <li>
             In Teams open <strong>Workflows</strong> → <em>Build from scratch</em>. Under{" "}
             <em>Starts when</em> pick <strong>Teams → From a link</strong> (that's the webhook
-            trigger; Power Automate calls it "When a Teams webhook request is received"). Set{" "}
-            <em>Who can trigger the workflow?</em> to <strong>Anyone</strong> — CORA's request
-            carries no Microsoft sign-in, so the tenant-only options would reject it; the URL's
-            signature is the secret. Copy its URL into the field above.
+            trigger; Power Automate calls it "When a Teams webhook request is received"). For{" "}
+            <em>Who can trigger the workflow?</em> pick <strong>Anyone</strong> if it's offered;
+            otherwise <strong>Any user in my tenant</strong> and fill in the tenant above so CORA
+            signs each call through the Azure CLI. Copy the trigger's URL into the field above.
           </li>
           <li>
             Under <em>Then do this</em> add <strong>Teams → Create a chat</strong>. Members:

@@ -27,7 +27,15 @@ authorEmails: { [key in string]: string },
  * of the form the org uses (first.last@) on the first domain, flagged
  * as a guess.
  */
-teamsEmailDomains: Array<string>, pollIntervalSecs: number, 
+teamsEmailDomains: Array<string>, 
+/**
+ * The Microsoft tenant the Workflows flow lives in ("example.com" or a
+ * tenant id). A trigger restricted to "any user in my tenant" needs a
+ * bearer token from that tenant on every call; Cora gets one from the
+ * signed-in Azure CLI, and this says which of its accounts to use.
+ * Empty: the CLI's default account.
+ */
+teamsTenant: string, pollIntervalSecs: number, 
 /**
  * Show the always-on-top callout window when the app starts.
  */
