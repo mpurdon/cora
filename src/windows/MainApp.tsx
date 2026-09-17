@@ -400,8 +400,14 @@ function ReviewActions({
     // text you've typed; a stale seed is replaced, or cleared.
     if (isTyped(body)) return;
     const seed = (text: string) => {
+      // Judge the box against the seed it was given, not the one it's about
+      // to get — otherwise the previous mode's seed reads as typed text and
+      // a cancelled Teams draft rides into Approve.
+      const previous = seeded.current;
       seeded.current = text;
-      setBody((current) => (isTyped(current) ? current : text));
+      setBody((current) =>
+        current.trim() !== "" && current !== previous && current !== text ? current : text,
+      );
     };
     const viewer = reviews?.viewerLogin ?? "";
     if (m === "request-changes" || m === "comment") {
@@ -437,8 +443,11 @@ function ReviewActions({
       .catch((e) => setRecipientError(String(e)));
     if (isTyped(body)) return;
     const text = teamsSeed(pr, reviews, conversation, reviews?.viewerLogin ?? "");
+    const previous = seeded.current;
     seeded.current = text;
-    setBody((current) => (isTyped(current) ? current : text));
+    setBody((current) =>
+      current.trim() !== "" && current !== previous && current !== text ? current : text,
+    );
   };
 
   if (isFinished(pr)) return null;
