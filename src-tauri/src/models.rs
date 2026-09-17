@@ -372,6 +372,11 @@ pub struct Settings {
     /// always important.
     #[serde(default)]
     pub author_priorities: std::collections::HashMap<String, RepoPriority>,
+    /// GitHub login → the address Teams knows them by, when GitHub doesn't
+    /// say (private profile email, noreply commit emails). Consulted first,
+    /// so it also overrides a wrong guess.
+    #[serde(default)]
+    pub author_emails: std::collections::HashMap<String, String>,
     #[ts(type = "number")]
     pub poll_interval_secs: u64,
     /// Show the always-on-top callout window when the app starts.
@@ -625,6 +630,7 @@ impl Default for Settings {
             watched_repos: Vec::new(),
             repo_priorities: std::collections::HashMap::new(),
             author_priorities: std::collections::HashMap::new(),
+            author_emails: std::collections::HashMap::new(),
             poll_interval_secs: 45,
             show_callout_on_startup: true,
             github_graphql_url: "https://api.github.com/graphql".into(),
@@ -712,6 +718,30 @@ pub struct ReviewDismissal {
     pub commit_url: Option<String>,
     /// The reason given for a manual dismissal; empty otherwise.
     pub message: String,
+}
+
+/// Who a Teams message to a PR's author would go to, and how Cora knows.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamsRecipient {
+    pub login: String,
+    pub email: String,
+    /// settings | profile | commits — the settings override, the GitHub
+    /// profile's public email, or the address they author commits with.
+    pub source: String,
+}
+
+/// What happened to a Teams message: `sent` through the webhook, or
+/// `drafted` — Teams opened on the chat with the text in the compose box,
+/// one Enter away — when no webhook is configured.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamsOutcome {
+    pub delivery: String,
+    pub recipient: TeamsRecipient,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

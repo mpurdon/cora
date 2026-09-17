@@ -11,6 +11,7 @@ mod notify;
 mod orgs;
 mod secrets;
 mod store;
+mod teams;
 mod usage;
 
 use std::sync::Arc;
@@ -220,6 +221,12 @@ pub fn run() {
             github::attachments::github_attachment,
             commands::get_pr_commits,
             commands::get_pr_dismissals,
+            commands::set_teams_webhook,
+            commands::teams_webhook_present,
+            commands::clear_teams_webhook,
+            commands::test_teams_webhook,
+            commands::resolve_teams_recipient,
+            commands::message_author_on_teams,
             commands::get_file_at_head,
             commands::refresh_pr,
             commands::get_pr_reviews,

@@ -12,7 +12,13 @@ repoPriorities: { [key in string]: RepoPriority },
  * PRs (dependabot…) never enter tracking; Important authors' activity is
  * always important.
  */
-authorPriorities: { [key in string]: RepoPriority }, pollIntervalSecs: number, 
+authorPriorities: { [key in string]: RepoPriority }, 
+/**
+ * GitHub login → the address Teams knows them by, when GitHub doesn't
+ * say (private profile email, noreply commit emails). Consulted first,
+ * so it also overrides a wrong guess.
+ */
+authorEmails: { [key in string]: string }, pollIntervalSecs: number, 
 /**
  * Show the always-on-top callout window when the app starts.
  */

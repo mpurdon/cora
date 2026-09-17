@@ -11,6 +11,8 @@ import type { RepoPriority } from "../bindings/RepoPriority";
 import type { LogEntry } from "../bindings/LogEntry";
 import type { PrCommit } from "../bindings/PrCommit";
 import type { ReviewDismissal } from "../bindings/ReviewDismissal";
+import type { TeamsOutcome } from "../bindings/TeamsOutcome";
+import type { TeamsRecipient } from "../bindings/TeamsRecipient";
 import type { PrConversation } from "../bindings/PrConversation";
 import type { PrReviews } from "../bindings/PrReviews";
 import type { PrPriority } from "../bindings/PrPriority";
@@ -105,6 +107,15 @@ export const ipc = {
     invoke<string>("github_attachment", { repo, url }),
   getPrCommits: (prId: string) => invoke<PrCommit[]>("get_pr_commits", { prId }),
   getPrDismissals: (prId: string) => invoke<ReviewDismissal[]>("get_pr_dismissals", { prId }),
+  // Teams: the webhook URL is a credential and never comes back out.
+  setTeamsWebhook: (url: string) => invoke<void>("set_teams_webhook", { url }),
+  teamsWebhookPresent: () => invoke<boolean>("teams_webhook_present"),
+  clearTeamsWebhook: () => invoke<void>("clear_teams_webhook"),
+  testTeamsWebhook: (email: string) => invoke<void>("test_teams_webhook", { email }),
+  resolveTeamsRecipient: (prId: string) =>
+    invoke<TeamsRecipient>("resolve_teams_recipient", { prId }),
+  messageAuthorOnTeams: (prId: string, text: string) =>
+    invoke<TeamsOutcome>("message_author_on_teams", { prId, text }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),
   getPrReviews: (prId: string) => invoke<PrReviews>("get_pr_reviews", { prId }),
   mergePr: (prId: string, method: "squash" | "merge" | "rebase") =>

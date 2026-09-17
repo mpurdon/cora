@@ -189,6 +189,57 @@ pub fn clear_github_pat(window: WebviewWindow) -> AppResult<()> {
     secrets::clear_github_pat()
 }
 
+// -- Teams (the webhook URL never leaves Rust) --------------------------------
+
+#[tauri::command]
+pub fn set_teams_webhook(window: WebviewWindow, url: String) -> AppResult<()> {
+    require_main(&window)?;
+    let url = crate::teams::validate_webhook_url(&url)?;
+    secrets::set_teams_webhook(&url)
+}
+
+#[tauri::command]
+pub fn teams_webhook_present() -> AppResult<bool> {
+    secrets::teams_webhook_present()
+}
+
+#[tauri::command]
+pub fn clear_teams_webhook(window: WebviewWindow) -> AppResult<()> {
+    require_main(&window)?;
+    secrets::clear_teams_webhook()
+}
+
+/// Prove the flow end to end before a real message rides on it.
+#[tauri::command]
+pub async fn test_teams_webhook(window: WebviewWindow, email: String) -> AppResult<()> {
+    require_main(&window)?;
+    if !email.contains('@') {
+        return Err(AppError::Other("enter the address to send the test to".into()));
+    }
+    crate::teams::send_test(&email, "Test from CORA — the Teams route works.").await
+}
+
+/// Who a Teams message to this PR's author would reach — so the button can
+/// name them, and say so before the user writes anything when it can't.
+#[tauri::command]
+pub async fn resolve_teams_recipient(
+    app: AppHandle,
+    pr_id: String,
+) -> AppResult<crate::models::TeamsRecipient> {
+    crate::teams::resolve_recipient(&app, &pr_id).await
+}
+
+/// The button's path; the assistant's confirmed tool call goes through
+/// `teams::message_author` directly with its own `via`.
+#[tauri::command]
+pub async fn message_author_on_teams(
+    app: AppHandle,
+    pr_id: String,
+    text: String,
+) -> AppResult<crate::models::TeamsOutcome> {
+    crate::teams::message_author(&app, &pr_id, &text, None).await
+}
+
 // -- PR list ------------------------------------------------------------------
 
 #[tauri::command]
@@ -364,7 +415,7 @@ pub fn get_pr_audit(
 /// Comments, replies, and thread resolutions are recorded here, in the
 /// commands themselves, so the history sees them whether the reviewer or
 /// the assistant did the typing; `via` names the assistant when it did.
-fn audit_pr_action(store: &Store, action: &str, pr_id: &str, detail: &str, via: Option<&str>) {
+pub(crate) fn audit_pr_action(store: &Store, action: &str, pr_id: &str, detail: &str, via: Option<&str>) {
     let label = pr_label(store, pr_id);
     let value = match (detail.is_empty(), via) {
         (true, None) => String::new(),

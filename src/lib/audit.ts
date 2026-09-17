@@ -43,6 +43,14 @@ export function describeAudit(entry: AuditEntry): string {
       return `Resolved a thread${via}`;
     case "thread-unresolved":
       return `Unresolved a thread${via}`;
+    case "teams-messaged": {
+      // "sent → @login: text" / "drafted → @login: text"
+      const m = entry.newValue.match(/^(sent|drafted) → @([^:]+):/);
+      if (!m) return `Messaged the author on Teams${via}`;
+      return m[1] === "sent"
+        ? `Messaged @${m[2]} on Teams${via}`
+        : `Drafted a Teams message to @${m[2]}${via}`;
+    }
     default:
       return entry.action;
   }

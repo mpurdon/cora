@@ -37,11 +37,13 @@ const CHAT_SYSTEM_PROMPT: &str = r#"You are CORA's review assistant — a princi
 
 You can drive the whole app, not just answer about it. Anything the user can do from the UI you can do too, split by consequence:
 
-Actions that change GitHub — commenting, replying, resolving threads, submitting a review, merging, closing, reopening, reacting — or that take a PR out of the user's queue (muting, untracking) pause until the user confirms them in the panel. The app then executes them and records them in the user's own action history. Propose one at a time, with the exact text you intend to post. Never claim an action happened unless its tool result says so.
+Actions that change GitHub — commenting, replying, resolving threads, submitting a review, merging, closing, reopening, reacting — that message someone (message_author_on_teams) or that take a PR out of the user's queue (muting, untracking) pause until the user confirms them in the panel. The app then executes them and records them in the user's own action history. Propose one at a time, with the exact text you intend to post. Never claim an action happened unless its tool result says so.
 
 Local review state applies immediately, no confirmation: mark_files_viewed (the checkboxes in the file list), set_pr_priority, set_repo_priority, set_author_priority, set_review_mark, refresh_pr, run_analysis. These only change Cora's own view and the user can undo them from the UI. When the user asks to mark files viewed, call mark_files_viewed with the exact diff paths — or all=true when they mean everything.
 
 Prefer doing over describing: if the user asks for something an action tool covers, call the tool rather than explaining how they could do it themselves.
+
+Telling the author: after a review is submitted or comments are posted, the user often wants the author to hear about it on Teams — "let Adam know", "ping the author", "tell them it's approved". That is message_author_on_teams: write what the user would type in a chat, in their voice, stating what happened (approved; changes requested and why in a phrase; N comments waiting) and ending with the PR URL. Offer it once when it clearly fits; never send one they didn't ask for.
 
 When you can name the fix in code, attach it: post_diff_comment takes a `suggestion` — replacement lines the author accepts in one click. Anchor it to the exact range you are replacing (`start_line`..`line`) and make the suggestion the complete replacement for that range, indented as it must appear in the file. Put your reasoning in `body` and only the code in `suggestion`. Prefer a suggestion over describing an edit in prose whenever the change is small and you can see the surrounding lines; skip it when the fix spans files or you would be guessing at code you haven't read.
 
@@ -385,6 +387,13 @@ fn action_specs() -> Vec<(&'static str, &'static str, Value)> {
             "Stop tracking this PR entirely (undoable from History). Pauses for user confirmation.",
             json!({"type": "object", "properties": {}, "required": []}),
         ),
+        (
+            "message_author_on_teams",
+            "Send the PR's author a Microsoft Teams chat message from the user — typically that the review is approved, or that comments are waiting on them. Write it as the user would say it (their voice is in your context): one to three plain sentences, no markdown, ending with the PR's URL so Teams unfurls it. Delivery is whatever the user has set up — a webhook sends it directly; otherwise Teams opens with the text drafted and the user presses Enter — and the result says which. Pauses for user confirmation.",
+            json!({"type": "object", "properties": {
+                "body": {"type": "string", "description": "The message, plain text"}
+            }, "required": ["body"]}),
+        ),
     ]
 }
 
@@ -498,7 +507,11 @@ fn normalize_action_input(name: &str, mut input: Value) -> Value {
 fn carries_text(name: &str) -> bool {
     matches!(
         name,
-        "post_pr_comment" | "post_diff_comment" | "reply_to_thread" | "submit_review"
+        "post_pr_comment"
+            | "post_diff_comment"
+            | "reply_to_thread"
+            | "submit_review"
+            | "message_author_on_teams"
     )
 }
 
@@ -547,6 +560,7 @@ fn describe_action(name: &str, input: &Value) -> ChatPendingAction {
             }
         }
         "untrack_pr" => "Stop tracking this PR".to_string(),
+        "message_author_on_teams" => "Message the PR's author on Teams".to_string(),
         other => other.to_string(),
     };
     // The detail is the body for exactly the actions that carry one, which is
@@ -687,6 +701,21 @@ async fn execute_action(app: &AppHandle, pr_id: &str, action: &PendingAction) ->
                 pr_id.to_string(),
             )?;
             Ok("Stopped tracking the PR".into())
+        }
+        // Teams audits itself. The result must be exact about delivery: a
+        // drafted message hasn't gone anywhere until the user presses Enter,
+        // and the model must not tell them otherwise.
+        "message_author_on_teams" => {
+            let out =
+                crate::teams::message_author(app, pr_id, &str_arg(input, "body")?, Some(VIA)).await?;
+            Ok(if out.delivery == "sent" {
+                format!("Sent on Teams to @{} ({})", out.recipient.login, out.recipient.email)
+            } else {
+                format!(
+                    "No Teams webhook is configured, so Teams was opened on the chat with @{} ({}) with the message drafted — the user has to press Enter there to send it. Do not describe it as sent.",
+                    out.recipient.login, out.recipient.email
+                )
+            })
         }
         other => Err(AppError::Other(format!("unknown action: {other}"))),
     }

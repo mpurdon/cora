@@ -1814,6 +1814,32 @@ body.col-resizing * {
   margin-top: 8px;
 }
 
+/* Who a Teams message goes to, and how the app knows — shown before the
+   text so a wrong guess is caught before anything is typed. */
+.teams-to {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.teams-source {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+/* What just happened on the Teams route, beside the buttons. */
+.review-notice {
+  font-size: 11px;
+  color: var(--ok);
+  align-self: center;
+}
+
 .review-composer textarea {
   width: 100%;
   min-height: 64px;
@@ -6791,4 +6817,52 @@ button.diff-file-header:hover {
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* Settings → Teams: the flow recipe and the payload it receives. */
+.teams-howto {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.teams-howto li + li {
+  margin-top: 6px;
+}
+
+.teams-payload {
+  font-size: 10.5px;
+  line-height: 1.5;
+  background: var(--ink-0);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0;
+  overflow-x: auto;
+  user-select: text;
+}
+
+.field-static {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Settings → Users: the Teams address column, unobtrusive until filled. */
+.repo-table .user-email {
+  width: 100%;
+  min-width: 160px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 6px;
+  color: var(--text);
+}
+
+.repo-table .user-email:hover,
+.repo-table .user-email:focus {
+  border-color: var(--line);
+  background: var(--ink-0);
 }

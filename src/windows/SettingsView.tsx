@@ -41,6 +41,7 @@ export type SettingsPane =
   | "general"
   | "appearance"
   | "github"
+  | "teams"
   | "orgs"
   | "repos"
   | "users"
@@ -69,6 +70,7 @@ const PANES: { key: Pane; label: string; glyph: string; dev?: boolean }[] = [
   { key: "general", label: "General", glyph: "◐" },
   { key: "appearance", label: "Appearance", glyph: "◧" },
   { key: "github", label: "GitHub", glyph: "⎇" },
+  { key: "teams", label: "Teams", glyph: "➤" },
   { key: "orgs", label: "Organizations", glyph: "◫" },
   { key: "repos", label: "Repositories", glyph: "▤" },
   { key: "users", label: "Users", glyph: "◔" },
@@ -307,6 +309,9 @@ export function SettingsView({
             <PaneNameCtx.Provider value="GitHub">
               <GitHubPane settings={settings} save={save} />
             </PaneNameCtx.Provider>
+            <PaneNameCtx.Provider value="Teams">
+              <TeamsPane />
+            </PaneNameCtx.Provider>
             <PaneNameCtx.Provider value="AWS">
               <AwsPane settings={settings} save={save} />
             </PaneNameCtx.Provider>
@@ -320,6 +325,7 @@ export function SettingsView({
           {pane === "general" && <GeneralPane settings={settings} save={save} />}
           {pane === "appearance" && <AppearancePane />}
           {pane === "github" && <GitHubPane settings={settings} save={save} />}
+          {pane === "teams" && <TeamsPane />}
           {pane === "orgs" && <OrgsPane />}
           {pane === "repos" && (
             <ReposPane
@@ -795,6 +801,169 @@ function GitHubPane({ settings, save }: PaneProps) {
 
 /** Which GitHub orgs CORA works with. Each enabled org gets a fully
  *  isolated database + settings; the selector in the rail switches. */
+// ---------------------------------------------------------------- teams
+
+/** Messaging a PR's author on Teams needs no Entra app: a Power Automate
+ *  flow the user builds once, posting as them, driven by a webhook. The
+ *  trigger URL is the credential; it goes to the Keychain like the PAT. With
+ *  no webhook the button still works — it opens Teams with the text drafted. */
+function TeamsPane() {
+  const [present, setPresent] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [testTo, setTestTo] = useState("");
+  const [testState, setTestState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const [testError, setTestError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void ipc.teamsWebhookPresent().then(setPresent);
+  }, []);
+
+  const saveUrl = async () => {
+    try {
+      await ipc.setTeamsWebhook(draft);
+      setDraft("");
+      setPresent(true);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const sendTest = async () => {
+    setTestState("sending");
+    setTestError(null);
+    try {
+      await ipc.testTeamsWebhook(testTo);
+      setTestState("sent");
+    } catch (e) {
+      setTestState("failed");
+      setTestError(String(e));
+    }
+  };
+
+  return (
+    <section className="pane-section">
+      <h2>Teams</h2>
+      <p className="pane-intro">
+        The <strong>➤ Teams</strong> button on a PR — and the assistant's{" "}
+        <span className="mono">message_author_on_teams</span> — tell the author what you did:
+        approved, comments waiting. With a webhook below, the message is sent as you. Without
+        one, Teams opens on the chat with the text drafted and you press Enter.
+      </p>
+
+      <Field
+        label="Workflows webhook"
+        hint={
+          error ?? (
+            <>
+              Stored in the macOS Keychain; the URL's signature is the whole credential. Build
+              the flow once in Teams → <strong>Workflows</strong> (see below).
+            </>
+          )
+        }
+      >
+        <div className="row">
+          <input
+            type="password"
+            placeholder={present ? "••••••••  (stored in Keychain)" : "https://….logic.azure.com/workflows/…/triggers/manual/paths/invoke?…"}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && draft && void saveUrl()}
+          />
+          <button className="action-btn" disabled={!draft} onClick={() => void saveUrl()}>
+            Save
+          </button>
+          {present && <span className="pat-ok">✓ configured</span>}
+        </div>
+      </Field>
+
+      {present && (
+        <Field
+          label="Send a test"
+          hint={
+            testError ??
+            (testState === "sent"
+              ? "Accepted by the flow — check the chat. If nothing arrived, the flow's Teams steps are the place to look."
+              : "Your own address is the safe target: the flow creates the chat if it doesn't exist.")
+          }
+        >
+          <div className="row">
+            <input
+              placeholder="someone@yourcompany.com"
+              value={testTo}
+              onChange={(e) => {
+                setTestTo(e.target.value);
+                setTestState("idle");
+              }}
+              onKeyDown={(e) => e.key === "Enter" && testTo && void sendTest()}
+            />
+            <button
+              className="action-btn"
+              disabled={!testTo.includes("@") || testState === "sending"}
+              onClick={() => void sendTest()}
+            >
+              {testState === "sending" ? "Sending…" : "Send test"}
+            </button>
+            {testState === "sent" && <span className="pat-ok">✓ sent</span>}
+          </div>
+        </Field>
+      )}
+
+      {present && (
+        <Field label="Disconnect" hint="Removes the URL from the Keychain. The button falls back to opening Teams with the text drafted.">
+          <button
+            className="action-btn danger"
+            onClick={() => void ipc.clearTeamsWebhook().then(() => setPresent(false))}
+          >
+            Remove webhook
+          </button>
+        </Field>
+      )}
+
+      <h3 className="pane-subhead">Building the flow</h3>
+      <Field
+        label="Three steps, no admin"
+        hint="Post as: User makes the message indistinguishable from one you typed — which is why every send from CORA sits behind a confirmation."
+      >
+        <ol className="teams-howto">
+          <li>
+            In Teams open <strong>Workflows</strong> → <em>Create from blank</em>. Trigger:{" "}
+            <strong>When a Teams webhook request is received</strong>. Copy its URL into the
+            field above.
+          </li>
+          <li>
+            Add <strong>Microsoft Teams → Create a chat</strong>. Members: your address and{" "}
+            <span className="mono">triggerBody()?['to']</span>. For a 1:1 it returns the chat you
+            already have.
+          </li>
+          <li>
+            Add <strong>Microsoft Teams → Post message in a chat or channel</strong>. Post as{" "}
+            <em>User</em>, post in <em>Group chat</em>, chat = the id from step 2, message ={" "}
+            <span className="mono">triggerBody()?['text']</span>.
+          </li>
+        </ol>
+      </Field>
+      <Field
+        label="What CORA sends"
+        hint="One JSON body per message. Everything but `to` and `text` is there for a richer card if you want one."
+      >
+        <pre className="teams-payload mono">{`{
+  "to":   "author@yourcompany.com",
+  "text": "Approved widgets#42 — …\nhttps://github.com/…/pull/42",
+  "pr":   { "repo": "…", "number": 42, "title": "…", "url": "…", "author": "…" }
+}`}</pre>
+      </Field>
+      <Field
+        label="Who gets the message"
+        hint="Resolved per PR: the address you set under Users, else the author's public GitHub email, else the address they sign their commits with."
+      >
+        <span className="field-static">Settings → Users → Teams email overrides a wrong guess.</span>
+      </Field>
+    </section>
+  );
+}
+
 function OrgsPane() {
   const [available, setAvailable] = useState<
     import("../bindings/GithubOrg").GithubOrg[] | null
@@ -1242,6 +1411,7 @@ function UsersPane({
   const rows = useMemo(() => {
     const all = new Set<string>([
       ...Object.keys(settings.authorPriorities),
+      ...Object.keys(settings.authorEmails),
       ...activeCounts.keys(),
       ...added,
     ]);
@@ -1252,6 +1422,7 @@ function UsersPane({
       .map((author) => ({
         author,
         priority: settings.authorPriorities[author] ?? ("standard" as RepoPriority),
+        email: settings.authorEmails[author] ?? "",
         activePrs: activeCounts.get(author) ?? 0,
       }));
   }, [settings, activeCounts, added, filter]);
@@ -1261,6 +1432,17 @@ function UsersPane({
     if (isDefaultRepoPriority(priority)) delete next[author];
     else next[author] = priority;
     void save({ authorPriorities: next });
+  };
+
+  // The address Teams knows them by — only when GitHub can't say (or says
+  // wrong). Saved on blur/Enter so a half-typed address never persists.
+  const setEmail = (author: string, email: string) => {
+    const next = { ...settings.authorEmails };
+    const trimmed = email.trim();
+    if (trimmed === (next[author] ?? "")) return;
+    if (trimmed) next[author] = trimmed;
+    else delete next[author];
+    void save({ authorEmails: next });
   };
 
   const addUser = () => {
@@ -1280,7 +1462,9 @@ function UsersPane({
       <p className="pane-intro">
         <strong>Priority</strong> weights a PR author everywhere — critical authors float to the
         top of every group and their activity is always featured; ignored authors (bots,
-        dependabot) are never tracked at all. Right-clicking a PR sets this too.
+        dependabot) are never tracked at all. Right-clicking a PR sets this too.{" "}
+        <strong>Teams email</strong> is where a ➤ Teams message goes when GitHub doesn't say
+        (private profile, noreply commits) — leave it blank to let CORA work it out.
       </p>
 
       <div className="repo-add">
@@ -1319,6 +1503,7 @@ function UsersPane({
               <th>User</th>
               <th className="col-center">Open PRs</th>
               <th>Priority</th>
+              <th>Teams email</th>
               <th />
             </tr>
           </thead>
@@ -1338,6 +1523,16 @@ function UsersPane({
                       </option>
                     ))}
                   </select>
+                </td>
+                <td>
+                  <input
+                    className="mono user-email"
+                    placeholder="from GitHub"
+                    defaultValue={row.email}
+                    key={`${row.author}:${row.email}`}
+                    onBlur={(e) => setEmail(row.author, e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                  />
                 </td>
                 <td className="col-center">
                   {!isDefaultRepoPriority(row.priority) && (

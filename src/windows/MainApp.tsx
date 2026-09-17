@@ -27,6 +27,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ACTION_META, inBucket, type ActionKind } from "../lib/actions";
 import type { PrReviews } from "../bindings/PrReviews";
+import type { TeamsRecipient } from "../bindings/TeamsRecipient";
 import type { PrConversation } from "../bindings/PrConversation";
 import { CommentsView } from "../components/analysis/CommentsView";
 import { ContextMenu } from "../components/ContextMenu";
@@ -63,6 +64,7 @@ import { analysisKey, useAnalysisStore } from "../state/analysisStore";
 import { useDiffStore } from "../state/diffStore";
 import { AttachmentRepo } from "../components/analysis/AttachedImage";
 import { describeDismissal, verdictNoun } from "../lib/dismissal";
+import { teamsSeed } from "../lib/teams";
 import { ciTone, isAuthored, isFinished, mergeTone, parseTitle, reviewTone, timeAgo, usePrStore } from "../state/prStore";
 import {
   initReviewStore,
@@ -341,12 +343,19 @@ function ReviewActions({
   flow: FlowOwner;
   setFlow: (f: FlowOwner) => void;
 }) {
-  const [mode, setMode] = useState<ReviewMode | null>(null);
+  const [mode, setMode] = useState<ComposerMode | null>(null);
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The live conversation drives the auto-seeded request-changes summary.
   const [conversation, setConversation] = useState<PrConversation | null>(null);
+  // Teams: who the message goes to (resolved when the composer opens, so a
+  // missing address is known before anything is written), whether it will
+  // send outright or open Teams drafted, and what happened last time.
+  const [recipient, setRecipient] = useState<TeamsRecipient | null>(null);
+  const [recipientError, setRecipientError] = useState<string | null>(null);
+  const [webhook, setWebhook] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // The last text the app wrote into the box. Cancel keeps the box, so a
   // seed from one verdict would otherwise ride into the next as if you had
@@ -361,6 +370,9 @@ function ReviewActions({
     setBody("");
     seeded.current = "";
     setError(null);
+    setRecipient(null);
+    setRecipientError(null);
+    setNotice(null);
   }, [pr.id]);
 
   useEffect(() => {
@@ -374,6 +386,11 @@ function ReviewActions({
   useEffect(() => {
     if (flow !== "review") setMode(null);
   }, [flow]);
+
+  // Which Teams route the button will take — its tooltip says so up front.
+  useEffect(() => {
+    void ipc.teamsWebhookPresent().then(setWebhook).catch(() => setWebhook(false));
+  }, [pr.id]);
   const openMode = (m: ReviewMode) => {
     setFlow("review");
     setMode(m);
@@ -405,19 +422,56 @@ function ReviewActions({
     });
   };
 
+  // The same composer, pointed at Teams: seeded from what you did on the PR,
+  // sent through whatever route is configured. The assistant reaches the
+  // same backend through its message_author_on_teams tool.
+  const openTeams = () => {
+    setFlow("review");
+    setMode("teams");
+    setNotice(null);
+    setRecipient(null);
+    setRecipientError(null);
+    void ipc
+      .resolveTeamsRecipient(pr.id)
+      .then(setRecipient)
+      .catch((e) => setRecipientError(String(e)));
+    if (isTyped(body)) return;
+    const text = teamsSeed(pr, reviews, conversation, reviews?.viewerLogin ?? "");
+    seeded.current = text;
+    setBody((current) => (isTyped(current) ? current : text));
+  };
+
   if (isFinished(pr)) return null;
 
+  const teamsButton = (
+    <button
+      className="action-btn"
+      data-tip={
+        webhook
+          ? "Message the author on Teams — sent as you, through your Workflows webhook"
+          : "Message the author on Teams — opens the chat with the text drafted; you press Enter"
+      }
+      onClick={openTeams}
+    >
+      ➤ Teams
+    </button>
+  );
+
   const mine = lockedReview(reviews);
-  if (mine) {
+  if (mine && mode !== "teams") {
     const verb = mine.state === "APPROVED" ? "approved" : "requested changes";
     return (
-      <span
-        className={`review-chip state-${mine.state.toLowerCase()}`}
-        data-tip="Re-enabled on new commits, resolved threads, or a re-requested review"
-      >
-        <span className="review-glyph">{mine.state === "APPROVED" ? "✓" : "±"}</span>
-        you {verb}
-      </span>
+      <>
+        <span
+          className={`review-chip state-${mine.state.toLowerCase()}`}
+          data-tip="Re-enabled on new commits, resolved threads, or a re-requested review"
+        >
+          <span className="review-glyph">{mine.state === "APPROVED" ? "✓" : "±"}</span>
+          you {verb}
+        </span>
+        {teamsButton}
+        {notice && <span className="review-notice">{notice}</span>}
+      </>
     );
   }
 
@@ -426,6 +480,17 @@ function ReviewActions({
     setBusy(true);
     setError(null);
     try {
+      if (mode === "teams") {
+        const out = await ipc.messageAuthorOnTeams(pr.id, body);
+        setNotice(
+          out.delivery === "sent"
+            ? `Sent to @${out.recipient.login} on Teams`
+            : `Opened Teams with the message to @${out.recipient.login} — press Enter there to send it`,
+        );
+        setMode(null);
+        setBody("");
+        return;
+      }
       // Hold the review GitHub just created: its own read-back lags the
       // mutation, and the header must show your verdict the moment it lands.
       // No refetch from here — submit_review's own refresh emits
@@ -440,6 +505,57 @@ function ReviewActions({
       setBusy(false);
     }
   };
+
+  if (mode === "teams") {
+    const sendLabel = webhook ? "Send on Teams" : "Open in Teams";
+    return (
+      <div className="review-composer">
+        <div className="teams-to mono">
+          {recipient ? (
+            <>
+              → @{recipient.login} · {recipient.email}
+              <span className="teams-source">
+                {recipient.source === "settings"
+                  ? "from your settings"
+                  : recipient.source === "profile"
+                    ? "from their GitHub profile"
+                    : "from their commits"}
+              </span>
+            </>
+          ) : recipientError ? (
+            <span className="settings-error">{recipientError}</span>
+          ) : (
+            "→ resolving the author's Teams address…"
+          )}
+        </div>
+        <textarea
+          autoFocus
+          placeholder="What you'd type to them in Teams…"
+          value={body}
+          disabled={busy}
+          onChange={(e) => setBody(e.target.value)}
+        />
+        {error && <div className="settings-error">{error}</div>}
+        <div className="row">
+          <button
+            className="action-btn btn-ok"
+            disabled={busy || !recipient || !body.trim()}
+            data-tip={
+              webhook
+                ? undefined
+                : "No webhook configured (Settings → Teams), so this opens the chat with the text drafted"
+            }
+            onClick={() => void submit()}
+          >
+            {busy ? "Sending…" : sendLabel}
+          </button>
+          <button className="action-btn btn-danger" disabled={busy} onClick={() => setMode(null)}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (mode) {
     return (
@@ -507,6 +623,8 @@ function ReviewActions({
       >
         💬 Comment
       </button>
+      {teamsButton}
+      {notice && <span className="review-notice">{notice}</span>}
     </>
   );
 }
@@ -514,6 +632,8 @@ function ReviewActions({
 /** The three review events GitHub accepts. A comment review is feedback
  *  with no verdict — it neither approves nor blocks. */
 type ReviewMode = "approve" | "request-changes" | "comment";
+/** What the composer can be open for: a review, or a Teams message. */
+type ComposerMode = ReviewMode | "teams";
 
 /** Merge / close / reopen with a two-step confirm — no accidental merges.
  *  Close lives in the ⋯ overflow menu; a bump of `closeRequested` starts its
