@@ -151,15 +151,25 @@ export function AssistantPanel({
   // "Explain" on a finding (from either findings view) routes through the diff
   // store so it works when the panel was closed. Send the seeded prompt and
   // surface the chat so the answer lands where the conversation can continue.
+  //
+  // Explaining a finding starts a new conversation. Whatever came before was
+  // about a different finding and is settled; carrying it would pay for those
+  // tokens on every turn of the new one and give the model a transcript it has
+  // no use for. The session is cleared first, so the explanation opens on an
+  // empty panel.
   const explainRequest = useDiffStore((s) => s.explainRequest);
   const clearExplain = useDiffStore((s) => s.clearExplain);
   useEffect(() => {
     if (!explainRequest || explainRequest.prId !== pr.id) return;
+    const prompt = eli5Prompt(explainRequest.finding);
     setView("chat");
     setSendError(null);
-    void send(pr.id, eli5Prompt(explainRequest.finding)).catch((e) => setSendError(String(e)));
     clearExplain();
-  }, [explainRequest, pr.id, send, clearExplain]);
+    void clear(pr.id)
+      .catch(() => {}) // a session that was never opened has nothing to clear
+      .then(() => send(pr.id, prompt))
+      .catch((e) => setSendError(String(e)));
+  }, [explainRequest, pr.id, send, clear, clearExplain]);
 
   return (
     <aside className="assistant-panel" style={width ? { width } : undefined}>

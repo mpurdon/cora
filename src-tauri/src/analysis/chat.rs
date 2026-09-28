@@ -39,7 +39,7 @@ You can drive the whole app, not just answer about it. Anything the user can do 
 
 Actions that change GitHub — commenting, replying, resolving threads, submitting a review, merging, closing, reopening, reacting — that message someone (message_author_on_teams) or that take a PR out of the user's queue (muting, untracking) pause until the user confirms them in the panel. The app then executes them and records them in the user's own action history. Propose one at a time, with the exact text you intend to post. Never claim an action happened unless its tool result says so.
 
-Local review state applies immediately, no confirmation: mark_files_viewed (the checkboxes in the file list), set_pr_priority, set_repo_priority, set_author_priority, set_review_mark, refresh_pr, run_analysis. These only change Cora's own view and the user can undo them from the UI. When the user asks to mark files viewed, call mark_files_viewed with the exact diff paths — or all=true when they mean everything.
+Local review state applies immediately, no confirmation: mark_files_viewed (the checkboxes in the file list), set_pr_priority, set_repo_priority, set_author_priority, set_review_mark, refresh_pr, run_analysis, list_open_prs, open_pr. These only change Cora's own view and the user can undo them from the UI. When the user asks to mark files viewed, call mark_files_viewed with the exact diff paths — or all=true when they mean everything.
 
 Prefer doing over describing: if the user asks for something an action tool covers, call the tool rather than explaining how they could do it themselves.
 
@@ -190,6 +190,11 @@ fn build_system(
         text: crate::analysis::engine::voice_section(settings),
     });
     parts.push(SystemPart {
+        label: "House style",
+        origin: "app",
+        text: crate::analysis::engine::house_style_section().to_string(),
+    });
+    parts.push(SystemPart {
         label: "PR facts",
         origin: "github",
         text: format!(
@@ -219,6 +224,35 @@ fn build_system(
                     .unwrap_or_default()
                 ),
             });
+            if !a.code_findings.is_empty() {
+                // The ids are what post_diff_comment's `finding` takes, so a
+                // comment the model posts about one marks it handled in the
+                // reviewer's list. Keyed on path and wording (see
+                // `finding_id`), so a re-run that reorders them still matches.
+                let findings: Vec<Value> = a
+                    .code_findings
+                    .iter()
+                    .map(|f| {
+                        json!({
+                            "id": finding_id(&f.path, &f.finding),
+                            "path": f.path,
+                            "line": f.line,
+                            "severity": f.severity,
+                            "kind": f.kind,
+                            "finding": f.finding,
+                            "suggestion": f.suggestion,
+                        })
+                    })
+                    .collect();
+                parts.push(SystemPart {
+                    label: "Code findings",
+                    origin: "analysis",
+                    text: format!(
+                        "\n\n## Code findings (from the code pass)\nWhen you post a comment about one of these, pass its `id` as post_diff_comment's `finding` so the app marks it handled.\n{}",
+                        serde_json::to_string(&findings).unwrap_or_default()
+                    ),
+                });
+            }
             let steps: Vec<&str> = a
                 .trace
                 .iter()
@@ -322,7 +356,8 @@ fn action_specs() -> Vec<(&'static str, &'static str, Value)> {
                 "line": {"type": "integer", "description": "Line number on the new side of the diff. Must be an ADDED or CONTEXT line inside a changed hunk — GitHub rejects anchors on unchanged code outside the diff. With a suggestion, the LAST line being replaced"},
                 "start_line": {"type": "integer", "description": "First line of the range, when the comment or suggestion covers several lines. Same rule: must be inside a changed hunk, above `line`"},
                 "body": {"type": "string", "description": "The prose. With a suggestion, say why — the replacement code goes in `suggestion`, not here"},
-                "suggestion": {"type": "string", "description": "Replacement code for lines start_line..line, verbatim and correctly indented. Must be the complete replacement for every line in the range — GitHub swaps the whole range for this text"}
+                "suggestion": {"type": "string", "description": "Replacement code for lines start_line..line, verbatim and correctly indented. Must be the complete replacement for every line in the range — GitHub swaps the whole range for this text"},
+                "finding": {"type": "string", "description": "The id of the code finding this comment addresses, from the findings list in your context (\"finding a1b2c3d4\"). Pass it whenever the comment is about one of those findings: it is how the app marks that finding as handled in the reviewer's list. Omit for a comment of your own."}
             }, "required": ["path", "line", "body"]}),
         ),
         (
@@ -389,7 +424,7 @@ fn action_specs() -> Vec<(&'static str, &'static str, Value)> {
         ),
         (
             "message_author_on_teams",
-            "Send the PR's author a Microsoft Teams chat message from the user — typically that the review is approved, or that comments are waiting on them. Write it as the user would say it (their voice is in your context): one to three plain sentences, no markdown, no em dashes, ending with the PR's URL so Teams unfurls it. Delivery is whatever the user has set up — a webhook sends it directly; otherwise Teams opens with the text drafted and the user presses Enter — and the result says which. Pauses for user confirmation.",
+            "Send the PR's author a Microsoft Teams chat message from the user. This is a nudge, not a review: the PR carries the detail and they will read it there. AT MOST TWO SHORT SENTENCES plus the PR URL on its own line, and one sentence is usually right (\"hey, requested changes on the log group tagging PR.\"). Say what you did and what you need from them; never summarise the findings, list them, or explain why. Plain chat text: no markdown, no bullet points, no greeting-and-signoff, lowercase start is fine if that is how the user writes. Delivery is whatever the user has set up (a webhook sends it directly, otherwise Teams opens with the text drafted for them to send) and the result says which. Pauses for user confirmation.",
             json!({"type": "object", "properties": {
                 "body": {"type": "string", "description": "The message, plain text"}
             }, "required": ["body"]}),
@@ -423,6 +458,20 @@ fn chat_specs() -> Vec<(&'static str, &'static str, Value)> {
             "all": {"type": "boolean", "description": "Mark every file in the diff; ignores paths"},
             "viewed": {"type": "boolean", "description": "true to mark viewed (default), false to unmark"}
         }, "required": []}),
+    ));
+    specs.push((
+        "list_open_prs",
+        "The reviewer's queue: every PR the app is tracking that is still open, with the facts the rail sorts on (who it is waiting for, your review state, CI, conflicts, unread changes, the app's own priority verdict, and how long it has sat). Use it to answer \"what should I look at next\" and to find the id for open_pr. The PR in this conversation is marked `current`.",
+        json!({"type": "object", "properties": {
+            "needing_my_review": {"type": "boolean", "description": "Only PRs still waiting on the user's review (default false: the whole open queue)"}
+        }, "required": []}),
+    ));
+    specs.push((
+        "open_pr",
+        "Show a PR from list_open_prs in the main window, the same as clicking it in the rail. Applies immediately: it only moves the user's view, and they can click back. The chat for that PR is its own conversation, so say what you found and stop; you do not continue reviewing there from here.",
+        json!({"type": "object", "properties": {
+            "pr_id": {"type": "string", "description": "The `id` of a PR from list_open_prs"}
+        }, "required": ["pr_id"]}),
     ));
     // Local review-state controls. These change only Cora's own view of the
     // queue and are reversible from the UI, so they run without confirmation
@@ -488,19 +537,64 @@ fn normalize_action_input(name: &str, mut input: Value) -> Value {
     if name != "post_diff_comment" {
         return input;
     }
-    let Some(suggestion) = input.get("suggestion").and_then(Value::as_str).map(String::from) else {
-        return input;
-    };
-    let body = input.get("body").and_then(Value::as_str).unwrap_or("").trim().to_string();
-    // Trailing newlines inside the fence become blank lines in the applied
-    // patch, so trim to exactly the replacement lines.
-    let block = format!("```suggestion\n{}\n```", suggestion.trim_end_matches('\n'));
-    let composed = if body.is_empty() { block } else { format!("{body}\n\n{block}") };
-    input["body"] = Value::String(composed);
-    if let Some(obj) = input.as_object_mut() {
-        obj.remove("suggestion");
+    let mut body = input.get("body").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if let Some(suggestion) = input.get("suggestion").and_then(Value::as_str).map(String::from) {
+        // Trailing newlines inside the fence become blank lines in the applied
+        // patch, so trim to exactly the replacement lines.
+        let block = format!("```suggestion\n{}\n```", suggestion.trim_end_matches('\n'));
+        body = if body.is_empty() { block } else { format!("{body}\n\n{block}") };
+        if let Some(obj) = input.as_object_mut() {
+            obj.remove("suggestion");
+        }
     }
+    // The finding tag is an HTML comment: GitHub renders nothing, it survives
+    // edits to the visible text, and the findings list reads it back to mark
+    // that finding handled. The comment the model wrote need not sit on the
+    // finding's own line for that to work.
+    if let Some(id) = input.get("finding").and_then(Value::as_str).map(finding_tag) {
+        if !body.contains(&id) {
+            body = format!("{body}\n\n{id}");
+        }
+        if let Some(obj) = input.as_object_mut() {
+            obj.remove("finding");
+        }
+    }
+    input["body"] = Value::String(body);
     input
+}
+
+/// A code finding's stable id: FNV-1a over path and wording, which is what
+/// `findingMarker` in the frontend's `lib/comments.ts` hashes too. Position
+/// in the list is deliberately not part of it, so a re-run that reorders the
+/// findings keeps every comment matched to the finding it answered.
+pub fn finding_id(path: &str, finding: &str) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in format!("{path}|{finding}").encode_utf16() {
+        // The frontend hashes UTF-16 code units (JS charCodeAt), so this
+        // walks the same units rather than bytes.
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{h:08x}")
+}
+
+/// The hidden tag for a finding id, matching `findingMarker` in the
+/// frontend's `lib/comments.ts`. Anything that isn't one of our ids is
+/// dropped rather than written into the comment.
+fn finding_tag(id: &str) -> String {
+    let id: String = id
+        .trim()
+        .trim_start_matches("finding")
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(8)
+        .collect();
+    if id.len() == 8 {
+        format!("<!-- cora:finding {id} -->")
+    } else {
+        String::new()
+    }
 }
 
 /// Actions whose `detail` is prose the user may rewrite before confirming.
@@ -862,9 +956,96 @@ fn execute_local(
             );
             "Started the architecture analysis — it lands in the panel when done".to_string()
         }
+        "list_open_prs" => {
+            let only_mine = input.get("needing_my_review").and_then(Value::as_bool).unwrap_or(false);
+            serde_json::to_string(&queue_rows(&orgs, pr_id, only_mine)?)
+                .unwrap_or_else(|_| "[]".into())
+        }
+        "open_pr" => {
+            let target = str_arg(input, "pr_id")?;
+            let store = orgs.active();
+            let pr = store
+                .get_pr(&target)?
+                .ok_or_else(|| AppError::Other(format!("no tracked PR with id {target}")))?;
+            crate::commands::show_main_window(app.clone(), Some(target))?;
+            format!("Opened {} #{} — {}", pr.info.repo, pr.info.number, pr.info.title)
+        }
         _ => return Ok(None),
     };
     Ok(Some(result))
+}
+
+/// The queue as the model sees it: one row per tracked, open, unmuted PR,
+/// carrying the same signals the rail sorts on. The ranking is deliberately
+/// left to the model rather than duplicated here — the rail's order lives in
+/// the frontend and a second copy would drift from it — but `priority` hands
+/// over the app's own verdict so the answer isn't invented from scratch.
+fn queue_rows(
+    orgs: &crate::orgs::Orgs,
+    current: &str,
+    only_needing_my_review: bool,
+) -> AppResult<Vec<Value>> {
+    let store = orgs.active();
+    let settings = store.settings()?;
+    let now = chrono::Utc::now();
+    let age_days = |iso: &str| {
+        chrono::DateTime::parse_from_rfc3339(iso)
+            .map(|t| (now - t.with_timezone(&chrono::Utc)).num_days())
+            .unwrap_or(0)
+    };
+    let mut rows = Vec::new();
+    for pr in store.visible_prs()? {
+        if pr.muted || pr.info.state != "OPEN" {
+            continue;
+        }
+        let requested = pr.sources.contains(&crate::models::PrSource::ReviewRequested);
+        // "Still waiting on you" is the rail's own test: you were asked, and
+        // either you have not answered or someone re-asked since you did.
+        let waiting_on_me = requested
+            && (pr.info.my_review_state.is_none()
+                || pr.info.my_review_state.as_deref() == Some("DISMISSED")
+                || pr.info.my_review_rerequested);
+        if only_needing_my_review && !waiting_on_me {
+            continue;
+        }
+        let repo_priority = settings
+            .repo_priorities
+            .get(&pr.info.repo)
+            .copied()
+            .unwrap_or(crate::models::RepoPriority::Standard);
+        let author_priority = settings
+            .author_priorities
+            .get(&pr.info.author)
+            .copied()
+            .unwrap_or(crate::models::RepoPriority::Standard);
+        let priority = crate::activity::priority::effective_priority(
+            repo_priority,
+            author_priority,
+            pr.priority,
+        );
+        rows.push(json!({
+            "id": pr.info.id,
+            "current": pr.info.id == current,
+            "ref": format!("{}#{}", pr.info.repo, pr.info.number),
+            "title": pr.info.title,
+            "author": pr.info.author,
+            "draft": pr.info.is_draft,
+            "yours": pr.sources.contains(&crate::models::PrSource::Authored),
+            "reviewRequestedOfYou": requested,
+            "waitingOnYourReview": waiting_on_me,
+            "yourReview": pr.info.my_review_state,
+            "reviewDecision": pr.info.review_decision,
+            "ci": pr.info.ci_status,
+            "conflicts": pr.info.mergeable == "CONFLICTING",
+            "size": format!("+{} −{} across {} files", pr.info.additions, pr.info.deletions, pr.info.changed_files),
+            "unread": pr.unread,
+            "priority": format!("{priority:?}").to_lowercase(),
+            "openedDaysAgo": age_days(&pr.first_seen),
+            "idleDaysSinceLastChange": age_days(&pr.info.updated_at),
+            "url": pr.info.url,
+        }));
+    }
+    Ok(rows)
 }
 
 /// The tool's enum is closed, so an unknown value is the model's mistake and
@@ -914,7 +1095,7 @@ fn tool_origin(name: &str) -> &'static str {
         "get_pr_diff" | "get_commit_diff" | "list_commits" | "list_recent_prs"
         | "get_pr_conversation" => "github",
         "mark_files_viewed" | "set_pr_priority" | "set_repo_priority" | "set_author_priority"
-        | "set_review_mark" | "refresh_pr" | "run_analysis" => "app",
+        | "set_review_mark" | "refresh_pr" | "run_analysis" | "list_open_prs" | "open_pr" => "app",
         _ => "tool",
     }
 }
@@ -1415,6 +1596,50 @@ mod tests {
     /// The inspector's value is provenance, so every research tool has to say
     /// where its bytes come from. A tool added later that falls through to the
     /// generic label is a gap, not a harmless default.
+    /// The frontend computes this id too (`findingId` in lib/comments.ts) and
+    /// the two must agree, or a comment the assistant tags is never matched
+    /// back to its finding. These expectations come from running that
+    /// function on the same keys.
+    #[test]
+    fn finding_ids_match_the_frontends_hash() {
+        assert_eq!(
+            finding_id("libs/util-sst/src/lib/x.spec.ts", "this test is vacuous"),
+            "4fbd2e57"
+        );
+        assert_eq!(finding_id("a", "b"), "294c7dd6");
+        // Non-ASCII hashes per UTF-16 code unit, the way charCodeAt walks it.
+        assert_eq!(finding_id("é—ü", "ok"), "c5bd9b0a");
+    }
+
+    /// A tagged comment carries the marker the findings list looks for, and
+    /// junk in `finding` is dropped rather than written into the comment.
+    #[test]
+    fn a_tagged_diff_comment_carries_the_findings_marker() {
+        let out = normalize_action_input(
+            "post_diff_comment",
+            json!({"path": "a.ts", "line": 3, "body": "this is vacuous", "finding": "4fbd2e57"}),
+        );
+        assert_eq!(
+            out["body"],
+            json!("this is vacuous\n\n<!-- cora:finding 4fbd2e57 -->")
+        );
+        assert!(out.get("finding").is_none());
+
+        // The model may echo the id the way the context prints it.
+        let out = normalize_action_input(
+            "post_diff_comment",
+            json!({"path": "a.ts", "line": 3, "body": "x", "finding": "finding 4fbd2e57"}),
+        );
+        assert!(out["body"].as_str().unwrap().contains("<!-- cora:finding 4fbd2e57 -->"));
+
+        // Not an id: nothing is appended.
+        let out = normalize_action_input(
+            "post_diff_comment",
+            json!({"path": "a.ts", "line": 3, "body": "x", "finding": "the vacuous test"}),
+        );
+        assert_eq!(out["body"], json!("x"));
+    }
+
     #[test]
     fn every_research_tool_declares_an_origin() {
         for (name, _, _) in chat_specs() {

@@ -8,7 +8,7 @@ import { codePassFailure, FindingActions } from "./AssessmentView";
 import { useDiffStore } from "../../state/diffStore";
 import { parseDiffCached } from "./DiffView";
 import { ipc } from "../../lib/ipc";
-import { findingSeed, isFindingCommented, viewerComments } from "../../lib/comments";
+import { findingMarker, findingSeed, isFindingCommented, viewerComments } from "../../lib/comments";
 
 /** Per-file insights for the file currently in view on the Diff tab —
  *  follows the scroll spy, so it always describes what the reviewer is
@@ -58,7 +58,13 @@ export function FileInsights({ pr }: { pr: TrackedPr }) {
   }
 
   const commentCode = (f: CodeFinding) => {
-    requestCompose({ target: "diff", path: f.path, line: f.line, seed: findingSeed(f) });
+    requestCompose({
+      target: "diff",
+      path: f.path,
+      line: f.line,
+      seed: findingSeed(f),
+      marker: findingMarker(f),
+    });
   };
   const explainCode = (f: CodeFinding) => {
     requestExplain(pr.id, f);

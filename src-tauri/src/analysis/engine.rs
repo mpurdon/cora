@@ -219,7 +219,39 @@ When you are done exploring, you MUST call submit_analysis exactly once with the
 /// The voice the app drafts in when the reviewer's settings name none.
 /// Deliberately plain: a colleague leaving a note, not a tool filing a
 /// report. Anything more particular is the reviewer's to write.
-pub const DEFAULT_REVIEW_VOICE: &str = "Plain and direct, like a colleague leaving a note — not a tool filing a report. Short sentences. Say what is wrong and what to do, then stop. No preamble, no sign-off, no \"Consider...\" when you mean \"do this\". Contractions are fine. No emoji, no bold labels, no bullet lists for a one-point comment. No em dashes; use a comma, a period, or a colon. Criticize the code, never the author, and be specific enough that they can act without asking a follow-up.";
+pub const DEFAULT_REVIEW_VOICE: &str = "Plain and direct, like a colleague leaving a note, not a tool filing a report. Short sentences. Say what is wrong and what to do, then stop. No preamble, no sign-off, no \"Consider...\" when you mean \"do this\". Contractions are fine. No emoji, no bold labels, no bullet lists for a one-point comment. Criticize the code, never the author, and be specific enough that they can act without asking a follow-up.";
+
+/// The tells that give model-written prose away. These are the reviewer's
+/// own rules, collected from his writing guide, and they apply to every
+/// word the app produces: the assessment he reads, the comments posted
+/// under his name, the chat, the Teams messages. They are not about the
+/// voice of any one piece, so they ride alongside the voice section rather
+/// than inside it (a custom voice replaces the default; it must not be able
+/// to drop these).
+pub const HOUSE_STYLE: &str = r#"
+
+## House style (absolute, overrides anything above)
+
+Never use an em dash (—). Not once, anywhere, for any reason. Use a comma, a colon, a semicolon, parentheses, or two sentences. This is the single most reliable tell that a machine wrote the text.
+
+Also avoid, because they read as generated:
+- Reversal templates: "It is not X, it is Y", "The real question is", "not because X but because Y", "X isn't the problem, Y is". State the point directly instead.
+- Importance markers: "Crucially", "Importantly", "It is worth noting", "The key insight", "The deeper point", "What matters here", "This is critical". Put the fact in the sentence and let it carry itself.
+- Structural narration: "Taken together", "In other words", "This brings us to", "That distinction matters", "The lesson is clear", "Let me explain".
+- Closing aphorisms. Do not end a paragraph, a comment, or a message with a slogan, a reversal, or a two-line dramatic conclusion. End on the fact, the consequence, or the next step, then stop.
+- Metaphorical "quietly" ("quietly breaks", "quietly becomes"), non-literal "load-bearing", "the sharpest", and free-floating "tension" as an abstract noun. If two specific things conflict, name both.
+- Performed candour: "to be honest", "honestly", "I'll be direct".
+- Rule-of-three padding and lists whose items are parallel in grammar but not in importance. Rank them, or cut the one added for symmetry.
+- Repeated one-sentence paragraphs and sentence fragments used for drama.
+
+Prefer: uneven sentence lengths; plain explanation where explanation is what is needed; specifics (exact file, exact line, exact value) over polish; honest uncertainty where it exists, said plainly ("I am not sure this holds when...").
+"#;
+
+/// The house style as a prompt section. Appended to every system prompt the
+/// app builds, whatever the reviewer's voice setting says.
+pub(crate) fn house_style_section() -> &'static str {
+    HOUSE_STYLE
+}
 
 /// The reviewer's voice, as a prompt section: everything the model writes
 /// for the reviewer to post — comments, replies, review summaries, the code
@@ -1212,6 +1244,7 @@ pub async fn run(
         settings.custom_system_prompt.clone()
     };
     system_prompt.push_str(&conventions_section(settings, &pr.info.repo));
+    system_prompt.push_str(house_style_section());
 
     let tools = RepoTools::new(
         &settings.github_graphql_url,
@@ -1973,6 +2006,7 @@ pub async fn code_findings(
     let mut system = CODE_PASS_PROMPT.to_string();
     system.push_str(&conventions_section(settings, &pr.info.repo));
     system.push_str(&voice_section(settings));
+    system.push_str(house_style_section());
 
     let mut specs = RepoTools::specs();
     specs.push((

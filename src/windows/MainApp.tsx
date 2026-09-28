@@ -49,6 +49,7 @@ import { events, ipc, onFocusPr } from "../lib/ipc";
 import { flagRank, FLAG_LABEL } from "../lib/flags";
 import { usePersisted, usePersistedFlag } from "../lib/persisted";
 import {
+  findingMarker,
   findingSeed,
   isFindingCommented,
   isMarkedCommented,
@@ -1157,7 +1158,13 @@ function AnalysisPanel({ pr, tab, highlight, onFocusNodes }: AnalysisPanelProps)
   const commentCode = (f: CodeFinding) => {
     useDiffStore
       .getState()
-      .requestCompose({ target: "diff", path: f.path, line: f.line, seed: findingSeed(f) });
+      .requestCompose({
+        target: "diff",
+        path: f.path,
+        line: f.line,
+        seed: findingSeed(f),
+        marker: findingMarker(f),
+      });
     window.dispatchEvent(new CustomEvent("cora:set-tab", { detail: "diff" }));
   };
 

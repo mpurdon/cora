@@ -97,15 +97,17 @@ export function eli5Prompt(f: Explainable): string {
     context = [`Impact (${IMPACT_LABEL[f.kind]}):`, `> ${f.description}`, ...nodeLine(f.nodeIds)];
     ground = `Use your tools to find and read the code on both sides of this boundary${from} to ground it`;
   }
+  // No em dashes in the prompt itself: the headings are a template the answer
+  // copies, so punctuation here comes back in the reply.
   return [
-    `${ask} Be terse — this lands in a narrow side panel.`,
+    `${ask} Be terse, this lands in a narrow side panel.`,
     ``,
     ...context,
     ``,
-    `${ground}, then answer under these exact headings — one or two sentences each, no preamble, no sign-off, don't restate the code back to me:`,
-    `**What it is** — the problem in everyday terms.`,
-    `**Why it matters** — the concrete consequence, or say plainly if it's low-stakes or fine to leave.`,
-    `**Do on this PR?** — yes or no, and if yes the exact change in a sentence or two (a short snippet only if that's the fastest way to say it).`,
+    `${ground}, then answer under these exact headings, one or two sentences each, no preamble, no sign-off, don't restate the code back to me:`,
+    `**What it is**: the problem in everyday terms.`,
+    `**Why it matters**: the concrete consequence, or say plainly if it's low-stakes or fine to leave.`,
+    `**Do on this PR?**: yes or no, and if yes the exact change in a sentence or two (a short snippet only if that's the fastest way to say it).`,
   ].join("\n");
 }
 
@@ -152,9 +154,17 @@ export function viewerComments(
  *  which GitHub renders as nothing and which survives edits to the visible
  *  text. Keyed on the finding's own words rather than its position in the
  *  list, so a re-run that reorders findings keeps the match. */
-export function findingMarker(f: WaFinding | BoundaryImpact): string {
-  const key = "pillar" in f ? `${f.pillar}|${f.finding}` : `${f.kind}|${f.description}`;
-  return `<!-- cora:finding ${fnv(key)} -->`;
+export function findingMarker(f: Explainable): string {
+  return `<!-- cora:finding ${findingId(f)} -->`;
+}
+
+/** A finding's stable id. Mirrored in Rust (`chat::finding_id`) for code
+ *  findings, so a comment the assistant posts with `finding: "<id>"` matches
+ *  the same finding here. */
+export function findingId(f: Explainable): string {
+  if ("pillar" in f) return fnv(`${f.pillar}|${f.finding}`);
+  if ("description" in f) return fnv(`${f.kind}|${f.description}`);
+  return fnv(`${f.path}|${f.finding}`);
 }
 
 const MARKER_RE = /<!--\s*cora:finding\s+([0-9a-f]{8})\s*-->/g;
@@ -172,18 +182,23 @@ function fnv(s: string): string {
 
 /** Whether a finding with no location has been addressed: a viewer comment
  *  anywhere on the PR carries its marker. */
-export function isMarkedCommented(
-  f: WaFinding | BoundaryImpact,
-  mine: { markers: Set<string> },
-): boolean {
+export function isMarkedCommented(f: Explainable, mine: { markers: Set<string> }): boolean {
   return mine.markers.has(findingMarker(f));
 }
 
-/** Whether a finding has been addressed by a viewer comment at its location. */
+/** Whether a code finding has been addressed: a comment of the viewer's
+ *  carrying its marker, or one sitting on the line it points at.
+ *
+ *  The marker is what makes this reliable. A comment about a finding rarely
+ *  lands on the finding's own line: the assistant anchors where the fix goes,
+ *  GitHub snaps a thread to the nearest line inside a hunk, and a reviewer
+ *  writing by hand picks whatever line reads best. Matching on position alone
+ *  missed most of them. */
 export function isFindingCommented(
   f: CodeFinding,
-  mine: { lines: Set<string>; files: Set<string> },
+  mine: { lines: Set<string>; files: Set<string>; markers: Set<string> },
 ): boolean {
+  if (mine.markers.has(findingMarker(f))) return true;
   return f.line != null ? mine.lines.has(`${f.path}:${f.line}`) : mine.files.has(f.path);
 }
 
