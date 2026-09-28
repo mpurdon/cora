@@ -6851,6 +6851,33 @@ button.diff-file-header:hover {
   color: var(--muted);
 }
 
+/* Settings → Users: the address CORA resolved, and where it came from. A
+   button because clicking it adopts it as the override. */
+.user-resolved {
+  white-space: nowrap;
+}
+
+.resolved-email {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+
+.resolved-email:hover {
+  color: var(--text);
+  border-color: var(--line);
+  background: var(--ink-0);
+}
+
+.resolved-email.warn {
+  color: var(--warn);
+}
+
 /* Settings → Users: the Teams address column, unobtrusive until filled. */
 .repo-table .user-email {
   width: 100%;

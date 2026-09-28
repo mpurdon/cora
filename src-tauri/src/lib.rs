@@ -226,6 +226,7 @@ pub fn run() {
             commands::clear_teams_webhook,
             commands::test_teams_webhook,
             commands::resolve_teams_recipient,
+            commands::resolve_teams_author,
             commands::message_author_on_teams,
             commands::get_file_at_head,
             commands::refresh_pr,

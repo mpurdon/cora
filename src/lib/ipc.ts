@@ -114,6 +114,8 @@ export const ipc = {
   testTeamsWebhook: (email: string) => invoke<void>("test_teams_webhook", { email }),
   resolveTeamsRecipient: (prId: string) =>
     invoke<TeamsRecipient>("resolve_teams_recipient", { prId }),
+  resolveTeamsAuthor: (login: string) =>
+    invoke<TeamsRecipient>("resolve_teams_author", { login }),
   messageAuthorOnTeams: (prId: string, text: string) =>
     invoke<TeamsOutcome>("message_author_on_teams", { prId, text }),
   refreshPr: (prId: string) => invoke<TrackedPr>("refresh_pr", { prId }),

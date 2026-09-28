@@ -47,6 +47,72 @@ const AZ_CANDIDATES: &[&str] = &["/opt/homebrew/bin/az", "/usr/local/bin/az", "a
 /// Audit action for a message to the author — the History tab's row.
 pub const AUDIT_ACTION: &str = "teams-messaged";
 
+/// Who an author is on Teams, asked by login rather than by PR: the Users
+/// pane shows this so the reviewer can see the address a message would go to
+/// before one does. A tracked PR of theirs carries the strongest evidence
+/// (the addresses they sign commits with), so use one when there is one;
+/// otherwise fall back to what GitHub says about the account and what the
+/// directory can match.
+pub async fn resolve_for_login(app: &AppHandle, login: &str) -> AppResult<TeamsRecipient> {
+    let store = app.state::<crate::orgs::Orgs>().active();
+    let settings = store.settings()?;
+    if let Some(email) =
+        settings.author_emails.get(login).map(|e| e.trim()).filter(|e| !e.is_empty())
+    {
+        return Ok(TeamsRecipient {
+            login: login.to_string(),
+            email: email.to_string(),
+            source: "settings".into(),
+        });
+    }
+    if let Some(pr) = store.visible_prs()?.into_iter().find(|p| p.info.author == login) {
+        return resolve_recipient(app, &pr.info.id).await;
+    }
+
+    let token = secrets::github_pat()?
+        .ok_or_else(|| AppError::Other("no GitHub token configured".into()))?;
+    let client = GraphQlClient::new(&settings.github_graphql_url, &token)?
+        .with_health(GraphQlClient::shared_health(app));
+    let data = client
+        .run("query($login: String!) { user(login: $login) { name } }", &json!({ "login": login }))
+        .await?;
+    let known = GitHubKnows {
+        login: login.to_string(),
+        name: data.pointer("/user/name").and_then(Value::as_str).unwrap_or_default().to_string(),
+        profile_email: profile_email(&client, login).await,
+        commits: Vec::new(),
+    };
+    let picked = pick_recipient(&known, &settings.teams_email_domains);
+    if let Some(token) = graph_token(&settings.teams_tenant).await.unwrap_or(None) {
+        let candidates = directory_candidates(&known, picked.as_ref(), &settings.teams_email_domains);
+        if let Ok(Some((upn, by_name))) = directory_lookup(&token, &candidates, &known.name).await {
+            return Ok(TeamsRecipient {
+                login: login.to_string(),
+                email: upn,
+                source: if by_name { "directory-name" } else { "directory" }.into(),
+            });
+        }
+    }
+    picked.ok_or_else(|| {
+        AppError::Other(format!(
+            "No Teams address for @{login}: no tracked PR of theirs to read commit addresses from, and GitHub publishes no email. Set one here."
+        ))
+    })
+}
+
+/// The profile email is the one field behind a PAT scope (read:user /
+/// user:email) that most tokens lack, and GitHub fails the whole query over
+/// it, so it is always asked for on its own and treated as a bonus. Missing
+/// scope, private email, no such field: all the same "nothing there".
+async fn profile_email(client: &GraphQlClient, login: &str) -> String {
+    client
+        .run("query($login: String!) { user(login: $login) { email } }", &json!({ "login": login }))
+        .await
+        .ok()
+        .and_then(|d| d.pointer("/user/email").and_then(Value::as_str).map(String::from))
+        .unwrap_or_default()
+}
+
 /// Who the author is on Teams. Settings first (it's also the override for
 /// a wrong guess); then what GitHub knows — the profile's public email and
 /// the addresses they author commits with, on this PR and on the repo's
@@ -115,16 +181,7 @@ pub async fn resolve_recipient(app: &AppHandle, pr_id: &str) -> AppResult<TeamsR
     let mut commits = authors("/repository/pullRequest/commits/nodes");
     commits.extend(authors("/repository/defaultBranchRef/target/history/nodes"));
 
-    // The profile email is the one field behind a PAT scope (read:user /
-    // user:email) most tokens lack, and GitHub fails the whole query over
-    // it — so it's asked for separately and treated as a bonus. Missing
-    // scope, private email, no such field: all the same "nothing there".
-    let profile_email = client
-        .run("query($login: String!) { user(login: $login) { email } }", &json!({ "login": login }))
-        .await
-        .ok()
-        .and_then(|d| d.pointer("/user/email").and_then(Value::as_str).map(String::from))
-        .unwrap_or_default();
+    let profile_email = profile_email(&client, &login).await;
 
     let known = GitHubKnows {
         login: login.clone(),

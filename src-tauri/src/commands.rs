@@ -230,6 +230,16 @@ pub async fn resolve_teams_recipient(
     crate::teams::resolve_recipient(&app, &pr_id).await
 }
 
+/// What a Teams message to this author would use, asked by login: the Users
+/// pane shows it so the address can be checked before a message rides on it.
+#[tauri::command]
+pub async fn resolve_teams_author(
+    app: AppHandle,
+    login: String,
+) -> AppResult<crate::models::TeamsRecipient> {
+    crate::teams::resolve_for_login(&app, &login).await
+}
+
 /// The button's path; the assistant's confirmed tool call goes through
 /// `teams::message_author` directly with its own `via`.
 #[tauri::command]

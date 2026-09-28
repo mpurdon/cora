@@ -13,6 +13,7 @@ import { tip } from "../components/Tooltip";
 import { RepoSettingsDrawer } from "../components/RepoSettingsDrawer";
 import type { RepoPriority } from "../bindings/RepoPriority";
 import type { Settings } from "../bindings/Settings";
+import type { TeamsRecipient } from "../bindings/TeamsRecipient";
 import { events, ipc } from "../lib/ipc";
 import {
   isDefaultRepoPriority,
@@ -1464,6 +1465,61 @@ const LOGIN_RE = /^[A-Za-z0-9-]+(\[bot\])?$/;
 
 /** Author priorities, mirroring the Repositories pane — see and adjust any
  *  user's weight without needing one of their PRs on screen. */
+/** What a Teams message to one author would use, on request. The address
+ *  matters enough to be checkable before a message rides on it: a commit
+ *  alias that Teams cannot resolve and a directory match look the same from
+ *  the outside until you look. Clicking the address copies it into the
+ *  override, which is how a wrong guess gets corrected. */
+function ResolvedEmail({
+  login,
+  overridden,
+  state,
+  busy,
+  onResolve,
+  onUse,
+}: {
+  login: string;
+  overridden: boolean;
+  state: TeamsRecipient | string | undefined;
+  busy: boolean;
+  onResolve: () => void;
+  onUse: (email: string) => void;
+}) {
+  if (overridden) return <span className="field-static">set above</span>;
+  if (busy) return <span className="field-static">checking…</span>;
+  if (typeof state === "string") return <span className="settings-error">{state}</span>;
+  if (!state) {
+    return (
+      <button className="icon-btn" {...tip(`Look up where a Teams message to @${login} would go`)} onClick={onResolve}>
+        check
+      </button>
+    );
+  }
+  const suspect = state.source === "guessed" || state.source === "personal";
+  return (
+    <button
+      className={`resolved-email mono${suspect ? " warn" : ""}`}
+      {...tip(`${TEAMS_SOURCE_LABEL[state.source] ?? state.source}. Click to set it as the override.`)}
+      onClick={() => onUse(state.email)}
+    >
+      {state.email}
+      <span className="teams-source">{TEAMS_SOURCE_LABEL[state.source] ?? state.source}</span>
+    </button>
+  );
+}
+
+/** How each resolution path reads in the table. Mirrors the composer's own
+ *  wording in MainApp, so one address is described the same in both. */
+const TEAMS_SOURCE_LABEL: Record<string, string> = {
+  settings: "from your settings",
+  directory: "matched in your directory",
+  "directory-name": "matched by name only, check it",
+  profile: "from their GitHub profile",
+  commits: "from their commits",
+  guessed: "guessed from their name, check it",
+  personal: "personal address, not a work one",
+};
+
 function UsersPane({
   settings,
   save,
@@ -1474,6 +1530,22 @@ function UsersPane({
   // Manually added logins with no stored priority yet — kept locally so the
   // row exists to pick a priority on (normal is never persisted).
   const [added, setAdded] = useState<string[]>([]);
+  // What a Teams message to each author would actually use, once asked. Not
+  // fetched for the whole table on open: each lookup is a GitHub round trip
+  // and a directory query, and most rows are never messaged.
+  const [resolved, setResolved] = useState<Record<string, TeamsRecipient | string>>({});
+  const [resolving, setResolving] = useState<string | null>(null);
+  const resolve = async (login: string) => {
+    setResolving(login);
+    try {
+      const r = await ipc.resolveTeamsAuthor(login);
+      setResolved((m) => ({ ...m, [login]: r }));
+    } catch (e) {
+      setResolved((m) => ({ ...m, [login]: String(e) }));
+    } finally {
+      setResolving(null);
+    }
+  };
 
   const activeCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1538,8 +1610,9 @@ function UsersPane({
         <strong>Priority</strong> weights a PR author everywhere — critical authors float to the
         top of every group and their activity is always featured; ignored authors (bots,
         dependabot) are never tracked at all. Right-clicking a PR sets this too.{" "}
-        <strong>Teams email</strong> is where a ➤ Teams message goes when GitHub doesn't say
-        (private profile, noreply commits) — leave it blank to let CORA work it out.
+        <strong>Teams email</strong> overrides where a ➤ Teams message goes. Leave it blank to
+        let CORA work it out, and use <strong>check</strong> to see the address it would pick
+        and where that came from; clicking the address makes it the override.
       </p>
 
       <div className="repo-add">
@@ -1580,6 +1653,7 @@ function UsersPane({
               <th>Priority</th>
               <th>Teams email</th>
               <th />
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -1607,6 +1681,16 @@ function UsersPane({
                     key={`${row.author}:${row.email}`}
                     onBlur={(e) => setEmail(row.author, e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                  />
+                </td>
+                <td className="user-resolved">
+                  <ResolvedEmail
+                    login={row.author}
+                    overridden={row.email !== ""}
+                    state={resolved[row.author]}
+                    busy={resolving === row.author}
+                    onResolve={() => void resolve(row.author)}
+                    onUse={(email) => setEmail(row.author, email)}
                   />
                 </td>
                 <td className="col-center">
