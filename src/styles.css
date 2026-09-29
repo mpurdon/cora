@@ -18,6 +18,10 @@
      Validated for contrast (≥3:1) and chroma (≥0.1). */
   --viz: #8b78ef;
   --merge: #a78bfa;
+  /* The wordmark's gold. Its own token rather than --warn, which it sits a few
+     percent away from: the mark is permanent chrome and the warn lamp is a
+     signal, so they should be free to drift apart. */
+  --brand-warm: #d0a050;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
 }
@@ -1042,13 +1046,46 @@ body.col-resizing * {
 
 .rail-header {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 8px 14px;
+}
+
+/* The count and the open-a-PR button share the line under the name. */
+.rail-header-row {
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 10px 8px 14px;
 }
 
 .rail-header .spacer {
   flex: 1;
+}
+
+/* Sized and lettered like the eyebrow beside it, so the row reads as one
+   line of chrome rather than a label next to a button. */
+.rail-header .track-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.rail-header .track-btn:hover {
+  color: var(--text);
+  background: var(--ink-2);
+}
+
+.rail-header .track-btn .plus {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .bucket-filter-chip {
@@ -1086,10 +1123,47 @@ body.col-resizing * {
   margin-top: 4px;
 }
 
+/* The wordmark. The artwork ships as two alpha masks rather than a picture:
+   luminance became opacity, so the near-black fills inside the badges are
+   holes the background shows through, and the two inks are painted from
+   variables. That's what makes it theme-proof — on a light surface you point
+   the variables at dark values and the whole mark flips, instead of sitting
+   there as a dark sticker.
+
+   Scales with the rail: 196px wide at the 220px minimum, capped at 300 so
+   dragging the rail wide doesn't cost the PR list its first row. The masks are
+   1200px across, covering the widest slot at retina and full zoom. */
 .rail-header .name {
-  font-weight: 700;
-  font-size: 14px;
-  letter-spacing: 0.03em;
+  display: block;
+  width: 100%;
+  max-width: 300px;
+  aspect-ratio: 1200 / 210;
+  position: relative;
+}
+
+.rail-header .name::before,
+.rail-header .name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+/* The lettering, the rules and the line art. */
+.rail-header .name::before {
+  background: var(--text);
+  -webkit-mask-image: url("./assets/cora-wordmark-mask-light.png");
+  mask-image: url("./assets/cora-wordmark-mask-light.png");
+}
+
+/* The gold: chevrons, checkmarks, the compass needle, the bolt. */
+.rail-header .name::after {
+  background: var(--brand-warm);
+  -webkit-mask-image: url("./assets/cora-wordmark-mask-warm.png");
+  mask-image: url("./assets/cora-wordmark-mask-warm.png");
 }
 
 .rail-list {

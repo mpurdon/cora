@@ -2320,17 +2320,27 @@ export function MainApp() {
         ) : (
           <>
             <div className="rail-header">
-              <span className="name">CORA</span>
-              <span className="eyebrow">{prs.length} tracked</span>
-              <span className="spacer" />
-              <button
-                className="icon-btn"
-                data-tip="Track a PR by URL"
-                aria-label="Track a PR by URL"
-                onClick={() => setShowTrackInput((s) => !s)}
-              >
-                +
-              </button>
+              {/* The name as the loop it came from. Not an <img>: the artwork
+                  is baked into two masks and painted from CSS, so it picks up
+                  whatever the theme sets rather than carrying its own colours
+                  and its own near-black fills onto every background. */}
+              <span
+                className="name"
+                role="img"
+                aria-label="CORA — Context, Orient, Review, Act"
+              />
+              <div className="rail-header-row">
+                <span className="eyebrow">{prs.length} tracked</span>
+                <span className="spacer" />
+                <button
+                  className="track-btn"
+                  data-tip="Paste a PR URL — it opens, and gets tracked"
+                  aria-label="Open a PR by URL"
+                  onClick={() => setShowTrackInput((s) => !s)}
+                >
+                  <span className="plus">+</span> Open a PR
+                </button>
+              </div>
             </div>
             {showTrackInput && (
               <TrackPrInput onDone={() => setShowTrackInput(false)} onTracked={select} />
