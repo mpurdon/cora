@@ -1,13 +1,15 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-  <!-- CORA app icon: the crescent as a C, and nothing else. Named for Cora
-       Munro (The Last of the Mohicans), hence the night sky.
+  <!-- CORA app icon: the compass from the ORIENT badge in the header wordmark.
+       Named for Cora Munro (The Last of the Mohicans), hence the night sky;
+       a compass under stars is the same story told forward.
 
-       The crescent's two circles share a centre line, so the opening faces
-       squarely right and the shape reads as a letter rather than a tilted
-       moon. Everything else is atmosphere: a graded sky, a few stars, a
-       breath of glow, a vignette to keep the corners from floating. At 16px
-       all of that falls away and the C is still there, which is the whole
-       point of carrying no landscape. -->
+       The badge carries a dotted bezel and N/E/S/W lettering. Both are dropped
+       here, and everything that remains is drawn heavier than the badge draws
+       it. This file is also the menu-bar tray icon, where the whole mark is
+       about the size of a word: a forty-tick bezel is grey noise at that size
+       and the letters are already gone, so the ring, the four cardinal bars
+       and the needle have to carry it alone. Check any change at 32px before
+       believing it at 1024. -->
   <defs>
     <clipPath id="squircle">
       <rect x="100" y="100" width="824" height="824" rx="188" />
@@ -17,19 +19,15 @@
       <stop offset="0.5" stop-color="#152028" />
       <stop offset="1" stop-color="#080d11" />
     </linearGradient>
-    <radialGradient id="moonglow" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#ece5d0" stop-opacity="0.30" />
-      <stop offset="0.55" stop-color="#ece5d0" stop-opacity="0.09" />
+    <radialGradient id="dialglow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ece5d0" stop-opacity="0.22" />
+      <stop offset="0.6" stop-color="#ece5d0" stop-opacity="0.06" />
       <stop offset="1" stop-color="#ece5d0" stop-opacity="0" />
     </radialGradient>
     <radialGradient id="vignette" cx="0.5" cy="0.46" r="0.72">
       <stop offset="0.62" stop-color="#000000" stop-opacity="0" />
       <stop offset="1" stop-color="#000000" stop-opacity="0.32" />
     </radialGradient>
-    <mask id="crescent">
-      <circle cx="512" cy="512" r="292" fill="white" />
-      <circle cx="664" cy="512" r="256" fill="black" />
-    </mask>
   </defs>
 
   <g clip-path="url(#squircle)">
@@ -45,8 +43,30 @@
       <circle cx="860" cy="430" r="2.2" opacity="0.35" />
     </g>
 
-    <circle cx="512" cy="512" r="554" fill="url(#moonglow)" />
-    <circle cx="512" cy="512" r="292" fill="#ece5d0" mask="url(#crescent)" />
+    <circle cx="512" cy="512" r="470" fill="url(#dialglow)" />
+
+    <!-- The dial face sits a step above the sky rather than below it. Darker
+         and the disc reads as a hole once the ring is down to a pixel. -->
+    <circle cx="512" cy="512" r="286" fill="#111a24" />
+
+    <!-- Ring and the four cardinal bars. The bars overshoot the ring on both
+         sides, which is what keeps the mark from reading as a plain O. -->
+    <circle cx="512" cy="512" r="286" fill="none" stroke="#ece5d0" stroke-width="58" />
+    <g stroke="#ece5d0" stroke-width="58" stroke-linecap="butt">
+      <line x1="512" y1="188" x2="512" y2="262" />
+      <line x1="512" y1="762" x2="512" y2="836" />
+      <line x1="188" y1="512" x2="262" y2="512" />
+      <line x1="762" y1="512" x2="836" y2="512" />
+    </g>
+
+    <!-- The needle: one rhombus split at the hub, north gold and south cream
+         the way the badge draws it. Widest at the middle, so the silhouette
+         keeps its body once the hub cap is punched out of it. -->
+    <g transform="rotate(38 512 512)">
+      <path d="M512 246 L590 512 L434 512 Z" fill="#d0a050" />
+      <path d="M512 778 L434 512 L590 512 Z" fill="#ece5d0" />
+      <circle cx="512" cy="512" r="42" fill="#111a24" />
+    </g>
 
     <rect x="100" y="100" width="824" height="824" fill="url(#vignette)" />
   </g>
