@@ -1,5 +1,7 @@
 # CORA
 
+*Context, Orient, Review, Act.*
+
 A desktop app that watches your GitHub pull requests and helps you review them well — an AI review copilot built with Tauri 2, React, and Rust. Cross-platform by construction (Tauri renders in the OS webview); developed and tested on macOS.
 
 CORA tracks the PRs that need your attention, analyzes each one against the whole repository (not just the diff), and turns the review into a guided reading: what matters, what's mechanical, what's risky, and what nobody noticed.
@@ -72,6 +74,19 @@ src-tauri/src/       Rust backend
 ## Configuration
 
 Everything lives in Settings (gear icon): GitHub token, AWS profile/region/model, analysis passes, noise-file globs, notification and callout behavior. State is stored in the app data directory (`~/Library/Application Support/com.mp.cora/` on macOS).
+
+## The name
+
+**C**ontext, **O**rient, **R**eview, **A**ct — the loop the app runs on every
+pull request. Read the repository the change lands in, place the change inside
+it, work through the diff in the order that matters, then do something about
+it. The acronym came back half-remembered as something from threat assessment;
+the Observe and Act in that memory turned out to be OODA, which is the same
+loop wearing different words.
+
+It is also Cora Munro, of *The Last of the Mohicans*, which is why the app icon
+sits under a night sky — first as a crescent standing in for the C, now as the
+compass from the Orient badge in the header wordmark.
 
 ## License
 
